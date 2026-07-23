@@ -116,9 +116,17 @@ public sealed class Milestone230AActivationTests : IClassFixture<MomoQuantWebApp
         }
     }
 
+    /// <summary>
+    /// Legacy Milestone 23.0A fixture that manually persists a denial audit row for MySQL round-trip.
+    /// Prefer <see cref="Milestone230BOrchestrationTests"/> for production orchestration
+    /// (IValidationTrainingScopeExecution + automatic recorder flush + freeze/validation gates).
+    /// </summary>
     [Fact]
     public async Task MySql_LeakageDenial_PersistsAudit_AndBlocksFreezeEvidence()
     {
+        // NOTE (23.0B): This test still constructs ValidationCandleAccessAudit manually and
+        // evaluates ValidationLeakageAuditor directly. Orchestrated adversarial + allowed
+        // access proofs live in Milestone230BOrchestrationTests.
         var validationStart = new DateTime(2024, 6, 1, 0, 0, 0, DateTimeKind.Utc);
         var trainingStart = validationStart.AddDays(-7);
         var candles = Enumerable.Range(0, 48)
@@ -208,9 +216,16 @@ public sealed class Milestone230AActivationTests : IClassFixture<MomoQuantWebApp
         Assert.Equal(1, report.DeniedAccessCount);
     }
 
+    /// <summary>
+    /// Legacy Milestone 23.0A in-memory path-metric independence check with diagnostic audit marker.
+    /// Prefer <see cref="Milestone230BPathMetricsPersistenceTests"/> for DB-backed production
+    /// <see cref="IValidationSegmentResultWriter"/> + API/export verification.
+    /// </summary>
     [Fact]
     public async Task MySql_PathMetrics_RiskOnly_And_FullPipeline_Independent()
     {
+        // NOTE (23.0B): Final assertions should not target the builder alone.
+        // Production persistence path is covered by Milestone230BPathMetricsPersistenceTests.
         var candidate = new StrategyResearchCandidate
         {
             Id = 9_001,
@@ -369,114 +384,139 @@ public sealed class Milestone230AActivationTests : IClassFixture<MomoQuantWebApp
     [Fact]
     public async Task LiveAuth_Viewer_Mutations_Return403_Reads_Ok_Anonymous_401()
     {
-        await EnsureSeededResearchUsersAsync();
+        // Disposable identities only — never mutate admin@momoquant.local / permanent Viewer/Trader.
+        var runId = Guid.NewGuid().ToString("N");
+        var adminEmail = $"m230b-admin-{runId}@momoquant.test";
+        var viewerEmail = $"m230b-viewer-{runId}@momoquant.test";
+        var traderEmail = $"m230b-trader-{runId}@momoquant.test";
+        var adminPassword = CreateStrongPassword();
+        var viewerPassword = CreateStrongPassword();
+        var traderPassword = CreateStrongPassword();
+        var createdUserIds = new List<long>();
 
-        var adminToken = await LoginAsync("admin@momoquant.local", "Admin123!");
-        var viewerToken = await LoginAsync("viewer230a@momoquant.local", "Viewer230a!");
-        var traderToken = await LoginAsync("trader230a@momoquant.local", "Trader230a!");
-
-        // Anonymous mutations → 401
-        Assert.Equal(HttpStatusCode.Unauthorized,
-            (await _client.PostAsJsonAsync("/api/v1/strategy-lab/runs", new { })).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized,
-            (await _client.PostAsJsonAsync("/api/v1/validation-lab/experiments", new { })).StatusCode);
-
-        // Viewer read → allowed (ResearchRead)
-        var viewerGet = await SendAsync(HttpMethod.Get, "/api/v1/strategy-lab/runs?limit=1", viewerToken);
-        Assert.Equal(HttpStatusCode.OK, viewerGet.StatusCode);
-        var viewerVlGet = await SendAsync(HttpMethod.Get, "/api/v1/validation-lab/experiments?limit=1", viewerToken);
-        Assert.Equal(HttpStatusCode.OK, viewerVlGet.StatusCode);
-
-        // Viewer mutations → 403
-        var viewerMutations = new (HttpMethod Method, string Path, object? Body)[]
+        try
         {
-            (HttpMethod.Post, "/api/v1/strategy-lab/runs", new { strategyCode = "x" }),
-            (HttpMethod.Post, "/api/v1/strategy-lab/runs/1/rerun", null),
-            (HttpMethod.Post, "/api/v1/validation-lab/experiments", new { name = "x" }),
-            (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/freeze", null),
-            (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/resume-training", null),
-            (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/recover-trials", null),
-            (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/clone", null),
-            (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/rerun-exactly", null),
-            (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/recalculate-metrics", null),
-            (HttpMethod.Post, "/api/v1/validation-lab/closeout/milestone-223", null),
-            (HttpMethod.Post, "/api/v1/exports", new { scope = "ValidationExperiment", format = "Json", entityId = 1 }),
-            (HttpMethod.Post, "/api/v1/backtests/run", new { }),
-            (HttpMethod.Post, "/api/v1/paper/sessions", new { }),
-            (HttpMethod.Post, "/api/v1/replay/sessions", new { }),
-            (HttpMethod.Post, "/api/v1/strategy-benchmarks", new { }),
-        };
+            await CreateDisposableUsersAsync(createdUserIds,
+                (adminEmail, adminPassword, UserRole.Admin),
+                (viewerEmail, viewerPassword, UserRole.Viewer),
+                (traderEmail, traderPassword, UserRole.Trader));
 
-        foreach (var (method, path, body) in viewerMutations)
-        {
-            var response = await SendAsync(method, path, viewerToken, body);
-            Assert.True(
-                response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.NotFound,
-                $"Viewer expected 403 on {method} {path}, got {(int)response.StatusCode}");
-            // Prefer Forbidden; NotFound only acceptable when route requires resource that auth still gates first.
-            // ASP.NET authorization runs before action — must be 403 when authorized policy fails.
-            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+            var adminToken = await LoginAsync(adminEmail, adminPassword);
+            var viewerToken = await LoginAsync(viewerEmail, viewerPassword);
+            var traderToken = await LoginAsync(traderEmail, traderPassword);
+
+            // Anonymous mutations → 401
+            Assert.Equal(HttpStatusCode.Unauthorized,
+                (await _client.PostAsJsonAsync("/api/v1/strategy-lab/runs", new { })).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized,
+                (await _client.PostAsJsonAsync("/api/v1/validation-lab/experiments", new { })).StatusCode);
+
+            // Viewer read → allowed (ResearchRead)
+            var viewerGet = await SendAsync(HttpMethod.Get, "/api/v1/strategy-lab/runs?limit=1", viewerToken);
+            Assert.Equal(HttpStatusCode.OK, viewerGet.StatusCode);
+            var viewerVlGet = await SendAsync(HttpMethod.Get, "/api/v1/validation-lab/experiments?limit=1", viewerToken);
+            Assert.Equal(HttpStatusCode.OK, viewerVlGet.StatusCode);
+
+            // Viewer mutations → 403 (never accept 404 as substitute)
+            var viewerMutations = new (HttpMethod Method, string Path, object? Body)[]
+            {
+                (HttpMethod.Post, "/api/v1/strategy-lab/runs", new { strategyCode = "x" }),
+                (HttpMethod.Post, "/api/v1/strategy-lab/runs/1/rerun", null),
+                (HttpMethod.Post, "/api/v1/validation-lab/experiments", new { name = "x" }),
+                (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/freeze", null),
+                (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/resume-training", null),
+                (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/recover-trials", null),
+                (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/clone", null),
+                (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/rerun-exactly", null),
+                (HttpMethod.Post, "/api/v1/validation-lab/experiments/1/recalculate-metrics", null),
+                (HttpMethod.Post, "/api/v1/validation-lab/closeout/milestone-223", null),
+                (HttpMethod.Post, "/api/v1/exports", new { scope = "ValidationExperiment", format = "Json", entityId = 1 }),
+                (HttpMethod.Post, "/api/v1/backtests/run", new { }),
+                (HttpMethod.Post, "/api/v1/paper/sessions", new { }),
+                (HttpMethod.Post, "/api/v1/replay/sessions", new { }),
+                (HttpMethod.Post, "/api/v1/strategy-benchmarks", new { }),
+            };
+
+            foreach (var (method, path, body) in viewerMutations)
+            {
+                var response = await SendAsync(method, path, viewerToken, body);
+                Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+                Assert.NotEqual(HttpStatusCode.NotFound, response.StatusCode);
+            }
+
+            // Trader research execute → not 401/403 (may be 400 validation)
+            var traderCreate = await SendAsync(
+                HttpMethod.Post,
+                "/api/v1/validation-lab/experiments",
+                traderToken,
+                new { name = $"auth-probe-{runId}" });
+            Assert.NotEqual(HttpStatusCode.Forbidden, traderCreate.StatusCode);
+            Assert.NotEqual(HttpStatusCode.Unauthorized, traderCreate.StatusCode);
+
+            // Trader admin-only → 403
+            var traderUsers = await SendAsync(HttpMethod.Get, "/api/v1/users", traderToken);
+            Assert.Equal(HttpStatusCode.Forbidden, traderUsers.StatusCode);
+
+            // Admin intended → permitted
+            var adminUsers = await SendAsync(HttpMethod.Get, "/api/v1/users", adminToken);
+            Assert.Equal(HttpStatusCode.OK, adminUsers.StatusCode);
         }
-
-        // Trader research execute → not 403 (may be 400 validation)
-        var traderCreate = await SendAsync(
-            HttpMethod.Post,
-            "/api/v1/validation-lab/experiments",
-            traderToken,
-            new { name = "auth-probe" });
-        Assert.NotEqual(HttpStatusCode.Forbidden, traderCreate.StatusCode);
-        Assert.NotEqual(HttpStatusCode.Unauthorized, traderCreate.StatusCode);
-
-        // Trader admin-only → 403
-        var traderUsers = await SendAsync(HttpMethod.Get, "/api/v1/users", traderToken);
-        Assert.Equal(HttpStatusCode.Forbidden, traderUsers.StatusCode);
-
-        // Admin intended → permitted
-        var adminUsers = await SendAsync(HttpMethod.Get, "/api/v1/users", adminToken);
-        Assert.Equal(HttpStatusCode.OK, adminUsers.StatusCode);
+        finally
+        {
+            await DeleteDisposableUsersAsync(createdUserIds);
+        }
     }
 
-    private async Task EnsureSeededResearchUsersAsync()
+    private async Task CreateDisposableUsersAsync(
+        List<long> createdUserIds,
+        params (string Email, string Password, UserRole Role)[] users)
     {
         await using var scope = _factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
         var hasher = scope.ServiceProvider.GetRequiredService<MomoQuant.Application.Abstractions.IPasswordHasher>();
+        var now = DateTime.UtcNow;
 
-        async Task UpsertAsync(string email, string password, UserRole role)
+        foreach (var (email, password, role) in users)
         {
             var normalized = email.Trim().ToLowerInvariant();
+            Assert.DoesNotContain("admin@momoquant.local", normalized, StringComparison.OrdinalIgnoreCase);
             var roleEntity = await db.Roles.FirstAsync(r => r.Name == role);
-            var user = await db.Users.FirstOrDefaultAsync(u => u.Email == normalized);
-            var now = DateTime.UtcNow;
-            if (user is null)
+            var user = new MomoQuant.Domain.Identity.User
             {
-                db.Users.Add(new MomoQuant.Domain.Identity.User
-                {
-                    FullName = email,
-                    Email = normalized,
-                    PasswordHash = hasher.Hash(password),
-                    RoleId = roleEntity.Id,
-                    Role = roleEntity.Name,
-                    IsActive = true,
-                    CreatedAtUtc = now,
-                    UpdatedAtUtc = now
-                });
-            }
-            else
-            {
-                user.PasswordHash = hasher.Hash(password);
-                user.RoleId = roleEntity.Id;
-                user.Role = roleEntity.Name;
-                user.IsActive = true;
-                user.UpdatedAtUtc = now;
-            }
+                FullName = email,
+                Email = normalized,
+                PasswordHash = hasher.Hash(password),
+                RoleId = roleEntity.Id,
+                Role = roleEntity.Name,
+                IsActive = true,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            };
+            db.Users.Add(user);
+            await db.SaveChangesAsync();
+            createdUserIds.Add(user.Id);
+        }
+    }
+
+    private async Task DeleteDisposableUsersAsync(IReadOnlyList<long> userIds)
+    {
+        if (userIds.Count == 0)
+        {
+            return;
         }
 
-        // Keep admin password aligned with AuthEndpointTests / factory seed.
-        await UpsertAsync("admin@momoquant.local", "Admin123!", UserRole.Admin);
-        await UpsertAsync("viewer230a@momoquant.local", "Viewer230a!", UserRole.Viewer);
-        await UpsertAsync("trader230a@momoquant.local", "Trader230a!", UserRole.Trader);
-        await db.SaveChangesAsync();
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        // AuditLogs FK ON DELETE RESTRICT — remove dependent rows first.
+        await db.AuditLogs.Where(a => a.UserId != null && userIds.Contains(a.UserId.Value)).ExecuteDeleteAsync();
+        await db.Users.Where(u => userIds.Contains(u.Id)).ExecuteDeleteAsync();
+    }
+
+    private static string CreateStrongPassword()
+    {
+        Span<byte> bytes = stackalloc byte[24];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+        return "Aa1!" + Convert.ToBase64String(bytes).Replace('+', 'x').Replace('/', 'y');
     }
 
     private async Task<string> LoginAsync(string email, string password)

@@ -21,6 +21,7 @@ using MomoQuant.Domain.Strategies;
 using MomoQuant.Domain.StrategyLab;
 using MomoQuant.Domain.Trades;
 using MomoQuant.Domain.TradingSystems;
+using MomoQuant.Domain.Research;
 
 namespace MomoQuant.Persistence;
 
@@ -89,6 +90,7 @@ public class MomoQuantDbContext : DbContext
         Set<Domain.ValidationLab.ValidationExperimentExecutionLease>();
     public DbSet<Domain.ValidationLab.ValidationCandleAccessAudit> ValidationCandleAccessAudits =>
         Set<Domain.ValidationLab.ValidationCandleAccessAudit>();
+    public DbSet<ResearchOperationStatusEntity> ResearchOperationStatuses => Set<ResearchOperationStatusEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

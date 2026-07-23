@@ -224,6 +224,15 @@ public sealed class ValidationSegmentResultDto
     public decimal? GrossLoss { get; init; }
     public decimal? NetProfit { get; init; }
     public decimal? NetLoss { get; init; }
+
+    /// <summary>
+    /// Included trades carrying non-blocking warnings (ValidationMetrics/v1.3.1).
+    /// Distinct from metric exclusion population counts.
+    /// </summary>
+    public int MetricWarningBearingIncludedTradeCount { get; init; }
+
+    /// <summary>Distinct warning codes on included trades (never exclusion reasons).</summary>
+    public IReadOnlyList<string>? MetricWarningCodes { get; init; }
 }
 
 public sealed class ValidationParameterTrialDto

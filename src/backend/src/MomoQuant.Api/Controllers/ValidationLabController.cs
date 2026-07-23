@@ -19,17 +19,20 @@ public sealed class ValidationLabController : ControllerBase
     private readonly IValidationLaboratoryReadinessService _readiness;
     private readonly IValidationLaboratoryCloseoutService _closeout;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly MomoQuant.Application.Research.IResearchOperationStatusService _operationStatus;
 
     public ValidationLabController(
         IValidationLabService service,
         IValidationLaboratoryReadinessService readiness,
         IValidationLaboratoryCloseoutService closeout,
-        IServiceScopeFactory scopeFactory)
+        IServiceScopeFactory scopeFactory,
+        MomoQuant.Application.Research.IResearchOperationStatusService operationStatus)
     {
         _service = service;
         _readiness = readiness;
         _closeout = closeout;
         _scopeFactory = scopeFactory;
+        _operationStatus = operationStatus;
     }
 
     [HttpGet("readiness")]
@@ -284,6 +287,12 @@ public sealed class ValidationLabController : ControllerBase
         long id,
         CancellationToken cancellationToken)
     {
+        var durable = await _operationStatus.GetForValidationExperimentAsync(id, cancellationToken);
+        if (durable is not null)
+        {
+            return Ok(ApiResponse<MomoQuant.Application.Common.ResearchOperationStatus>.Ok(durable));
+        }
+
         var progress = await _service.GetTrainingProgressAsync(id, cancellationToken);
         if (!progress.Succeeded || progress.Data is null)
         {
@@ -294,12 +303,42 @@ public sealed class ValidationLabController : ControllerBase
         var detail = await _service.GetExperimentAsync(id, cancellationToken);
         var status = detail.Data?.Status.ToString() ?? "Unknown";
         var stage = detail.Data?.CurrentStage ?? "Unknown";
-        var op = MomoQuant.Application.Common.ResearchOperationStatusMapper.FromValidationTraining(
+        var op = await _operationStatus.SyncFromValidationTrainingAsync(
             id,
             status,
             stage,
-            progress.Data);
+            progress.Data,
+            cancellationToken: cancellationToken);
         return Ok(ApiResponse<MomoQuant.Application.Common.ResearchOperationStatus>.Ok(op));
+    }
+
+    [HttpPost("experiments/{id:long}/operation-status/cancel")]
+    [Authorize(Policy = AuthorizationPolicies.ResearchExecute)]
+    public async Task<ActionResult<ApiResponse<MomoQuant.Application.Common.ResearchOperationStatus>>> CancelOperationStatus(
+        long id,
+        CancellationToken cancellationToken)
+    {
+        var operationId = $"vl-train-{id}";
+        var caller = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+            ?? User.Identity?.Name
+            ?? string.Empty;
+        var isAdmin = User.IsInRole(Domain.Enums.UserRole.Admin.ToString());
+        var result = await _operationStatus.CancelAsync(operationId, caller, isAdmin, cancellationToken);
+        if (!result.Succeeded)
+        {
+            if (string.Equals(
+                    result.ErrorField,
+                    MomoQuant.Application.Research.ResearchOperationStatusCodes.CancelForbidden,
+                    StringComparison.Ordinal))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden,
+                    ApiResponse<MomoQuant.Application.Common.ResearchOperationStatus>.Fail(result.ErrorMessage!));
+            }
+
+            return BadRequest(ApiResponse<MomoQuant.Application.Common.ResearchOperationStatus>.Fail(result.ErrorMessage!));
+        }
+
+        return Ok(ApiResponse<MomoQuant.Application.Common.ResearchOperationStatus>.Ok(result.Data!));
     }
 
     [HttpPost("experiments/{id:long}/freeze")]

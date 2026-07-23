@@ -14,9 +14,15 @@ public static class ValidationMetricsContract
 {
     public const string VersionV12 = "ValidationMetrics/v1.2";
     public const string VersionV13 = "ValidationMetrics/v1.3";
+    public const string VersionV131 = "ValidationMetrics/v1.3.1";
     public const string VersionV11 = "ValidationMetrics/v1.1";
     public const string VersionV1Legacy = "ValidationMetrics/v1";
-    public const string Current = VersionV13;
+    public const string Current = VersionV131;
+
+    /// <summary>True for ValidationMetrics/v1.3 and v1.3.1 path-metric contracts.</summary>
+    public static bool IsPathMetricsVersion(string? version) =>
+        string.Equals(version, VersionV13, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(version, VersionV131, StringComparison.OrdinalIgnoreCase);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -302,6 +308,16 @@ public static class ValidationMetricsContract
             || string.Equals(t.Outcome, nameof(RawOutcomeStatus.Loser), StringComparison.OrdinalIgnoreCase)
             || string.Equals(t.Outcome, "Losing", StringComparison.OrdinalIgnoreCase));
 
+        var warningBearingIncluded = trades
+            .Where(t => t.MetricInclusionStatus == ValidationPathMetricInclusionStatus.Included
+                        && t.MetricWarningCodes is { Count: > 0 })
+            .ToList();
+        var warningCodes = warningBearingIncluded
+            .SelectMany(t => t.MetricWarningCodes)
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
         return new LayerSegmentMetrics
         {
             CandleCount = candleCount,
@@ -339,7 +355,7 @@ public static class ValidationMetricsContract
                 "ValidationRiskBasis/v1:PathTrade GrossR=GrossPnl/DerivedRisk; NetR=NetPnl/DerivedRisk",
             ProfitFactorCalculationMode = "SeparateGrossNet",
             CostModelVersion = "PathSpecificTransactionCosts",
-            MetricsVersion = VersionV13,
+            MetricsVersion = Current,
             RiskBasisVersion = ValidationRiskBasisService.Version,
             RiskBasisType = basisType ?? (layer is ValidationLayerType.RawStrategy or ValidationLayerType.ConfidenceQualified
                 ? ValidationRiskBasisType.NormalizedOneUnit
@@ -348,7 +364,9 @@ public static class ValidationMetricsContract
             NetExpectancyApplicability = audit.NetExpectancyApplicability,
             NetExpectancyIncludedTradeCount = audit.IncludedTradeCount,
             NetExpectancyExcludedTradeCount = audit.ExcludedTradeCount,
-            NetExpectancyExclusionReasons = audit.ExclusionReasons.Concat(audit.Diagnostics).Distinct().ToList()
+            NetExpectancyExclusionReasons = audit.ExclusionReasons.Concat(audit.Diagnostics).Distinct().ToList(),
+            MetricWarningBearingIncludedTradeCount = warningBearingIncluded.Count,
+            MetricWarningCodes = warningCodes.Count == 0 ? null : warningCodes
         };
     }
 

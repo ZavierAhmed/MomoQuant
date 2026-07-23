@@ -4,7 +4,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace MomoQuant.IntegrationTests;
 
-public sealed class MomoQuantWebApplicationFactory : WebApplicationFactory<Program>
+public class MomoQuantWebApplicationFactory : WebApplicationFactory<Program>
 {
     static MomoQuantWebApplicationFactory()
     {
@@ -27,6 +27,8 @@ public sealed class MomoQuantWebApplicationFactory : WebApplicationFactory<Progr
         {
             var mysql = Environment.GetEnvironmentVariable("MOMO_INTEGRATION_MYSQL")
                 ?? "Server=localhost;Port=3306;Database=momo_quant_test;User=momo_user;Password=IntegrationTest_DbPassword_NotForProd!";
+            IntegrationDatabaseSafety.AssertDisposableTestDatabase(mysql);
+
             var redis = Environment.GetEnvironmentVariable("MOMO_INTEGRATION_REDIS")
                 ?? "127.0.0.1:6379,password=IntegrationTest_RedisPassword_NotForProd!";
 

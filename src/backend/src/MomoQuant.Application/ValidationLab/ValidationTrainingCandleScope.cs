@@ -124,7 +124,8 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         {
             if (index < 0 || index >= _candles.Length)
             {
-                RecordDenied(null, null, "IndexOutOfRange", $"Candle index {index} is outside the training scope.");
+                RecordDenied(null, null, "Indexer", "IndexOutOfRange",
+                    $"Candle index {index} is outside the training scope.");
                 throw new ValidationDataLeakageException(
                     ValidationExperimentId,
                     ValidationBoundaryUtc,
@@ -147,7 +148,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
 
         if (from >= ValidationBoundaryUtc || to > ValidationBoundaryUtc)
         {
-            RecordDenied(from, to, "BoundaryCrossed",
+            RecordDenied(from, to, callerComponent, "BoundaryCrossed",
                 $"Requested range [{from:O}, {to:O}) crosses ValidationStartUtc {ValidationBoundaryUtc:O}.");
             throw new ValidationDataLeakageException(
                 ValidationExperimentId,
@@ -176,7 +177,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         var ts = Normalize(openTimeUtc)!.Value;
         if (ts >= ValidationBoundaryUtc)
         {
-            RecordDenied(ts, ts, "BoundaryCrossed",
+            RecordDenied(ts, ts, callerComponent, "BoundaryCrossed",
                 $"Direct access to {ts:O} is at or beyond ValidationStartUtc {ValidationBoundaryUtc:O}.");
             throw new ValidationDataLeakageException(
                 ValidationExperimentId,
@@ -227,7 +228,12 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         }
     }
 
-    private void RecordDenied(DateTime? requestedStart, DateTime? requestedEnd, string code, string reason)
+    private void RecordDenied(
+        DateTime? requestedStart,
+        DateTime? requestedEnd,
+        string callerComponent,
+        string denialCode,
+        string reason)
     {
         lock (_gate)
         {
@@ -235,7 +241,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                 ValidationExperimentId,
                 ActiveTrialId,
                 ActiveTrialNumber,
-                code,
+                callerComponent,
                 requestedStart,
                 requestedEnd,
                 null,
@@ -246,7 +252,9 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                 null,
                 DateTime.UtcNow,
                 WasDenied: true,
-                DenialReason: reason));
+                DenialReason: string.IsNullOrWhiteSpace(denialCode)
+                    ? reason
+                    : $"{denialCode}: {reason}"));
         }
     }
 

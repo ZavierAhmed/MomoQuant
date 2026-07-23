@@ -19,21 +19,31 @@ public class StartupSecretsValidatorTests
     [Fact]
     public void ValidateOrThrow_Rejects_PlaceholderJwtSecret()
     {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["ConnectionStrings:DefaultConnection"] =
-                    "Server=localhost;Port=3306;Database=momo_quant;User=momo_user;Password=ValidLocalDbPassword_NotPlaceholder!",
-                ["Jwt:Secret"] = "CHANGE_ME_REPLACE_WITH_USER_SECRETS_OR_ENV",
-                ["Seed:AdminPassword"] = "ValidLocalAdminPassword_NotPlaceholder!"
-            })
-            .Build();
-        var environment = new FakeHostEnvironment { EnvironmentName = "Development" };
+        var previousSkip = Environment.GetEnvironmentVariable("MOMO_SKIP_SECRETS_VALIDATION");
+        try
+        {
+            Environment.SetEnvironmentVariable("MOMO_SKIP_SECRETS_VALIDATION", null);
 
-        var ex = Assert.Throws<InvalidOperationException>(() =>
-            StartupSecretsValidator.ValidateOrThrow(configuration, environment));
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:DefaultConnection"] =
+                        "Server=localhost;Port=3306;Database=momo_quant;User=momo_user;Password=ValidLocalDbPassword_NotPlaceholder!",
+                    ["Jwt:Secret"] = "CHANGE_ME_REPLACE_WITH_USER_SECRETS_OR_ENV",
+                    ["Seed:AdminPassword"] = "ValidLocalAdminPassword_NotPlaceholder!"
+                })
+                .Build();
+            var environment = new FakeHostEnvironment { EnvironmentName = "Development" };
 
-        Assert.Contains("Jwt:Secret", ex.Message, StringComparison.OrdinalIgnoreCase);
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                StartupSecretsValidator.ValidateOrThrow(configuration, environment));
+
+            Assert.Contains("Jwt:Secret", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MOMO_SKIP_SECRETS_VALIDATION", previousSkip);
+        }
     }
 
     private sealed class FakeHostEnvironment : IHostEnvironment

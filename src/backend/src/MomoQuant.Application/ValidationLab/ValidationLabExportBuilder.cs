@@ -172,7 +172,7 @@ public static class ValidationLabExportBuilder
         var sb = new StringBuilder();
         sb.AppendLine("# validation-experiment-segment-results.csv");
         sb.AppendLine("# segment-results.csv");
-        sb.AppendLine("SegmentType,LayerType,ClosedTradeCount,GrossExpectancyR,NetExpectancyR,GrossProfitFactor,NetProfitFactor,GrossPnl,NetPnl,TransactionCosts,PersistedCandidateRowCount,MetricIncludedCandidateCount,MetricExcludedCandidateCount,CrossSegmentOverlapCount,GrossProfit,GrossLoss,NetProfit,NetLoss,ResultCalculationVersion");
+        sb.AppendLine("SegmentType,LayerType,ClosedTradeCount,GrossExpectancyR,NetExpectancyR,GrossProfitFactor,NetProfitFactor,GrossPnl,NetPnl,TransactionCosts,PersistedCandidateRowCount,MetricIncludedCandidateCount,MetricExcludedCandidateCount,CrossSegmentOverlapCount,GrossProfit,GrossLoss,NetProfit,NetLoss,ResultCalculationVersion,MetricWarningBearingIncludedTradeCount,MetricWarningCodes");
         foreach (var s in detail.SegmentResults ?? [])
         {
             sb.AppendLine(string.Join(',',
@@ -194,7 +194,11 @@ public static class ValidationLabExportBuilder
                 Fmt(s.GrossLoss),
                 Fmt(s.NetProfit),
                 Fmt(s.NetLoss),
-                Csv(s.ResultCalculationVersion)));
+                Csv(s.ResultCalculationVersion),
+                s.MetricWarningBearingIncludedTradeCount,
+                Csv(s.MetricWarningCodes is { Count: > 0 }
+                    ? string.Join('|', s.MetricWarningCodes)
+                    : string.Empty)));
         }
 
         sb.AppendLine();
@@ -456,6 +460,8 @@ public static class ValidationLabExportBuilder
         s.NetProfit,
         s.NetLoss,
         s.ResultCalculationVersion,
+        s.MetricWarningBearingIncludedTradeCount,
+        s.MetricWarningCodes,
         metrics = SafeParse(s.MetricsJson)
     };
 

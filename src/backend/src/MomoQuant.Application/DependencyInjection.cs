@@ -17,6 +17,7 @@ using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.StrategyLab.Confidence;
 using MomoQuant.Application.StrategyLab.Risk;
 using MomoQuant.Application.ValidationLab;
+using MomoQuant.Application.Research;
 using MomoQuant.Application.Replay;
 using MomoQuant.Application.Audit;
 using MomoQuant.Application.Audit.Services;
@@ -194,6 +195,7 @@ public static class DependencyInjection
         services.AddSingleton<IStrategyBenchmarkQueue>(provider => provider.GetRequiredService<StrategyBenchmarkQueue>());
         services.AddHostedService(provider => provider.GetRequiredService<StrategyBenchmarkQueue>());
 
+        services.AddSingleton<IStrategyLabCandleWindowFactory, CandlePrefixViewStrategyLabCandleWindowFactory>();
         services.AddScoped<IStrategyLabRunner, StrategyLabRunner>();
         services.AddScoped<IStrategyLabService, StrategyLabService>();
         services.AddScoped<IValidationCandidateReconciliationService, ValidationCandidateReconciliationService>();
@@ -214,8 +216,13 @@ public static class DependencyInjection
         services.AddScoped<IValidationTrainingPreflightService, ValidationTrainingPreflightService>();
         services.AddScoped<IValidationTrainingExecutionLeaseService, ValidationTrainingExecutionLeaseService>();
         services.AddScoped<IValidationTrainingCandleScopeFactory, ValidationTrainingCandleScopeFactory>();
+        services.AddScoped<IValidationCandleAccessRecorder, ValidationCandleAccessRecorder>();
+        services.AddScoped<IValidationTrainingScopeExecution, ValidationTrainingScopeExecution>();
+        services.AddScoped<IValidationSegmentResultWriter, ValidationSegmentResultWriter>();
         services.AddScoped<IValidationTrialRecoveryService, ValidationTrialRecoveryService>();
         services.AddScoped<IValidationLabService, ValidationLabService>();
+        services.AddSingleton(TimeProvider.System);
+        services.AddScoped<IResearchOperationStatusService, ResearchOperationStatusService>();
         services.AddSingleton<ICandidateConfidenceScorer, StrategySetupQualityScorer>();
         services.AddSingleton<StrategyLabQueue>();
         services.AddSingleton<IStrategyLabQueue>(provider => provider.GetRequiredService<StrategyLabQueue>());

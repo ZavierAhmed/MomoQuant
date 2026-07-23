@@ -117,133 +117,141 @@ public sealed partial class ValidationLabService
 
         try
         {
-            await using var trainingScope = await _trainingCandleScopeFactory.CreateForExperimentAsync(
-                experiment, cancellationToken);
-            using var ambientScope = ValidationTrainingCandleScopeAmbient.Enter(trainingScope);
-            _flushedCandleAccessCount = 0;
-
-            var draft = ParseDraft(experiment.DraftConfigurationJson);
-            var profile = ToQualificationProfile(draft.QualificationProfile, experiment.PrimaryQualificationLayer);
-            var combos = BuildTrainingCombinations(experiment, draft);
-
-            if (isResume)
+            ServiceResult<ValidationExperimentDto>? result = null;
+            await _trainingScopeExecution.ExecuteWithScopeAsync(experiment, async trainingScope =>
             {
-                await _trialRecovery.RecoverFromStrategyLabRunsAsync(
-                    experiment, combos, profile, cancellationToken);
-            }
+                var draft = ParseDraft(experiment.DraftConfigurationJson);
+                var profile = ToQualificationProfile(draft.QualificationProfile, experiment.PrimaryQualificationLayer);
+                var combos = BuildTrainingCombinations(experiment, draft);
 
-            await EnsureTrialRowsAsync(experiment, combos, cancellationToken);
-            await MarkInterruptedRunningTrialsAsync(experiment.Id, cancellationToken);
-
-            for (var i = 0; i < combos.Count; i++)
-            {
-                var combo = combos[i];
-                var trialNumber = i + 1;
-                var fingerprint = ParameterFingerprint(combo);
-                var trial = await _trials.GetByExperimentAndFingerprintAsync(experiment.Id, fingerprint, cancellationToken)
-                    ?? throw new InvalidOperationException($"Trial row missing for fingerprint {fingerprint}.");
-
-                if (trial.Status is ValidationTrialStatus.Completed or ValidationTrialStatus.GuardrailRejected)
+                if (isResume)
                 {
-                    await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
-                    await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
-                    continue;
+                    await _trialRecovery.RecoverFromStrategyLabRunsAsync(
+                        experiment, combos, profile, cancellationToken);
                 }
 
-                if (trial.Status == ValidationTrialStatus.Failed && isResume)
+                await EnsureTrialRowsAsync(experiment, combos, cancellationToken);
+                await MarkInterruptedRunningTrialsAsync(experiment.Id, cancellationToken);
+
+                for (var i = 0; i < combos.Count; i++)
                 {
-                    // Explicit resume retries failed trials.
-                }
-                else if (trial.Status == ValidationTrialStatus.Failed)
-                {
-                    continue;
-                }
+                    var combo = combos[i];
+                    var trialNumber = i + 1;
+                    var fingerprint = ParameterFingerprint(combo);
+                    var trial = await _trials.GetByExperimentAndFingerprintAsync(experiment.Id, fingerprint, cancellationToken)
+                        ?? throw new InvalidOperationException($"Trial row missing for fingerprint {fingerprint}.");
 
-                trial.Status = ValidationTrialStatus.Running;
-                trial.StartedAtUtc = DateTime.UtcNow;
-                trial.ErrorMessage = null;
-                await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
-
-                trainingScope.ActiveTrialId = trial.Id;
-                trainingScope.ActiveTrialNumber = trialNumber;
-
-                try
-                {
-                    var run = await CreateLabRunAsync(
-                        experiment,
-                        combo,
-                        draft,
-                        experiment.TrainingStartUtc.Value,
-                        ToExclusiveUtc(experiment.TrainingEndUtc.Value, experiment.Timeframe),
-                        $"VL-Train-{experiment.Id}-T{trialNumber}",
-                        cancellationToken);
-
-                    trial.StrategyLabRunId = run.Id;
-                    await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
-
-                    await _labRunner.ExecuteAsync(run.Id, cancellationToken);
-                    run = await _labRuns.GetByIdAsync(run.Id, cancellationToken) ?? run;
-
-                    if (run.Status != StrategyLabRunStatus.Completed)
+                    if (trial.Status is ValidationTrialStatus.Completed or ValidationTrialStatus.GuardrailRejected)
                     {
-                        trial.Status = ValidationTrialStatus.Failed;
-                        trial.ErrorMessage = run.ErrorMessage ?? $"Strategy lab run {run.Id} ended with status {run.Status}.";
-                        trial.CompletedAtUtc = DateTime.UtcNow;
-                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                        await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
+                        await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
                         continue;
                     }
 
-                    await PopulateTrialMetricsAsync(
-                        experiment, trial, combo, run, profile, cancellationToken);
-                    await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
-                }
-                catch (ValidationDataLeakageException ex)
-                {
-                    await PersistTrainingCandleAccessLogAsync(trainingScope, cancellationToken);
-                    trial.Status = ValidationTrialStatus.Failed;
-                    trial.ErrorMessage = ex.Message;
-                    trial.CompletedAtUtc = DateTime.UtcNow;
+                    if (trial.Status == ValidationTrialStatus.Failed && isResume)
+                    {
+                        // Explicit resume retries failed trials.
+                    }
+                    else if (trial.Status == ValidationTrialStatus.Failed)
+                    {
+                        continue;
+                    }
+
+                    trial.Status = ValidationTrialStatus.Running;
+                    trial.StartedAtUtc = DateTime.UtcNow;
+                    trial.ErrorMessage = null;
                     await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
 
-                    experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
-                    AppendDiagnostic(experiment, "ValidationDataLeakageDetected", ex.Message);
-                    experiment.Status = ValidationExperimentStatus.Failed;
-                    experiment.ErrorMessage = ex.Message;
-                    experiment.CurrentStage = "LeakageDetected";
-                    await FinalizeLeakageFromPersistedEvidenceAsync(experiment, draft, cancellationToken);
-                    await _experiments.UpdateAsync(experiment, cancellationToken);
-                    await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
-                    return ServiceResult<ValidationExperimentDto>.Fail(ex.Message);
-                }
-                catch (Exception ex) when (ValidationTrainingDbRetry.IsTransient(ex))
-                {
-                    await PersistTrainingCandleAccessLogAsync(trainingScope, cancellationToken);
-                    trial.Status = ValidationTrialStatus.Interrupted;
-                    trial.ErrorMessage = ex.Message;
-                    trial.CompletedAtUtc = DateTime.UtcNow;
-                    await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                    try
+                    {
+                        await _trainingScopeExecution.ExecuteTrialAsync(
+                            trainingScope,
+                            trialNumber,
+                            trial.Id,
+                            async () =>
+                            {
+                                var run = await CreateLabRunAsync(
+                                    experiment,
+                                    combo,
+                                    draft,
+                                    experiment.TrainingStartUtc.Value,
+                                    ToExclusiveUtc(experiment.TrainingEndUtc.Value, experiment.Timeframe),
+                                    $"VL-Train-{experiment.Id}-T{trialNumber}",
+                                    cancellationToken);
 
-                    experiment.Status = ValidationExperimentStatus.TrainingInterrupted;
-                    experiment.ErrorMessage = ex.Message;
-                    experiment.CurrentStage = "TrainingInterrupted";
+                                trial.StrategyLabRunId = run.Id;
+                                await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+
+                                await _labRunner.ExecuteAsync(run.Id, cancellationToken);
+                                run = await _labRuns.GetByIdAsync(run.Id, cancellationToken) ?? run;
+
+                                if (run.Status != StrategyLabRunStatus.Completed)
+                                {
+                                    trial.Status = ValidationTrialStatus.Failed;
+                                    trial.ErrorMessage = run.ErrorMessage
+                                        ?? $"Strategy lab run {run.Id} ended with status {run.Status}.";
+                                    trial.CompletedAtUtc = DateTime.UtcNow;
+                                    await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                                    return;
+                                }
+
+                                await PopulateTrialMetricsAsync(
+                                    experiment, trial, combo, run, profile, cancellationToken);
+                                await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                            },
+                            cancellationToken);
+                    }
+                    catch (ValidationDataLeakageException ex)
+                    {
+                        // Access evidence already flushed by ExecuteTrialAsync finally.
+                        trial.Status = ValidationTrialStatus.Failed;
+                        trial.ErrorMessage = ex.Message;
+                        trial.CompletedAtUtc = DateTime.UtcNow;
+                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+
+                        experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
+                        AppendDiagnostic(experiment, "ValidationDataLeakageDetected", ex.Message);
+                        experiment.Status = ValidationExperimentStatus.Failed;
+                        experiment.ErrorMessage = ex.Message;
+                        experiment.CurrentStage = "LeakageDetected";
+                        await FinalizeLeakageFromPersistedEvidenceAsync(experiment, draft, cancellationToken);
+                        await _experiments.UpdateAsync(experiment, cancellationToken);
+                        await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
+                        result = ServiceResult<ValidationExperimentDto>.Fail(ex.Message);
+                        return;
+                    }
+                    catch (Exception ex) when (ValidationTrainingDbRetry.IsTransient(ex))
+                    {
+                        await PersistTrainingCandleAccessLogAsync(trainingScope, cancellationToken);
+                        trial.Status = ValidationTrialStatus.Interrupted;
+                        trial.ErrorMessage = ex.Message;
+                        trial.CompletedAtUtc = DateTime.UtcNow;
+                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+
+                        experiment.Status = ValidationExperimentStatus.TrainingInterrupted;
+                        experiment.ErrorMessage = ex.Message;
+                        experiment.CurrentStage = "TrainingInterrupted";
+                        await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
+                        await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
+                        result = ServiceResult<ValidationExperimentDto>.Fail(ex.Message);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        trial.Status = ValidationTrialStatus.Failed;
+                        trial.ErrorMessage = ex.Message;
+                        trial.CompletedAtUtc = DateTime.UtcNow;
+                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                    }
+
                     await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
-                    await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
-                    return ServiceResult<ValidationExperimentDto>.Fail(ex.Message);
-                }
-                catch (Exception ex)
-                {
-                    trial.Status = ValidationTrialStatus.Failed;
-                    trial.ErrorMessage = ex.Message;
-                    trial.CompletedAtUtc = DateTime.UtcNow;
-                    await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                    await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
                 }
 
-                await PersistTrainingCandleAccessLogAsync(trainingScope, cancellationToken);
-                await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
-                await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
-            }
+                result = await FinalizeTrainingAsync(experiment, draft, combos.Count, cancellationToken, leaseOwner);
+            }, cancellationToken);
 
-            return await FinalizeTrainingAsync(experiment, draft, combos.Count, cancellationToken, leaseOwner);
+            return result ?? ServiceResult<ValidationExperimentDto>.Fail("Training ended without a result.");
         }
         catch (Exception ex) when (ValidationTrainingDbRetry.IsTransient(ex))
         {
@@ -460,7 +468,7 @@ public sealed partial class ValidationLabService
 
             if (winner.StrategyLabRunId is long trainRunId)
             {
-                await PersistSegmentResultsAsync(
+                await _segmentResultWriter.BuildAndPersistSegmentResultsAsync(
                     experiment,
                     trainRunId,
                     ValidationSegmentType.Training,
@@ -515,43 +523,11 @@ public sealed partial class ValidationLabService
         }
     }
 
-    private int _flushedCandleAccessCount;
-
     private async Task PersistTrainingCandleAccessLogAsync(
         IValidationTrainingCandleScope scope,
         CancellationToken cancellationToken)
     {
-        var log = scope.AccessLog;
-        if (log.Count <= _flushedCandleAccessCount)
-        {
-            return;
-        }
-
-        var fresh = log.Skip(_flushedCandleAccessCount).ToList();
-        _flushedCandleAccessCount = log.Count;
-        var entities = fresh.Select(a => new ValidationCandleAccessAudit
-        {
-            ValidationExperimentId = a.ValidationExperimentId,
-            TrialId = a.TrialId,
-            TrialNumber = a.TrialNumber,
-            CallerComponent = a.CallerComponent,
-            RequestedStartUtc = a.RequestedStartUtc,
-            RequestedEndUtc = a.RequestedEndUtc,
-            ReturnedStartUtc = a.ReturnedStartUtc,
-            ReturnedEndUtc = a.ReturnedEndUtc,
-            ReturnedCandleCount = a.ReturnedCandleCount,
-            MinimumReturnedTimestampUtc = a.MinimumReturnedTimestampUtc,
-            MaximumReturnedTimestampUtc = a.MaximumReturnedTimestampUtc,
-            CandleContentFingerprint = a.CandleContentFingerprint is { Length: > 64 }
-                ? a.CandleContentFingerprint[..64]
-                : a.CandleContentFingerprint,
-            AccessedAtUtc = a.AccessedAtUtc,
-            WasDenied = a.WasDenied,
-            DenialReason = a.DenialReason is { Length: > 512 } ? a.DenialReason[..512] : a.DenialReason,
-            CreatedAtUtc = DateTime.UtcNow
-        }).ToList();
-
-        await _candleAccessAudits.AddRangeAsync(entities, cancellationToken);
+        await _candleAccessRecorder.FlushAsync(scope, cancellationToken);
     }
 
     private async Task<StrategyLabRun> CreateLabRunAsync(

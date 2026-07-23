@@ -45,7 +45,7 @@ public class ValidationLab230PathMetricsTests
 
         var metrics = ValidationMetricsContract.FromPathTradesV13(
             trades, 1000, 1, 0, ValidationLayerType.RawStrategy, _risk);
-        Assert.Equal(ValidationMetricsContract.VersionV13, metrics.MetricsVersion);
+        Assert.Equal(ValidationMetricsContract.VersionV131, metrics.MetricsVersion);
         Assert.Equal(ValidationRiskBasisType.NormalizedOneUnit, metrics.RiskBasisType);
         Assert.Equal(2m, metrics.GrossExpectancyR);
         Assert.Equal(1.9192m, metrics.NetExpectancyR);
@@ -85,8 +85,18 @@ public class ValidationLab230PathMetricsTests
             [c], null, null, DefaultCosts);
         Assert.Equal(1m, trades[0].GrossPnl); // exit 101 - entry 100
         Assert.NotEqual(999m / 5m, trades[0].GrossPnl);
-        Assert.Equal("CandidateRawPnlReconciliationMismatch", trades[0].MetricExclusionReason);
+        Assert.Null(trades[0].MetricExclusionReason);
         Assert.Equal(ValidationPathMetricInclusionStatus.Included, trades[0].MetricInclusionStatus);
+        Assert.Contains(
+            ValidationPathMetricWarningCodes.CandidateRawPnlReconciliationMismatch,
+            trades[0].MetricWarningCodes);
+        Assert.Equal(ValidationMetricReconciliationStatus.Mismatched, trades[0].ReconciliationStatus);
+
+        var metrics = ValidationMetricsContract.FromPathTradesV13(
+            trades, 100, 1, 0, ValidationLayerType.RawStrategy, _risk);
+        Assert.Equal(1, metrics.MetricWarningBearingIncludedTradeCount);
+        Assert.Equal(1, metrics.NetExpectancyIncludedTradeCount);
+        Assert.Equal(0, metrics.NetExpectancyExcludedTradeCount);
     }
 
     [Fact]

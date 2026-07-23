@@ -124,8 +124,8 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
             var netPnl = grossPnl - totalCosts;
             var derivedRisk = Math.Abs(entry - stop) * quantity * mult;
 
-            var reconWarning = BuildReconciliationWarning(c, quantity, grossPnl, netPnl);
-
+            var recon = EvaluateReconciliation(c, quantity, grossPnl, netPnl);
+            var included = derivedRisk > 0m;
             list.Add(new ValidationPathTradeMetricInput
             {
                 ValidationExperimentId = experimentId,
@@ -150,18 +150,32 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
                 TotalTransactionCosts = totalCosts,
                 NetPnl = netPnl,
                 Outcome = c.RawOutcomeStatus.ToString(),
-                MetricInclusionStatus = derivedRisk > 0m
+                MetricInclusionStatus = included
                     ? ValidationPathMetricInclusionStatus.Included
                     : ValidationPathMetricInclusionStatus.Excluded,
-                MetricExclusionReason = derivedRisk > 0m ? reconWarning : "InvalidDerivedRisk",
-                SourceVersion = "ValidationPathTradeMetricInput/v1:IndependentNormalizedOneUnit"
+                // Included trades must never carry an exclusion reason.
+                MetricExclusionReason = included ? null : "InvalidDerivedRisk",
+                MetricWarningCodes = included && recon.WarningCode is not null
+                    ? [recon.WarningCode]
+                    : Array.Empty<string>(),
+                ReconciliationStatus = recon.Status,
+                ReconciliationGrossDelta = recon.GrossDelta,
+                ReconciliationNetDelta = recon.NetDelta,
+                SourceVersion = ValidationPathTradeMetricInput.SourceVersionV11
+                    + ":IndependentNormalizedOneUnit"
             });
         }
 
         return list;
     }
 
-    private static string? BuildReconciliationWarning(
+    private readonly record struct ReconciliationEval(
+        ValidationMetricReconciliationStatus Status,
+        string? WarningCode,
+        decimal? GrossDelta,
+        decimal? NetDelta);
+
+    private static ReconciliationEval EvaluateReconciliation(
         StrategyResearchCandidate c,
         decimal normalizedQty,
         decimal independentGross,
@@ -169,7 +183,8 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
     {
         if (c.RawGrossPnl is not decimal rawGross || c.ProposedPositionSize is not decimal actualQty || actualQty <= 0m)
         {
-            return null;
+            return new ReconciliationEval(
+                ValidationMetricReconciliationStatus.SourceUnavailable, null, null, null);
         }
 
         var scaledGross = rawGross * (normalizedQty / actualQty);
@@ -180,10 +195,15 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
         if (grossDelta / scale > CandidateReconciliationTolerance
             || netDelta / Math.Max(1m, Math.Abs(independentNet)) > CandidateReconciliationTolerance)
         {
-            return "CandidateRawPnlReconciliationMismatch";
+            return new ReconciliationEval(
+                ValidationMetricReconciliationStatus.Mismatched,
+                ValidationPathMetricWarningCodes.CandidateRawPnlReconciliationMismatch,
+                grossDelta,
+                netDelta);
         }
 
-        return null;
+        return new ReconciliationEval(
+            ValidationMetricReconciliationStatus.Matched, null, grossDelta, netDelta);
     }
 
     private static ValidationPathTradeMetricInput Excluded(
@@ -211,7 +231,10 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
             ContractMultiplier = costModel.ContractMultiplier <= 0m ? 1m : costModel.ContractMultiplier,
             MetricInclusionStatus = ValidationPathMetricInclusionStatus.Excluded,
             MetricExclusionReason = reason,
-            SourceVersion = "ValidationPathTradeMetricInput/v1:IndependentNormalizedOneUnit"
+            MetricWarningCodes = Array.Empty<string>(),
+            ReconciliationStatus = ValidationMetricReconciliationStatus.NotApplicable,
+            SourceVersion = ValidationPathTradeMetricInput.SourceVersionV11
+                + ":IndependentNormalizedOneUnit"
         };
 
     private static IReadOnlyList<ValidationPathTradeMetricInput> BuildFromShadowPath(
@@ -324,8 +347,14 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
                 NetPnl = entry.NetPnl,
                 Outcome = entry.ExitOutcome,
                 MetricInclusionStatus = inclusion,
-                MetricExclusionReason = exclusion,
-                SourceVersion = "ValidationPathTradeMetricInput/v1:ShadowLedger"
+                MetricExclusionReason = inclusion == ValidationPathMetricInclusionStatus.Included
+                    ? null
+                    : exclusion,
+                MetricWarningCodes = Array.Empty<string>(),
+                ReconciliationStatus = inclusion == ValidationPathMetricInclusionStatus.Included
+                    ? ValidationMetricReconciliationStatus.NotApplicable
+                    : ValidationMetricReconciliationStatus.NotApplicable,
+                SourceVersion = ValidationPathTradeMetricInput.SourceVersionV11 + ":ShadowLedger"
             });
         }
 

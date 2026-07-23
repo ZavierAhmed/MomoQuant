@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Microsoft.Extensions.DependencyInjection;
 using MomoQuant.Application.ValidationLab;
@@ -29,7 +28,7 @@ public class ValidationLab224AActivationTests : IClassFixture<MomoQuantWebApplic
         var (id, _) = await _harness.CreatePreparedExperimentAsync("default-versions");
         var entity = await _harness.GetExperimentEntityAsync(id);
         Assert.NotNull(entity);
-        Assert.Equal(ValidationMetricsContract.VersionV13, entity!.ValidationMetricsVersion);
+        Assert.Equal(ValidationMetricsContract.VersionV131, entity!.ValidationMetricsVersion);
         Assert.Equal(ValidationRiskBasisService.Version, entity.RiskBasisVersion);
         Assert.Equal(ValidationParameterFingerprintService.Version, entity.ParameterFingerprintVersion);
         Assert.Equal("ValidationSelectionIntegrity/v1", entity.SelectionIntegrityVersion);
@@ -123,17 +122,30 @@ public class ValidationLab224AActivationTests : IClassFixture<MomoQuantWebApplic
     [Fact]
     public async Task SelectionIntegrity_And_MetricBasis_EndpointsRespond()
     {
-        var client = await CreateAuthorizedClientAsync();
-        var (id, combos) = await _harness.CreatePreparedExperimentAsync("api-endpoints");
-        var seeds = ValidationLab224AIntegrityOrchestrationFixture.SeedOneEligible(id, combos);
-        await _harness.SeedTrialsAsync(id, seeds);
-        await _harness.RunTrainingFinalizeAsync(id);
+        long? authUserId = null;
+        try
+        {
+            var (client, userId) = await IntegrationDisposableAuth.CreateAuthorizedAdminClientAsync(
+                _factory, "m224a-admin");
+            authUserId = userId;
+            var (id, combos) = await _harness.CreatePreparedExperimentAsync("api-endpoints");
+            var seeds = ValidationLab224AIntegrityOrchestrationFixture.SeedOneEligible(id, combos);
+            await _harness.SeedTrialsAsync(id, seeds);
+            await _harness.RunTrainingFinalizeAsync(id);
 
-        var integrity = await client.GetAsync($"/api/v1/validation-lab/experiments/{id}/selection-integrity");
-        Assert.Equal(HttpStatusCode.OK, integrity.StatusCode);
+            var integrity = await client.GetAsync($"/api/v1/validation-lab/experiments/{id}/selection-integrity");
+            Assert.Equal(HttpStatusCode.OK, integrity.StatusCode);
 
-        var audit = await client.GetAsync($"/api/v1/validation-lab/experiments/{id}/metric-basis-audit");
-        Assert.Equal(HttpStatusCode.OK, audit.StatusCode);
+            var audit = await client.GetAsync($"/api/v1/validation-lab/experiments/{id}/metric-basis-audit");
+            Assert.Equal(HttpStatusCode.OK, audit.StatusCode);
+        }
+        finally
+        {
+            if (authUserId is long uid)
+            {
+                await IntegrationDisposableAuth.DeleteUsersAsync(_factory, uid);
+            }
+        }
     }
 
     [Fact]
@@ -151,26 +163,6 @@ public class ValidationLab224AActivationTests : IClassFixture<MomoQuantWebApplic
 
             Assert.Equal(ValidationMetricsContract.VersionV12, exp.ValidationMetricsVersion);
         }
-    }
-
-    private async Task<HttpClient> CreateAuthorizedClientAsync()
-    {
-        var client = _factory.CreateClient();
-        var login = await client.PostAsJsonAsync("/api/v1/auth/login", new
-        {
-            email = "admin@momoquant.local",
-            password = "Admin123!"
-        });
-        login.EnsureSuccessStatusCode();
-        var payload = await login.Content.ReadFromJsonAsync<ApiResponse<LoginTokenPayload>>(IntegrationTestJson.Options);
-        client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", payload!.Data!.AccessToken);
-        return client;
-    }
-
-    private sealed class LoginTokenPayload
-    {
-        public string AccessToken { get; set; } = string.Empty;
     }
 }
 

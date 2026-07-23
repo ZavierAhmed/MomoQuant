@@ -48,6 +48,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
     private readonly IRiskProfileRepository _riskProfileRepository;
     private readonly StrategyLabRiskObserver _riskObserver;
     private readonly ICandidateConfidenceScorer _confidenceScorer;
+    private readonly IStrategyLabCandleWindowFactory _candleWindowFactory;
     private readonly ILogger<StrategyLabRunner> _logger;
 
     public StrategyLabRunner(
@@ -62,6 +63,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         IRiskProfileRepository riskProfileRepository,
         PositionSizingService positionSizingService,
         ICandidateConfidenceScorer confidenceScorer,
+        IStrategyLabCandleWindowFactory? candleWindowFactory = null,
         ILogger<StrategyLabRunner>? logger = null)
     {
         _ = positionSizingService; // retained for DI compatibility; futures sizing is internal to risk observer
@@ -76,6 +78,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         _riskProfileRepository = riskProfileRepository;
         _riskObserver = new StrategyLabRiskObserver();
         _confidenceScorer = confidenceScorer;
+        _candleWindowFactory = candleWindowFactory ?? new CandlePrefixViewStrategyLabCandleWindowFactory();
         _logger = logger ?? NullLogger<StrategyLabRunner>.Instance;
     }
 
@@ -292,7 +295,9 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             var evaluations = 0;
             var totalEvals = Math.Max(evaluationIndices.Count, 1);
             var detectedInMemory = 0;
-            var candlePrefix = new CandlePrefixView(dataset.Candles, 0);
+            // Production factory returns CandlePrefixView so we can mutate visible count without reallocating.
+            // Copied-list factory (tests) allocates a new window each step via CreateVisibleWindow.
+            var candleWindow = _candleWindowFactory.CreateVisibleWindow(dataset.Candles, 0);
             var checkpointEvery = Math.Clamp(50, 10, 500);
             var checkpointCount = 0;
             var evalStartedUtc = DateTime.UtcNow;
@@ -302,8 +307,16 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 var candleIndex = evaluationIndices[idx];
                 evaluations++;
                 var candle = dataset.Candles[candleIndex];
-                candlePrefix.SetVisibleCount(candleIndex + 1);
-                var slice = candlePrefix;
+                IReadOnlyList<Candle> slice;
+                if (candleWindow is CandlePrefixView prefixView)
+                {
+                    prefixView.SetVisibleCount(candleIndex + 1);
+                    slice = prefixView;
+                }
+                else
+                {
+                    slice = _candleWindowFactory.CreateVisibleWindow(dataset.Candles, candleIndex + 1);
+                }
 
                 PriceStructureCandidateDto? structureCandidate = null;
                 string? structureJson = null;

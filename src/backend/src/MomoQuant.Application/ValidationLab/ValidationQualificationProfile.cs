@@ -90,6 +90,15 @@ public sealed class LayerSegmentMetrics
     public int? NetExpectancyIncludedTradeCount { get; set; }
     public int? NetExpectancyExcludedTradeCount { get; set; }
     public IReadOnlyList<string>? NetExpectancyExclusionReasons { get; set; }
+
+    /// <summary>
+    /// Included trades that carry one or more non-blocking <see cref="MetricWarningCodes"/>.
+    /// Independent of included/excluded population counts (ValidationMetrics/v1.3.1).
+    /// </summary>
+    public int MetricWarningBearingIncludedTradeCount { get; set; }
+
+    /// <summary>Distinct warning codes observed on included trades (never exclusion reasons).</summary>
+    public IReadOnlyList<string>? MetricWarningCodes { get; set; }
 }
 
 public sealed class RobustnessVerdictResult

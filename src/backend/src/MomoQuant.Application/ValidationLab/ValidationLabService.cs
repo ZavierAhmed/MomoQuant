@@ -164,7 +164,6 @@ public sealed partial class ValidationLabService : IValidationLabService
     private readonly IValidationMetricConsistencyService _metricConsistency;
     private readonly IValidationLeakageAuditor _leakageAuditor;
     private readonly IValidationVerdictService _verdictService;
-    private readonly IValidationHoldoutExclusivityService _exclusivity;
     private readonly IValidationLaboratoryReadinessService _readiness;
     private readonly IValidationTrainingPreflightService _trainingPreflight;
     private readonly IValidationTrainingExecutionLeaseService _trainingLease;
@@ -173,9 +172,10 @@ public sealed partial class ValidationLabService : IValidationLabService
     private readonly IValidationSelectionIntegrityService _selectionIntegrity;
     private readonly IValidationParameterFingerprintService _parameterFingerprint;
     private readonly IValidationRiskBasisService _riskBasis;
-    private readonly IValidationPathMetricInputBuilder _pathMetricBuilder;
-    private readonly IValidationTrainingCandleScopeFactory _trainingCandleScopeFactory;
     private readonly IValidationCandleAccessAuditRepository _candleAccessAudits;
+    private readonly IValidationCandleAccessRecorder _candleAccessRecorder;
+    private readonly IValidationTrainingScopeExecution _trainingScopeExecution;
+    private readonly IValidationSegmentResultWriter _segmentResultWriter;
 
     public ValidationLabService(
         IValidationExperimentRepository experiments,
@@ -194,7 +194,6 @@ public sealed partial class ValidationLabService : IValidationLabService
         IValidationMetricConsistencyService metricConsistency,
         IValidationLeakageAuditor leakageAuditor,
         IValidationVerdictService verdictService,
-        IValidationHoldoutExclusivityService exclusivity,
         IValidationLaboratoryReadinessService readiness,
         IValidationTrainingPreflightService trainingPreflight,
         IValidationTrainingExecutionLeaseService trainingLease,
@@ -203,9 +202,10 @@ public sealed partial class ValidationLabService : IValidationLabService
         IValidationSelectionIntegrityService selectionIntegrity,
         IValidationParameterFingerprintService parameterFingerprint,
         IValidationRiskBasisService riskBasis,
-        IValidationPathMetricInputBuilder pathMetricBuilder,
-        IValidationTrainingCandleScopeFactory trainingCandleScopeFactory,
-        IValidationCandleAccessAuditRepository candleAccessAudits)
+        IValidationCandleAccessAuditRepository candleAccessAudits,
+        IValidationCandleAccessRecorder candleAccessRecorder,
+        IValidationTrainingScopeExecution trainingScopeExecution,
+        IValidationSegmentResultWriter segmentResultWriter)
     {
         _experiments = experiments;
         _trials = trials;
@@ -223,7 +223,6 @@ public sealed partial class ValidationLabService : IValidationLabService
         _metricConsistency = metricConsistency;
         _leakageAuditor = leakageAuditor;
         _verdictService = verdictService;
-        _exclusivity = exclusivity;
         _readiness = readiness;
         _trainingPreflight = trainingPreflight;
         _trainingLease = trainingLease;
@@ -232,9 +231,10 @@ public sealed partial class ValidationLabService : IValidationLabService
         _selectionIntegrity = selectionIntegrity;
         _parameterFingerprint = parameterFingerprint;
         _riskBasis = riskBasis;
-        _pathMetricBuilder = pathMetricBuilder;
-        _trainingCandleScopeFactory = trainingCandleScopeFactory;
         _candleAccessAudits = candleAccessAudits;
+        _candleAccessRecorder = candleAccessRecorder;
+        _trainingScopeExecution = trainingScopeExecution;
+        _segmentResultWriter = segmentResultWriter;
     }
 
     public async Task<ServiceResult<ValidationExperimentDto>> CreateExperimentAsync(
@@ -862,7 +862,7 @@ public sealed partial class ValidationLabService : IValidationLabService
                 cancellationToken);
 
             experiment.ValidationStrategyLabRunId = run.Id;
-            await PersistSegmentResultsAsync(
+            await _segmentResultWriter.BuildAndPersistSegmentResultsAsync(
                 experiment,
                 run.Id,
                 ValidationSegmentType.Validation,
@@ -2132,40 +2132,47 @@ public sealed partial class ValidationLabService : IValidationLabService
         };
     }
 
-    private static ValidationSegmentResultDto MapSegment(ValidationSegmentResult s) => new()
+    private static ValidationSegmentResultDto MapSegment(ValidationSegmentResult s)
     {
-        Id = s.Id,
-        SegmentType = s.SegmentType,
-        LayerType = s.LayerType,
-        StrategyLabRunId = s.StrategyLabRunId,
-        MetricsJson = s.MetricsJson,
-        CandleCount = s.CandleCount,
-        CandidateCount = s.CandidateCount,
-        ClosedTradeCount = s.ClosedTradeCount,
-        NetExpectancyR = s.NetExpectancyR,
-        ProfitFactor = s.ProfitFactor,
-        NetPnl = s.NetPnl,
-        NetReturnPercent = s.NetReturnPercent,
-        MaximumDrawdownPercent = s.MaximumDrawdownPercent,
-        TransactionCosts = s.TransactionCosts,
-        BoundaryCensoredCount = s.BoundaryCensoredCount,
-        ResultFingerprint = s.ResultFingerprint,
-        ResultCalculationVersion = s.ResultCalculationVersion,
-        GrossExpectancyR = s.GrossExpectancyR,
-        GrossProfitFactor = s.GrossProfitFactor,
-        NetProfitFactor = s.NetProfitFactor,
-        GrossAverageR = s.GrossAverageR,
-        NetAverageR = s.NetAverageR,
-        GrossPnl = s.GrossPnl,
-        PersistedCandidateRowCount = s.PersistedCandidateRowCount,
-        MetricIncludedCandidateCount = s.MetricIncludedCandidateCount,
-        MetricExcludedCandidateCount = s.MetricExcludedCandidateCount,
-        CrossSegmentOverlapCount = s.CrossSegmentOverlapCount,
-        GrossProfit = s.GrossProfit,
-        GrossLoss = s.GrossLoss,
-        NetProfit = s.NetProfit,
-        NetLoss = s.NetLoss
-    };
+        var metrics = DeserializeMetrics(s.MetricsJson);
+        return new ValidationSegmentResultDto
+        {
+            Id = s.Id,
+            SegmentType = s.SegmentType,
+            LayerType = s.LayerType,
+            StrategyLabRunId = s.StrategyLabRunId,
+            MetricsJson = s.MetricsJson,
+            CandleCount = s.CandleCount,
+            CandidateCount = s.CandidateCount,
+            ClosedTradeCount = s.ClosedTradeCount,
+            NetExpectancyR = s.NetExpectancyR,
+            ProfitFactor = s.ProfitFactor,
+            NetPnl = s.NetPnl,
+            NetReturnPercent = s.NetReturnPercent,
+            MaximumDrawdownPercent = s.MaximumDrawdownPercent,
+            TransactionCosts = s.TransactionCosts,
+            BoundaryCensoredCount = s.BoundaryCensoredCount,
+            ResultFingerprint = s.ResultFingerprint,
+            ResultCalculationVersion = s.ResultCalculationVersion,
+            GrossExpectancyR = s.GrossExpectancyR,
+            GrossProfitFactor = s.GrossProfitFactor,
+            NetProfitFactor = s.NetProfitFactor,
+            GrossAverageR = s.GrossAverageR,
+            NetAverageR = s.NetAverageR,
+            GrossPnl = s.GrossPnl,
+            PersistedCandidateRowCount = s.PersistedCandidateRowCount,
+            MetricIncludedCandidateCount = s.MetricIncludedCandidateCount,
+            MetricExcludedCandidateCount = s.MetricExcludedCandidateCount,
+            CrossSegmentOverlapCount = s.CrossSegmentOverlapCount,
+            GrossProfit = s.GrossProfit,
+            GrossLoss = s.GrossLoss,
+            NetProfit = s.NetProfit,
+            NetLoss = s.NetLoss,
+            MetricWarningBearingIncludedTradeCount =
+                metrics?.MetricWarningBearingIncludedTradeCount ?? 0,
+            MetricWarningCodes = metrics?.MetricWarningCodes
+        };
+    }
 
     private static ValidationParameterTrialDto MapTrial(ValidationParameterTrial t) => new()
     {
@@ -2196,7 +2203,7 @@ public sealed partial class ValidationLabService : IValidationLabService
         RecoverySource = t.RecoverySource
     };
 
-    private static DraftConfiguration ParseDraft(string json)
+    internal static DraftConfiguration ParseDraft(string json)
     {
         if (string.IsNullOrWhiteSpace(json) || json == "{}")
         {
@@ -2258,7 +2265,7 @@ public sealed partial class ValidationLabService : IValidationLabService
         return null;
     }
 
-    private static void TryParseFees(string? json, out decimal maker, out decimal taker)
+    internal static void TryParseFees(string? json, out decimal maker, out decimal taker)
     {
         maker = 0.0002m;
         taker = 0.0004m;
@@ -2277,7 +2284,7 @@ public sealed partial class ValidationLabService : IValidationLabService
         }
     }
 
-    private static void TryParseSlippage(string? json, out decimal slippage)
+    internal static void TryParseSlippage(string? json, out decimal slippage)
     {
         slippage = 0m;
         if (string.IsNullOrWhiteSpace(json)) return;
@@ -2415,327 +2422,7 @@ public sealed partial class ValidationLabService : IValidationLabService
         return refreshed;
     }
 
-    private async Task PersistSegmentResultsAsync(
-        ValidationExperiment experiment,
-        long labRunId,
-        ValidationSegmentType segmentType,
-        int candleCount,
-        CancellationToken cancellationToken)
-    {
-        var run = await _labRuns.GetByIdAsync(labRunId, cancellationToken);
-        var candidates = await _candidates.GetByRunIdAsync(labRunId, cancellationToken);
-        var persistedCount = candidates.Count;
-        var boundary = 0;
-        IReadOnlyList<StrategyResearchCandidate> metricsCandidates = candidates;
-        HoldoutExclusivityReport? exclusivityReport = null;
-        var exclusivityApplied = false;
-        var crossSegmentOverlapCount = 0;
-        var metricExcludedCount = 0;
-
-        if (experiment.ValidationStartUtc is not null)
-        {
-            boundary = ValidationMetricsMapper.CountBoundaryCensored(candidates, experiment.ValidationStartUtc.Value);
-            if (segmentType == ValidationSegmentType.Training)
-            {
-                metricsCandidates = ValidationMetricsMapper.ExcludeBoundaryFromMetrics(
-                    candidates, experiment.ValidationStartUtc.Value);
-            }
-        }
-
-        if (segmentType == ValidationSegmentType.Validation
-            && experiment.TrainingStrategyLabRunId is long trainRunId)
-        {
-            var trainCandidates = await _candidates.GetByRunIdAsync(trainRunId, cancellationToken);
-            exclusivityReport = _exclusivity.Apply(
-                trainCandidates,
-                candidates,
-                experiment.ValidationStartUtc);
-            var partition = _exclusivity.ApplyExclusivityToValidationCandidates(candidates, exclusivityReport);
-            metricsCandidates = partition.MetricIncluded;
-            exclusivityApplied = true;
-            crossSegmentOverlapCount = exclusivityReport.CrossSegmentOverlapCount;
-            metricExcludedCount = partition.AuditOnly.Count;
-
-            experiment.HoldoutExclusivityJson = ValidationHoldoutExclusivityService.Serialize(exclusivityReport);
-            experiment.HoldoutExclusivityPolicyVersion = ValidationHoldoutExclusivityVersions.Current;
-            experiment.CrossSegmentOverlapCount = crossSegmentOverlapCount;
-        }
-        else if (segmentType == ValidationSegmentType.Training)
-        {
-            metricExcludedCount = boundary;
-        }
-
-        var (summary, riskOnly, fullPipeline) = ParseResultSummary(run?.ResultSummaryJson);
-        ShadowPortfolioSummaryDto? recomputedRiskOnly = null;
-        ShadowPortfolioSummaryDto? recomputedFullPipeline = null;
-        var shadowRecomputed = false;
-        if (exclusivityApplied
-            && metricsCandidates.Count > 0
-            && TryRecomputeShadows(
-                experiment,
-                run,
-                metricsCandidates,
-                out recomputedRiskOnly,
-                out recomputedFullPipeline))
-        {
-            shadowRecomputed = true;
-            riskOnly = recomputedRiskOnly;
-            fullPipeline = recomputedFullPipeline;
-        }
-
-        foreach (ValidationLayerType layer in Enum.GetValues(typeof(ValidationLayerType)))
-        {
-            LayerSegmentMetrics metrics;
-            var useV13 = string.Equals(
-                experiment.ValidationMetricsVersion,
-                ValidationMetricsContract.VersionV13,
-                StringComparison.OrdinalIgnoreCase);
-
-            if (useV13)
-            {
-                var draft = ParseDraft(experiment.DraftConfigurationJson);
-                var costModel = new ValidationPathMetricCostModel
-                {
-                    // Raw Strategy Lab outcomes use taker for both legs (RawOutcomeSimulator).
-                    EntryFeeRate = draft.TakerFeeRate,
-                    ExitFeeRate = draft.TakerFeeRate,
-                    SlippagePercent = draft.SlippagePercent,
-                    ContractMultiplier = 1m
-                };
-                var pathTrades = _pathMetricBuilder.Build(
-                    experiment.Id,
-                    segmentType,
-                    layer,
-                    metricsCandidates,
-                    riskOnly,
-                    fullPipeline,
-                    costModel);
-                metrics = ValidationMetricsMapper.FromPathTradesV13(
-                    pathTrades,
-                    candleCount,
-                    metricsCandidates.Count,
-                    boundary,
-                    layer,
-                    _riskBasis);
-            }
-            else if (layer is ValidationLayerType.RiskOnly or ValidationLayerType.FullPipeline)
-            {
-                if (exclusivityApplied)
-                {
-                    if (shadowRecomputed
-                        && ((layer == ValidationLayerType.RiskOnly && riskOnly is not null)
-                            || (layer == ValidationLayerType.FullPipeline && fullPipeline is not null)))
-                    {
-                        metrics = ValidationMetricsMapper.FromStrategyLabSummary(
-                            summary,
-                            candleCount,
-                            metricsCandidates.Count,
-                            boundary,
-                            riskOnly,
-                            fullPipeline,
-                            layer);
-                    }
-                    else
-                    {
-                        metrics = ValidationMetricsMapper.FromCandidates(
-                            metricsCandidates, candleCount, boundary, layer);
-                    }
-                }
-                else
-                {
-                    metrics = ValidationMetricsMapper.FromStrategyLabSummary(
-                        summary,
-                        candleCount,
-                        metricsCandidates.Count,
-                        boundary,
-                        riskOnly,
-                        fullPipeline,
-                        layer);
-                }
-            }
-            else
-            {
-                var useExactCandidates =
-                    exclusivityApplied
-                    || string.Equals(
-                        experiment.ValidationMetricsVersion,
-                        ValidationMetricsContract.VersionV12,
-                        StringComparison.OrdinalIgnoreCase);
-
-                metrics = ValidationMetricsMapper.FromCandidates(
-                    metricsCandidates, candleCount, boundary, layer);
-                if (!useExactCandidates
-                    && layer == ValidationLayerType.RawStrategy
-                    && summary is not null)
-                {
-                    metrics = ValidationMetricsMapper.FromStrategyLabSummary(
-                        summary, candleCount, metricsCandidates.Count, boundary, riskOnly, fullPipeline, layer);
-                }
-            }
-
-            metrics.PersistedCandidateRowCount = persistedCount;
-            metrics.MetricIncludedCandidateCount = metricsCandidates.Count;
-            metrics.MetricExcludedCandidateCount = metricExcludedCount;
-            metrics.CrossSegmentOverlapCount = crossSegmentOverlapCount;
-            if (segmentType == ValidationSegmentType.Training)
-            {
-                // Training population after boundary censor = TrainingIncluded.
-                metrics.MetricIncludedCandidateCount = metricsCandidates.Count;
-            }
-
-            var result = new ValidationSegmentResult
-            {
-                ValidationExperimentId = experiment.Id,
-                SegmentType = segmentType,
-                LayerType = layer,
-                StrategyLabRunId = labRunId,
-                MetricsJson = ValidationMetricsMapper.SerializeMetrics(metrics),
-                CandleCount = metrics.CandleCount,
-                CandidateCount = metrics.CandidateCount,
-                ClosedTradeCount = metrics.ClosedTradeCount,
-                NetExpectancyR = metrics.NetExpectancyR,
-                ProfitFactor = metrics.NetProfitFactor ?? metrics.ProfitFactor,
-                NetPnl = metrics.NetPnl,
-                NetReturnPercent = metrics.NetReturnPercent,
-                MaximumDrawdownPercent = metrics.MaximumRealizedDrawdownPercent,
-                TransactionCosts = metrics.TransactionCosts,
-                BoundaryCensoredCount = boundary,
-                ResultFingerprint = ParameterFingerprint(new Dictionary<string, string>
-                {
-                    ["segment"] = segmentType.ToString(),
-                    ["layer"] = layer.ToString(),
-                    ["closed"] = metrics.ClosedTradeCount.ToString(),
-                    ["net"] = (metrics.NetPnl ?? 0m).ToString("G29"),
-                    ["included"] = metricsCandidates.Count.ToString()
-                }),
-                CreatedAtUtc = DateTime.UtcNow,
-                ResultCalculationVersion = experiment.ValidationMetricsVersion
-                    ?? ValidationMetricsContract.VersionV12,
-                GrossExpectancyR = metrics.GrossExpectancyR,
-                GrossProfitFactor = metrics.GrossProfitFactor,
-                NetProfitFactor = metrics.NetProfitFactor ?? metrics.ProfitFactor,
-                GrossAverageR = metrics.GrossAverageR ?? metrics.AverageR,
-                NetAverageR = metrics.NetAverageR,
-                GrossPnl = metrics.GrossPnl,
-                PersistedCandidateRowCount = persistedCount,
-                MetricIncludedCandidateCount = metricsCandidates.Count,
-                MetricExcludedCandidateCount = metricExcludedCount,
-                CrossSegmentOverlapCount = crossSegmentOverlapCount,
-                GrossProfit = metrics.GrossProfit,
-                GrossLoss = metrics.GrossLoss,
-                NetProfit = metrics.NetProfit,
-                NetLoss = metrics.NetLoss
-            };
-
-            await _segments.UpsertAsync(result, cancellationToken);
-        }
-
-        if (segmentType == ValidationSegmentType.Training)
-        {
-            experiment.BoundaryCensoredCount = boundary;
-        }
-    }
-
-    private bool TryRecomputeShadows(
-        ValidationExperiment experiment,
-        StrategyLabRun? run,
-        IReadOnlyList<StrategyResearchCandidate> metricIncluded,
-        out ShadowPortfolioSummaryDto? riskOnly,
-        out ShadowPortfolioSummaryDto? fullPipeline)
-    {
-        riskOnly = null;
-        fullPipeline = null;
-        try
-        {
-            var snapshotJson = run?.RiskProfileSnapshotJson ?? experiment.FrozenRiskSnapshotJson;
-            if (string.IsNullOrWhiteSpace(snapshotJson))
-            {
-                return false;
-            }
-
-            var snapshot = JsonSerializer.Deserialize<RiskProfileSnapshotDto>(snapshotJson, JsonOptions);
-            if (snapshot is null)
-            {
-                return false;
-            }
-
-            var draft = ParseDraft(experiment.DraftConfigurationJson);
-            var maker = draft.MakerFeeRate;
-            var taker = draft.TakerFeeRate;
-            var slippageBps = draft.SlippagePercent > 0 ? draft.SlippagePercent * 100m : 0m;
-            if (!string.IsNullOrWhiteSpace(experiment.FrozenCostModelSnapshotJson))
-            {
-                TryParseFees(experiment.FrozenCostModelSnapshotJson, out maker, out taker);
-                TryParseSlippage(experiment.FrozenCostModelSnapshotJson, out var slipPct);
-                if (slipPct > 0) slippageBps = slipPct * 100m;
-            }
-
-            var costSnapshot = StrategyLabCostSnapshot.CreateDefault(maker, taker, slippageBps);
-            var rules = RuleSetFromSnapshot(snapshot);
-            var clones = CloneCandidatesForShadow(metricIncluded);
-            if (clones.Count == 0)
-            {
-                return false;
-            }
-
-            var shadow = ChronologicalShadowProcessor.Process(
-                clones,
-                snapshot,
-                rules,
-                new StrategyLabRiskObserver(),
-                experiment.InitialBalance > 0 ? experiment.InitialBalance : (run?.InitialBalance ?? 10000m),
-                costSnapshot);
-
-            riskOnly = shadow.RiskOnlySummary;
-            fullPipeline = shadow.FullPipelineSummary;
-            return riskOnly is not null || fullPipeline is not null;
-        }
-        catch
-        {
-            riskOnly = null;
-            fullPipeline = null;
-            return false;
-        }
-    }
-
-    private static RiskRuleSet RuleSetFromSnapshot(RiskProfileSnapshotDto snap) =>
-        new()
-        {
-            MaxRiskPerTradePercent = snap.RiskPerTradePercent > 0 ? snap.RiskPerTradePercent : 0.5m,
-            MaxDailyLossPercent = snap.MaxDailyLossPercent > 0 ? snap.MaxDailyLossPercent : 2m,
-            MaxWeeklyLossPercent = snap.MaxDrawdownPercent > 0 ? snap.MaxDrawdownPercent : 5m,
-            MaxOpenPositions = snap.MaxConcurrentPositions > 0 ? snap.MaxConcurrentPositions : 2,
-            MaxExposurePerSymbolPercent = snap.LegacyMaxExposurePerSymbolPercent
-                ?? snap.MaxNotionalExposurePerSymbolPercent
-                ?? 25m,
-            MaxTotalExposurePercent = snap.LegacyMaxTotalExposurePercent
-                ?? snap.MaxTotalNotionalExposurePercent
-                ?? 50m,
-            MaxCorrelatedExposurePercent = 50m,
-            MaxConsecutiveLosses = 3,
-            MinConfidenceScore = snap.PolicyMinimumConfidence ?? 80m,
-            MaxSpreadPercent = 0.05m,
-            MaxAtrPercent = 2.5m,
-            EmergencyStopEnabled = false,
-            RequireStopLoss = true,
-            MinRewardRiskRatio = snap.MinimumRewardRisk > 0 ? snap.MinimumRewardRisk : 1.2m
-        };
-
-    private static List<StrategyResearchCandidate> CloneCandidatesForShadow(
-        IReadOnlyList<StrategyResearchCandidate> source)
-    {
-        try
-        {
-            var json = JsonSerializer.Serialize(source, JsonOptions);
-            return JsonSerializer.Deserialize<List<StrategyResearchCandidate>>(json, JsonOptions) ?? [];
-        }
-        catch
-        {
-            return [];
-        }
-    }
-
-    private static (StrategyLabPerformanceSummaryDto? Summary, ShadowPortfolioSummaryDto? RiskOnly, ShadowPortfolioSummaryDto? FullPipeline)
+    internal static (StrategyLabPerformanceSummaryDto? Summary, ShadowPortfolioSummaryDto? RiskOnly, ShadowPortfolioSummaryDto? FullPipeline)
         ParseResultSummary(string? json)
     {
         if (string.IsNullOrWhiteSpace(json) || json == "{}")
@@ -2916,7 +2603,7 @@ public sealed partial class ValidationLabService : IValidationLabService
         }
     }
 
-    private sealed class DraftConfiguration
+    internal sealed class DraftConfiguration
     {
         public Dictionary<string, string> Parameters { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public StrategyLabObservationSettingsDto? ObservationSettings { get; set; }
