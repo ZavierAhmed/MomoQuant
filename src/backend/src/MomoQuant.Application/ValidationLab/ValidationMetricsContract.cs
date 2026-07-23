@@ -15,14 +15,20 @@ public static class ValidationMetricsContract
     public const string VersionV12 = "ValidationMetrics/v1.2";
     public const string VersionV13 = "ValidationMetrics/v1.3";
     public const string VersionV131 = "ValidationMetrics/v1.3.1";
+    public const string VersionV132 = "ValidationMetrics/v1.3.2";
     public const string VersionV11 = "ValidationMetrics/v1.1";
     public const string VersionV1Legacy = "ValidationMetrics/v1";
-    public const string Current = VersionV131;
+    public const string Current = VersionV132;
 
-    /// <summary>True for ValidationMetrics/v1.3 and v1.3.1 path-metric contracts.</summary>
+    /// <summary>True for ValidationMetrics/v1.3, v1.3.1, and v1.3.2 path-metric contracts.</summary>
     public static bool IsPathMetricsVersion(string? version) =>
         string.Equals(version, VersionV13, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(version, VersionV131, StringComparison.OrdinalIgnoreCase);
+        || string.Equals(version, VersionV131, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(version, VersionV132, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True when new calculations should use ValidationMetrics/v1.3.2 population aggregation.</summary>
+    public static bool IsPopulationPathMetricsVersion(string? version) =>
+        string.Equals(version, VersionV132, StringComparison.OrdinalIgnoreCase);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -355,7 +361,7 @@ public static class ValidationMetricsContract
                 "ValidationRiskBasis/v1:PathTrade GrossR=GrossPnl/DerivedRisk; NetR=NetPnl/DerivedRisk",
             ProfitFactorCalculationMode = "SeparateGrossNet",
             CostModelVersion = "PathSpecificTransactionCosts",
-            MetricsVersion = Current,
+            MetricsVersion = VersionV131,
             RiskBasisVersion = ValidationRiskBasisService.Version,
             RiskBasisType = basisType ?? (layer is ValidationLayerType.RawStrategy or ValidationLayerType.ConfidenceQualified
                 ? ValidationRiskBasisType.NormalizedOneUnit
@@ -368,6 +374,359 @@ public static class ValidationMetricsContract
             MetricWarningBearingIncludedTradeCount = warningBearingIncluded.Count,
             MetricWarningCodes = warningCodes.Count == 0 ? null : warningCodes
         };
+    }
+
+    /// <summary>
+    /// ValidationMetrics/v1.3.2 — population-first path aggregation with deterministic aggregate status.
+    /// </summary>
+    public static LayerSegmentMetrics FromPathTradesV132(
+        IReadOnlyList<ValidationPathTradeMetricInput> trades,
+        int candleCount,
+        int candidatePopulationCount,
+        int boundaryEligibleCandidateCount,
+        int boundaryCensored,
+        ValidationLayerType layer,
+        IValidationRiskBasisService riskBasis,
+        IValidationRiskBasisStatusReducer? statusReducer = null)
+    {
+        statusReducer ??= new ValidationRiskBasisStatusReducer();
+
+        var exclusionByReason = new Dictionary<string, int>(StringComparer.Ordinal);
+        var warningByCode = new Dictionary<string, int>(StringComparer.Ordinal);
+        var includedStatuses = new List<ValidationRiskBasisValidationStatus>();
+
+        var included = 0;
+        var excluded = 0;
+        var warningBearing = 0;
+        var closedOutcome = 0;
+
+        var monetaryGross = new List<decimal>();
+        var monetaryNet = new List<decimal>();
+        var monetaryCosts = new List<decimal>();
+        var grossRs = new List<decimal>();
+        var netRs = new List<decimal>();
+
+        var winners = 0;
+        var losers = 0;
+        var neutrals = 0;
+
+        ValidationRiskBasisType? basisType = null;
+        var exclusionReasons = new List<string>();
+
+        foreach (var trade in trades)
+        {
+            var basis = riskBasis.ComputePathTradeBasis(trade);
+
+            if (trade.MetricInclusionStatus == ValidationPathMetricInclusionStatus.Excluded)
+            {
+                excluded++;
+                var reason = string.IsNullOrWhiteSpace(trade.MetricExclusionReason)
+                    ? "Unspecified"
+                    : trade.MetricExclusionReason!;
+                exclusionByReason[reason] = exclusionByReason.TryGetValue(reason, out var n) ? n + 1 : 1;
+                continue;
+            }
+
+            if (trade.MetricInclusionStatus != ValidationPathMetricInclusionStatus.Included)
+            {
+                continue;
+            }
+
+            included++;
+            includedStatuses.Add(basis.Status);
+            basisType ??= basis.RiskBasisType;
+
+            if (trade.MetricWarningCodes is { Count: > 0 })
+            {
+                warningBearing++;
+                foreach (var code in trade.MetricWarningCodes.Where(c => !string.IsNullOrWhiteSpace(c)))
+                {
+                    warningByCode[code] = warningByCode.TryGetValue(code, out var wn) ? wn + 1 : 1;
+                }
+            }
+
+            var isClosed = IsClosedOutcome(trade);
+            if (isClosed)
+            {
+                closedOutcome++;
+            }
+
+            var monetaryEligible = isClosed && IsFiniteMonetary(trade);
+            // PersistedRiskMismatch may remain in monetary when path PnL is independently trustworthy.
+            // Invalid risk may remain when inclusion is Included and PnL evidence is finite.
+            if (monetaryEligible && basis.Status != ValidationRiskBasisValidationStatus.NotAvailable)
+            {
+                monetaryGross.Add(trade.GrossPnl);
+                monetaryNet.Add(trade.NetPnl);
+                monetaryCosts.Add(trade.TotalTransactionCosts);
+
+                if (trade.NetPnl > 0m) winners++;
+                else if (trade.NetPnl < 0m) losers++;
+                else neutrals++;
+            }
+
+            // PersistedRiskMismatch must be excluded from GrossR/NetR unless compatibility resolved.
+            // Only Valid basis with computed R multiples on closed outcomes enter R populations.
+            if (isClosed
+                && basis.Status == ValidationRiskBasisValidationStatus.Valid
+                && basis.GrossRMultiple is decimal gR)
+            {
+                grossRs.Add(gR);
+            }
+            else if (isClosed && basis.Status != ValidationRiskBasisValidationStatus.Valid)
+            {
+                exclusionReasons.Add($"{trade.CandidateFingerprint}:{basis.Status}");
+            }
+
+            if (isClosed
+                && basis.Status == ValidationRiskBasisValidationStatus.Valid
+                && basis.NetRMultiple is decimal nR)
+            {
+                netRs.Add(nR);
+            }
+        }
+
+        var population = new ValidationMetricPopulationSummary
+        {
+            CandidatePopulationCount = candidatePopulationCount,
+            BoundaryEligibleCandidateCount = boundaryEligibleCandidateCount,
+            PathInputPopulationCount = trades.Count,
+            IncludedPathInputCount = included,
+            ExcludedPathInputCount = excluded,
+            WarningBearingIncludedCount = warningBearing,
+            ClosedOutcomePopulationCount = closedOutcome,
+            MonetaryPnlPopulationCount = monetaryNet.Count,
+            GrossRPopulationCount = grossRs.Count,
+            NetRPopulationCount = netRs.Count,
+            WinnerPopulationCount = winners,
+            LoserPopulationCount = losers,
+            NeutralPopulationCount = neutrals,
+            ExclusionCountsByReason = new SortedDictionary<string, int>(exclusionByReason, StringComparer.Ordinal),
+            WarningCountsByCode = new SortedDictionary<string, int>(warningByCode, StringComparer.Ordinal),
+            PopulationContractVersion = ValidationMetricPopulationSummary.Version
+        };
+
+        var aggregateStatus = statusReducer.Reduce(includedStatuses);
+
+        var grossPnl = monetaryGross.Sum();
+        var netPnl = monetaryNet.Sum();
+        var costs = monetaryCosts.Sum();
+        if (costs < 0m) costs = 0m;
+
+        var grossProfit = monetaryGross.Where(x => x > 0m).Sum();
+        var grossLoss = monetaryGross.Where(x => x < 0m).Sum(x => Math.Abs(x));
+        var netProfit = monetaryNet.Where(x => x > 0m).Sum();
+        var netLoss = monetaryNet.Where(x => x < 0m).Sum(x => Math.Abs(x));
+        var grossPf = ComputeProfitFactor(grossProfit, grossLoss);
+        var netPf = ComputeProfitFactor(netProfit, netLoss);
+
+        var grossAvg = AverageOrNull(grossRs);
+        var netAvg = AverageOrNull(netRs);
+
+        var monetaryApplicability = ResolveApplicability(
+            population.MonetaryPnlPopulationCount,
+            hasInvalid: includedStatuses.Any(ValidationRiskBasisStatusReducer.IsInvalidRiskBasisBand),
+            hasMismatch: includedStatuses.Contains(ValidationRiskBasisValidationStatus.PersistedRiskMismatch));
+        var grossRApplicability = ResolveRApplicability(
+            population.GrossRPopulationCount,
+            includedStatuses);
+        var netRApplicability = ResolveRApplicability(
+            population.NetRPopulationCount,
+            includedStatuses);
+        var grossPfApplicability = monetaryApplicability;
+        var netPfApplicability = monetaryApplicability;
+
+        var warningCodes = warningByCode.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
+
+        return new LayerSegmentMetrics
+        {
+            CandleCount = candleCount,
+            CandidateCount = candidatePopulationCount,
+            OpportunityRatePer1000Candles = candleCount > 0
+                ? Math.Round(candidatePopulationCount * 1000m / candleCount, 4)
+                : 0m,
+            ClosedTradeCount = population.ClosedOutcomePopulationCount,
+            WinnerCount = winners,
+            LoserCount = losers,
+            BreakevenCount = neutrals,
+            WinRate = population.MonetaryPnlPopulationCount > 0
+                ? Math.Round((decimal)winners / population.MonetaryPnlPopulationCount * 100m, 4)
+                : null,
+            GrossExpectancyR = grossRApplicability == ValidationMetricApplicability.Evaluated ? grossAvg : null,
+            NetExpectancyR = netRApplicability == ValidationMetricApplicability.Evaluated ? netAvg : null,
+            GrossAverageR = grossRApplicability == ValidationMetricApplicability.Evaluated ? grossAvg : null,
+            NetAverageR = netRApplicability == ValidationMetricApplicability.Evaluated ? netAvg : null,
+            AverageR = grossRApplicability == ValidationMetricApplicability.Evaluated ? grossAvg : null,
+            GrossPnl = monetaryApplicability == ValidationMetricApplicability.Evaluated ? grossPnl : null,
+            TransactionCosts = monetaryApplicability == ValidationMetricApplicability.Evaluated ? costs : null,
+            NetPnl = monetaryApplicability == ValidationMetricApplicability.Evaluated ? netPnl : null,
+            GrossProfit = monetaryApplicability == ValidationMetricApplicability.Evaluated ? grossProfit : null,
+            GrossLoss = monetaryApplicability == ValidationMetricApplicability.Evaluated ? grossLoss : null,
+            NetProfit = monetaryApplicability == ValidationMetricApplicability.Evaluated ? netProfit : null,
+            NetLoss = monetaryApplicability == ValidationMetricApplicability.Evaluated ? netLoss : null,
+            GrossProfitFactor = grossPfApplicability == ValidationMetricApplicability.Evaluated
+                ? grossPf.NumericValue
+                : null,
+            NetProfitFactor = netPfApplicability == ValidationMetricApplicability.Evaluated
+                ? netPf.NumericValue
+                : null,
+            ProfitFactor = netPfApplicability == ValidationMetricApplicability.Evaluated
+                ? netPf.NumericValue
+                : null,
+            GrossProfitFactorStatus = grossPf.Status,
+            NetProfitFactorStatus = netPf.Status,
+            ProfitFactorStatus = netPf.Status,
+            BoundaryCensoredCount = boundaryCensored,
+            MetricIncludedCandidateCount = population.IncludedPathInputCount,
+            MetricExcludedCandidateCount = population.ExcludedPathInputCount,
+            ExpectancyCalculationMode =
+                "ValidationMetrics/v1.3.2:Population GrossR=GrossRPopulation; NetR=NetRPopulation; W/L=MonetaryNetPnlSign",
+            ProfitFactorCalculationMode = "MonetaryPnlPopulation SeparateGrossNet",
+            CostModelVersion = "PathSpecificTransactionCosts",
+            MetricsVersion = VersionV132,
+            RiskBasisVersion = ValidationRiskBasisService.Version,
+            RiskBasisType = basisType ?? (layer is ValidationLayerType.RawStrategy or ValidationLayerType.ConfidenceQualified
+                ? ValidationRiskBasisType.NormalizedOneUnit
+                : ValidationRiskBasisType.ShadowPortfolioPosition),
+            RiskBasisValidationStatus = aggregateStatus,
+            NetExpectancyApplicability = netRApplicability,
+            NetExpectancyIncludedTradeCount = population.NetRPopulationCount,
+            NetExpectancyExcludedTradeCount =
+                population.IncludedPathInputCount - population.NetRPopulationCount,
+            NetExpectancyExclusionReasons = exclusionReasons
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToList(),
+            MetricWarningBearingIncludedTradeCount = warningBearing,
+            MetricWarningCodes = warningCodes.Count == 0 ? null : warningCodes,
+            Population = population,
+            MonetaryPnlApplicability = monetaryApplicability,
+            GrossProfitFactorApplicability = grossPfApplicability,
+            NetProfitFactorApplicability = netPfApplicability,
+            GrossExpectancyApplicability = grossRApplicability,
+            CandidatePopulationCount = population.CandidatePopulationCount,
+            BoundaryEligibleCandidateCount = population.BoundaryEligibleCandidateCount,
+            PathInputPopulationCount = population.PathInputPopulationCount,
+            IncludedPathInputCount = population.IncludedPathInputCount,
+            ExcludedPathInputCount = population.ExcludedPathInputCount,
+            ClosedOutcomePopulationCount = population.ClosedOutcomePopulationCount,
+            MonetaryPnlPopulationCount = population.MonetaryPnlPopulationCount,
+            GrossRPopulationCount = population.GrossRPopulationCount,
+            NetRPopulationCount = population.NetRPopulationCount,
+            WinnerPopulationCount = population.WinnerPopulationCount,
+            LoserPopulationCount = population.LoserPopulationCount,
+            NeutralPopulationCount = population.NeutralPopulationCount,
+            PopulationContractVersion = population.PopulationContractVersion,
+            ExclusionCountsByReason = population.ExclusionCountsByReason,
+            WarningCountsByCode = population.WarningCountsByCode
+        };
+    }
+
+    public static Dictionary<string, string> BuildPathResultFingerprintFields(
+        ValidationSegmentType segment,
+        ValidationLayerType layer,
+        LayerSegmentMetrics metrics)
+    {
+        static string Dec(decimal? v) =>
+            (v ?? 0m).ToString("G29", System.Globalization.CultureInfo.InvariantCulture);
+
+        return new Dictionary<string, string>
+        {
+            ["segment"] = segment.ToString(),
+            ["layer"] = layer.ToString(),
+            ["metricVersion"] = metrics.MetricsVersion,
+            ["candidatePopulation"] = (metrics.CandidatePopulationCount ?? metrics.CandidateCount)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["includedPath"] = (metrics.IncludedPathInputCount ?? metrics.MetricIncludedCandidateCount)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["excludedPath"] = (metrics.ExcludedPathInputCount ?? metrics.MetricExcludedCandidateCount)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["closedOutcome"] = (metrics.ClosedOutcomePopulationCount ?? metrics.ClosedTradeCount)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["pnlPopulation"] = (metrics.MonetaryPnlPopulationCount ?? 0)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["grossRPopulation"] = (metrics.GrossRPopulationCount ?? 0)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["netRPopulation"] = (metrics.NetRPopulationCount ?? 0)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["netPnl"] = Dec(metrics.NetPnl),
+            ["grossExpectancyR"] = Dec(metrics.GrossExpectancyR),
+            ["netExpectancyR"] = Dec(metrics.NetExpectancyR),
+            ["aggregateStatus"] = metrics.RiskBasisValidationStatus?.ToString() ?? string.Empty
+        };
+    }
+
+    private static bool IsClosedOutcome(ValidationPathTradeMetricInput trade)
+    {
+        if (trade.ExitPrice is null)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(trade.Outcome))
+        {
+            return true;
+        }
+
+        return !string.Equals(trade.Outcome, "Open", StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(trade.Outcome, "Pending", StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(trade.Outcome, "Unresolved", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsFiniteMonetary(ValidationPathTradeMetricInput trade) =>
+        IsFinite(trade.GrossPnl) && IsFinite(trade.NetPnl) && IsFinite(trade.TotalTransactionCosts);
+
+    private static bool IsFinite(decimal value) =>
+        value != decimal.MaxValue && value != decimal.MinValue;
+
+    private static ValidationMetricApplicability ResolveApplicability(
+        int populationCount,
+        bool hasInvalid,
+        bool hasMismatch)
+    {
+        if (populationCount > 0)
+        {
+            return ValidationMetricApplicability.Evaluated;
+        }
+
+        if (hasInvalid)
+        {
+            return ValidationMetricApplicability.InvalidRiskBasis;
+        }
+
+        if (hasMismatch)
+        {
+            return ValidationMetricApplicability.InvalidRiskBasis;
+        }
+
+        return ValidationMetricApplicability.InsufficientSample;
+    }
+
+    private static ValidationMetricApplicability ResolveRApplicability(
+        int populationCount,
+        IReadOnlyList<ValidationRiskBasisValidationStatus> includedStatuses)
+    {
+        if (populationCount > 0)
+        {
+            return ValidationMetricApplicability.Evaluated;
+        }
+
+        if (includedStatuses.Count == 0)
+        {
+            return ValidationMetricApplicability.InsufficientSample;
+        }
+
+        if (includedStatuses.Any(ValidationRiskBasisStatusReducer.IsInvalidRiskBasisBand))
+        {
+            return ValidationMetricApplicability.InvalidRiskBasis;
+        }
+
+        if (includedStatuses.Contains(ValidationRiskBasisValidationStatus.PersistedRiskMismatch))
+        {
+            return ValidationMetricApplicability.InvalidRiskBasis;
+        }
+
+        return ValidationMetricApplicability.InsufficientSample;
     }
 
     public static IReadOnlyList<StrategyResearchCandidate> SelectClosedTradesPublic(

@@ -214,7 +214,8 @@ public static class ValidationTrainingProgressCalculator
         var terminal = trials.Count(t => IsTerminal(t.Status));
         var completed = trials.Count(t =>
             t.Status is ValidationTrialStatus.Completed or ValidationTrialStatus.GuardrailRejected);
-        var failed = trials.Count(t => t.Status == ValidationTrialStatus.Failed);
+        var failed = trials.Count(t =>
+            t.Status is ValidationTrialStatus.Failed or ValidationTrialStatus.LeakageFailed);
         var interrupted = trials.Count(t => t.Status == ValidationTrialStatus.Interrupted);
         var running = trials.Count(t => t.Status == ValidationTrialStatus.Running);
         var pending = trials.Count(t => t.Status == ValidationTrialStatus.Pending);
@@ -253,6 +254,7 @@ public static class ValidationTrainingProgressCalculator
         status is ValidationTrialStatus.Completed
             or ValidationTrialStatus.GuardrailRejected
             or ValidationTrialStatus.Failed
+            or ValidationTrialStatus.LeakageFailed
             or ValidationTrialStatus.Interrupted;
 }
 

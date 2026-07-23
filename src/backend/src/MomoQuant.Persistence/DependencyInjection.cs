@@ -29,7 +29,10 @@ public static class DependencyInjection
         services.AddScoped<IExchangeRepository, ExchangeRepository>();
         services.AddScoped<ISymbolRepository, SymbolRepository>();
         services.AddScoped<CandleRepository>();
-        services.AddScoped<ICandleRepository, TrainingBoundaryCandleRepository>();
+        services.AddScoped<ICandleRepository>(sp =>
+            new TrainingBoundaryCandleRepository(
+                sp.GetRequiredService<CandleRepository>(),
+                sp.GetService<MomoQuant.Application.Research.IResearchExecutionContextAccessor>()));
         services.AddScoped<IUnscopedCandleReader>(sp =>
             (IUnscopedCandleReader)sp.GetRequiredService<ICandleRepository>());
         services.AddScoped<IMarketDataImportRepository, MarketDataImportRepository>();

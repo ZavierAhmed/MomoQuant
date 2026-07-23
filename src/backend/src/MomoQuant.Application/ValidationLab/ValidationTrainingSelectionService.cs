@@ -59,6 +59,7 @@ public sealed class ValidationTrainingSelectionService : IValidationTrainingSele
             t.Status is ValidationTrialStatus.Completed
                 or ValidationTrialStatus.GuardrailRejected
                 or ValidationTrialStatus.Failed
+                or ValidationTrialStatus.LeakageFailed
                 or ValidationTrialStatus.Interrupted);
         var eligible = trials.Count(t =>
             string.Equals(t.GuardrailDecision, "Passed", StringComparison.OrdinalIgnoreCase)
@@ -72,7 +73,8 @@ public sealed class ValidationTrainingSelectionService : IValidationTrainingSele
             TerminalTrialCount = terminal,
             GuardrailPassedTrialCount = eligible,
             GuardrailRejectedTrialCount = trials.Count(t => t.Status == ValidationTrialStatus.GuardrailRejected),
-            FailedTrialCount = trials.Count(t => t.Status == ValidationTrialStatus.Failed),
+            FailedTrialCount = trials.Count(t =>
+                t.Status is ValidationTrialStatus.Failed or ValidationTrialStatus.LeakageFailed),
             InterruptedTrialCount = trials.Count(t => t.Status == ValidationTrialStatus.Interrupted),
             CancelledTrialCount = 0,
             EligibleTrialCount = eligible,

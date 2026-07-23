@@ -184,6 +184,8 @@ public sealed class Milestone230AActivationTests : IClassFixture<MomoQuantWebApp
         var marker = $"adv-{Guid.NewGuid():N}";
         var entity = new ValidationCandleAccessAudit
         {
+            AccessEventId = Guid.NewGuid(),
+            ScopeExecutionId = Guid.NewGuid(),
             ValidationExperimentId = 23_00_042,
             TrialNumber = 1,
             CallerComponent = $"AdversarialTrainer:{marker}",
@@ -193,6 +195,9 @@ public sealed class Milestone230AActivationTests : IClassFixture<MomoQuantWebApp
             AccessedAtUtc = DateTime.UtcNow,
             WasDenied = true,
             DenialReason = "BoundaryCrossed",
+            FlushAttemptCount = 1,
+            PersistedAtUtc = DateTime.UtcNow,
+            RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion,
             CreatedAtUtc = DateTime.UtcNow
         };
         await audits.AddRangeAsync([entity]);
@@ -359,6 +364,8 @@ public sealed class Milestone230AActivationTests : IClassFixture<MomoQuantWebApp
         [
             new ValidationCandleAccessAudit
             {
+                AccessEventId = Guid.NewGuid(),
+                ScopeExecutionId = Guid.NewGuid(),
                 ValidationExperimentId = 23_00_043,
                 CallerComponent = "PathMetricIndependenceFixture",
                 ReturnedCandleCount = 0,
@@ -366,6 +373,9 @@ public sealed class Milestone230AActivationTests : IClassFixture<MomoQuantWebApp
                 WasDenied = false,
                 DenialReason =
                     $"{marker}|roNet={roMetrics.NetExpectancyR}|fpNet={fpMetrics.NetExpectancyR}|roQty={ro[0].Quantity}|fpQty={fp[0].Quantity}",
+                FlushAttemptCount = 1,
+                PersistedAtUtc = DateTime.UtcNow,
+                RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion,
                 CreatedAtUtc = DateTime.UtcNow
             }
         ]);

@@ -80,6 +80,25 @@ public static class ValidationMetricsMapper
         ValidationMetricsContract.FromPathTradesV13(
             trades, candleCount, candidateCount, boundaryCensored, layer, riskBasis);
 
+    public static LayerSegmentMetrics FromPathTradesV132(
+        IReadOnlyList<ValidationPathTradeMetricInput> trades,
+        int candleCount,
+        int candidatePopulationCount,
+        int boundaryEligibleCandidateCount,
+        int boundaryCensored,
+        ValidationLayerType layer,
+        IValidationRiskBasisService riskBasis,
+        IValidationRiskBasisStatusReducer? statusReducer = null) =>
+        ValidationMetricsContract.FromPathTradesV132(
+            trades,
+            candleCount,
+            candidatePopulationCount,
+            boundaryEligibleCandidateCount,
+            boundaryCensored,
+            layer,
+            riskBasis,
+            statusReducer);
+
     public static string SerializeMetrics(LayerSegmentMetrics m) =>
         ValidationMetricsContract.SerializeMetrics(m);
 }

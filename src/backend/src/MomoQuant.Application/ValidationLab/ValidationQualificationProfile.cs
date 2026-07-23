@@ -99,6 +99,31 @@ public sealed class LayerSegmentMetrics
 
     /// <summary>Distinct warning codes observed on included trades (never exclusion reasons).</summary>
     public IReadOnlyList<string>? MetricWarningCodes { get; set; }
+
+    /// <summary>Optional ValidationMetricPopulation/v1 summary (ValidationMetrics/v1.3.2+).</summary>
+    public ValidationMetricPopulationSummary? Population { get; set; }
+
+    public ValidationMetricApplicability? MonetaryPnlApplicability { get; set; }
+    public ValidationMetricApplicability? GrossProfitFactorApplicability { get; set; }
+    public ValidationMetricApplicability? NetProfitFactorApplicability { get; set; }
+    public ValidationMetricApplicability? GrossExpectancyApplicability { get; set; }
+
+    // Flattened population fields for DTO/export convenience (optional on historical rows).
+    public int? CandidatePopulationCount { get; set; }
+    public int? BoundaryEligibleCandidateCount { get; set; }
+    public int? PathInputPopulationCount { get; set; }
+    public int? IncludedPathInputCount { get; set; }
+    public int? ExcludedPathInputCount { get; set; }
+    public int? ClosedOutcomePopulationCount { get; set; }
+    public int? MonetaryPnlPopulationCount { get; set; }
+    public int? GrossRPopulationCount { get; set; }
+    public int? NetRPopulationCount { get; set; }
+    public int? WinnerPopulationCount { get; set; }
+    public int? LoserPopulationCount { get; set; }
+    public int? NeutralPopulationCount { get; set; }
+    public string? PopulationContractVersion { get; set; }
+    public IReadOnlyDictionary<string, int>? ExclusionCountsByReason { get; set; }
+    public IReadOnlyDictionary<string, int>? WarningCountsByCode { get; set; }
 }
 
 public sealed class RobustnessVerdictResult

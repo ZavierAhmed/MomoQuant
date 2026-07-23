@@ -5,6 +5,7 @@ using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Backtesting;
 using MomoQuant.Application.Common;
 using MomoQuant.Application.MarketData;
+using MomoQuant.Application.Research;
 using MomoQuant.Application.Risk;
 using MomoQuant.Application.Risk.Models;
 using MomoQuant.Application.Strategies;
@@ -13,6 +14,7 @@ using MomoQuant.Application.Strategies.PriceStructure.Dtos;
 using MomoQuant.Application.StrategyLab.Confidence;
 using MomoQuant.Application.StrategyLab.Dtos;
 using MomoQuant.Application.StrategyLab.Risk;
+using MomoQuant.Application.ValidationLab;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.Risk;
@@ -23,6 +25,12 @@ namespace MomoQuant.Application.StrategyLab;
 
 public interface IStrategyLabRunner
 {
+    Task ExecuteAsync(long runId, StrategyLabExecutionContext executionContext, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Compatibility overload for general Strategy Laboratory research only.
+    /// Creates <see cref="ExecutionPurpose.GeneralResearch"/>. Must not be used by Validation Laboratory training.
+    /// </summary>
     Task ExecuteAsync(long runId, CancellationToken cancellationToken = default);
 }
 
@@ -39,7 +47,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
 
     private readonly IStrategyLabRunRepository _runRepository;
     private readonly IStrategyResearchCandidateRepository _candidateRepository;
-    private readonly IBacktestDataLoader _dataLoader;
+    private readonly StandardStrategyLabCandleDataSource _standardCandleDataSource;
     private readonly IStrategyRepository _strategyRepository;
     private readonly IStrategyRegistry _strategyRegistry;
     private readonly IStrategyDataRequirementService _requirementService;
@@ -49,6 +57,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
     private readonly StrategyLabRiskObserver _riskObserver;
     private readonly ICandidateConfidenceScorer _confidenceScorer;
     private readonly IStrategyLabCandleWindowFactory _candleWindowFactory;
+    private readonly IResearchExecutionContextAccessor _executionContextAccessor;
     private readonly ILogger<StrategyLabRunner> _logger;
 
     public StrategyLabRunner(
@@ -64,12 +73,14 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         PositionSizingService positionSizingService,
         ICandidateConfidenceScorer confidenceScorer,
         IStrategyLabCandleWindowFactory? candleWindowFactory = null,
-        ILogger<StrategyLabRunner>? logger = null)
+        ILogger<StrategyLabRunner>? logger = null,
+        StandardStrategyLabCandleDataSource? standardCandleDataSource = null,
+        IResearchExecutionContextAccessor? executionContextAccessor = null)
     {
         _ = positionSizingService; // retained for DI compatibility; futures sizing is internal to risk observer
         _runRepository = runRepository;
         _candidateRepository = candidateRepository;
-        _dataLoader = dataLoader;
+        _standardCandleDataSource = standardCandleDataSource ?? new StandardStrategyLabCandleDataSource(dataLoader);
         _strategyRepository = strategyRepository;
         _strategyRegistry = strategyRegistry;
         _requirementService = requirementService;
@@ -79,11 +90,22 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         _riskObserver = new StrategyLabRiskObserver();
         _confidenceScorer = confidenceScorer;
         _candleWindowFactory = candleWindowFactory ?? new CandlePrefixViewStrategyLabCandleWindowFactory();
+        _executionContextAccessor = executionContextAccessor ?? new ResearchExecutionContextAccessor();
         _logger = logger ?? NullLogger<StrategyLabRunner>.Instance;
     }
 
-    public async Task ExecuteAsync(long runId, CancellationToken cancellationToken = default)
+    public Task ExecuteAsync(long runId, CancellationToken cancellationToken = default) =>
+        ExecuteAsync(runId, StrategyLabExecutionContext.ForGeneralResearch(), cancellationToken);
+
+    public async Task ExecuteAsync(
+        long runId,
+        StrategyLabExecutionContext executionContext,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(executionContext);
+
+        using var ambient = _executionContextAccessor.Enter(executionContext);
+
         var run = await _runRepository.GetByIdAsync(runId, cancellationToken);
         if (run is null)
         {
@@ -91,11 +113,18 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         }
 
         HistoricalCandleCoverageResult? coverageDiagnostics = null;
+        var isValidationTraining = executionContext.ExecutionPurpose == ExecutionPurpose.ValidationTraining;
 
         try
         {
-            run.Status = StrategyLabRunStatus.CheckingCoverage;
-            run.CurrentStage = "Checking candle coverage...";
+            ValidateExecutionContext(executionContext);
+
+            run.Status = isValidationTraining
+                ? StrategyLabRunStatus.PreparingStrategy
+                : StrategyLabRunStatus.CheckingCoverage;
+            run.CurrentStage = isValidationTraining
+                ? "Preparing validation training candles..."
+                : "Checking candle coverage...";
             run.PercentComplete = 1m;
             run.StartedAtUtc = DateTime.UtcNow;
             run.UpdatedAtUtc = DateTime.UtcNow;
@@ -122,66 +151,98 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             var parameters = JsonSerializer.Deserialize<Dictionary<string, string>>(run.ParametersJson) ?? new Dictionary<string, string>();
             var warmup = await ResolveWarmupAsync(strategyEntity.Id, cancellationToken);
 
-            run.Status = StrategyLabRunStatus.CheckingCoverage;
-            run.CurrentStage = "Checking candle coverage...";
-            run.PercentComplete = 2m;
-            await _runRepository.UpdateAsync(run, cancellationToken);
-
-            async Task OnCoverageProgressAsync(HistoricalCoverageProgress p, CancellationToken ct)
+            if (isValidationTraining)
             {
-                run.CurrentStage = p.Message;
-                run.PercentComplete = p.PercentComplete;
-                run.Status = p.Stage switch
+                if (executionContext.AllowCoverageImport)
                 {
-                    "ImportingCandles" => StrategyLabRunStatus.ImportingCandles,
-                    "VerifyingCoverage" => StrategyLabRunStatus.VerifyingCoverage,
-                    _ => StrategyLabRunStatus.CheckingCoverage
-                };
-                run.UpdatedAtUtc = DateTime.UtcNow;
-                await _runRepository.UpdateAsync(run, ct);
+                    throw new ValidationTrainingCoverageImportForbiddenException(
+                        executionContext.ValidationExperimentId,
+                        executionContext.TrainingBoundaryUtc,
+                        executionContext.CallerComponent);
+                }
             }
-
-            var coverage = await _coverageService.EnsureCoverageAsync(
-                run.ExchangeId,
-                run.SymbolId,
-                canonicalTimeframe,
-                run.FromUtc,
-                run.ToUtc,
-                warmup,
-                allowAutoImport: true,
-                OnCoverageProgressAsync,
-                cancellationToken);
-
-            coverageDiagnostics = coverage.Data ?? coverageDiagnostics;
-            if (!coverage.Succeeded)
+            else
             {
-                PersistCoverageDiagnostics(run, coverage.Data);
-                await FailRunAsync(run, coverage.ErrorMessage ?? "Candle coverage failed.", cancellationToken);
-                return;
-            }
+                run.Status = StrategyLabRunStatus.CheckingCoverage;
+                run.CurrentStage = "Checking candle coverage...";
+                run.PercentComplete = 2m;
+                await _runRepository.UpdateAsync(run, cancellationToken);
 
-            coverageDiagnostics = coverage.Data;
+                async Task OnCoverageProgressAsync(HistoricalCoverageProgress p, CancellationToken ct)
+                {
+                    run.CurrentStage = p.Message;
+                    run.PercentComplete = p.PercentComplete;
+                    run.Status = p.Stage switch
+                    {
+                        "ImportingCandles" => StrategyLabRunStatus.ImportingCandles,
+                        "VerifyingCoverage" => StrategyLabRunStatus.VerifyingCoverage,
+                        _ => StrategyLabRunStatus.CheckingCoverage
+                    };
+                    run.UpdatedAtUtc = DateTime.UtcNow;
+                    await _runRepository.UpdateAsync(run, ct);
+                }
+
+                var allowImport = executionContext.AllowCoverageImport;
+                var coverage = await _coverageService.EnsureCoverageAsync(
+                    run.ExchangeId,
+                    run.SymbolId,
+                    canonicalTimeframe,
+                    run.FromUtc,
+                    run.ToUtc,
+                    warmup,
+                    allowAutoImport: allowImport,
+                    OnCoverageProgressAsync,
+                    cancellationToken);
+
+                coverageDiagnostics = coverage.Data ?? coverageDiagnostics;
+                if (!coverage.Succeeded)
+                {
+                    PersistCoverageDiagnostics(run, coverage.Data);
+                    await FailRunAsync(run, coverage.ErrorMessage ?? "Candle coverage failed.", cancellationToken);
+                    return;
+                }
+
+                coverageDiagnostics = coverage.Data;
+            }
 
             run.Status = StrategyLabRunStatus.PreparingStrategy;
             run.CurrentStage = "Preparing strategy...";
             run.PercentComplete = 35m;
             await _runRepository.UpdateAsync(run, cancellationToken);
 
-            var dataset = await _dataLoader.LoadSymbolTimeframeAsync(
-                run.ExchangeId,
-                run.SymbolId,
-                parsedTimeframe,
-                run.FromUtc,
-                run.ToUtc,
-                warmup,
-                cancellationToken);
+            var candleSource = isValidationTraining
+                ? executionContext.CandleDataSource
+                  ?? throw new ValidationTrainingDataSourceMissingException(
+                      executionContext.ValidationExperimentId,
+                      executionContext.CallerComponent)
+                : executionContext.CandleDataSource ?? _standardCandleDataSource;
 
-            if (dataset is null || dataset.Candles.Count == 0)
+            StrategyLabDataset labDataset;
+            try
+            {
+                labDataset = await candleSource.LoadAsync(run, warmup, cancellationToken);
+            }
+            catch (InvalidOperationException ex) when (!isValidationTraining
+                && ex.Message.Contains("No candle data", StringComparison.OrdinalIgnoreCase))
             {
                 PersistCoverageDiagnostics(run, coverageDiagnostics);
                 await FailRunAsync(run, "No candle data available after import verification.", cancellationToken);
                 return;
             }
+
+            if (labDataset.Candles.Count == 0)
+            {
+                PersistCoverageDiagnostics(run, coverageDiagnostics);
+                await FailRunAsync(run, "No candle data available after import verification.", cancellationToken);
+                return;
+            }
+
+            if (isValidationTraining)
+            {
+                VerifyTrainingBoundary(labDataset, executionContext);
+            }
+
+            var dataset = labDataset;
 
             var legacyMeta = ExperimentFingerprintBuilder.BuildCandleDatasetFingerprint(
                 run.ExchangeId,
@@ -628,6 +689,18 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             run.UpdatedAtUtc = DateTime.UtcNow;
             await _runRepository.UpdateAsync(run, cancellationToken);
         }
+        catch (ValidationTrainingBoundaryException ex)
+        {
+            _logger.LogError(ex, "Strategy lab run {RunId} failed closed ({ErrorCode}).", runId, ex.ErrorCode);
+            var failedRun = await _runRepository.GetByIdAsync(runId, cancellationToken);
+            if (failedRun is not null)
+            {
+                PersistCoverageDiagnostics(failedRun, coverageDiagnostics);
+                await FailRunAsync(failedRun, ex.Message, cancellationToken);
+            }
+
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Strategy lab run {RunId} failed.", runId);
@@ -636,6 +709,96 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             {
                 PersistCoverageDiagnostics(failedRun, coverageDiagnostics);
                 await FailRunAsync(failedRun, ex.Message, cancellationToken);
+            }
+        }
+    }
+
+    private static void ValidateExecutionContext(StrategyLabExecutionContext executionContext)
+    {
+        if (executionContext.ExecutionPurpose != ExecutionPurpose.ValidationTraining)
+        {
+            return;
+        }
+
+        if (executionContext.CandleDataSource is null)
+        {
+            throw new ValidationTrainingDataSourceMissingException(
+                executionContext.ValidationExperimentId,
+                executionContext.CallerComponent);
+        }
+
+        if (executionContext.ValidationExperimentId is null or <= 0)
+        {
+            throw new InvalidOperationException("ValidationTraining requires ValidationExperimentId.");
+        }
+
+        if (executionContext.ValidationTrialNumber is null or <= 0)
+        {
+            throw new InvalidOperationException("ValidationTraining requires ValidationTrialNumber.");
+        }
+
+        if (executionContext.TrainingBoundaryUtc is null)
+        {
+            throw new InvalidOperationException("ValidationTraining requires TrainingBoundaryUtc.");
+        }
+
+        if (string.IsNullOrWhiteSpace(executionContext.CorrelationId))
+        {
+            throw new InvalidOperationException("ValidationTraining requires CorrelationId.");
+        }
+
+        if (executionContext.AllowCoverageImport)
+        {
+            throw new ValidationTrainingCoverageImportForbiddenException(
+                executionContext.ValidationExperimentId,
+                executionContext.TrainingBoundaryUtc,
+                executionContext.CallerComponent);
+        }
+    }
+
+    private static void VerifyTrainingBoundary(
+        StrategyLabDataset dataset,
+        StrategyLabExecutionContext executionContext)
+    {
+        var boundary = DateTime.SpecifyKind(executionContext.TrainingBoundaryUtc!.Value, DateTimeKind.Utc);
+        foreach (var candle in dataset.Candles)
+        {
+            var open = DateTime.SpecifyKind(candle.OpenTimeUtc, DateTimeKind.Utc);
+            if (open >= boundary)
+            {
+                throw new ValidationTrainingBoundaryViolationException(
+                    executionContext.ValidationExperimentId,
+                    boundary,
+                    executionContext.CallerComponent,
+                    open,
+                    open,
+                    $"Training dataset candle at {open:O} is at or beyond ValidationStartUtc {boundary:O}.");
+            }
+        }
+
+        foreach (var index in dataset.EvaluationIndices)
+        {
+            if (index < 0 || index >= dataset.Candles.Count)
+            {
+                throw new ValidationTrainingBoundaryViolationException(
+                    executionContext.ValidationExperimentId,
+                    boundary,
+                    executionContext.CallerComponent,
+                    null,
+                    null,
+                    $"Evaluation index {index} is outside the training dataset.");
+            }
+
+            var open = DateTime.SpecifyKind(dataset.Candles[index].OpenTimeUtc, DateTimeKind.Utc);
+            if (open >= boundary)
+            {
+                throw new ValidationTrainingBoundaryViolationException(
+                    executionContext.ValidationExperimentId,
+                    boundary,
+                    executionContext.CallerComponent,
+                    open,
+                    open,
+                    $"Evaluation candle at {open:O} is at or beyond ValidationStartUtc {boundary:O}.");
             }
         }
     }

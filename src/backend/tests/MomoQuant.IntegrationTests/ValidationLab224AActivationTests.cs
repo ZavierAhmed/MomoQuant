@@ -28,7 +28,7 @@ public class ValidationLab224AActivationTests : IClassFixture<MomoQuantWebApplic
         var (id, _) = await _harness.CreatePreparedExperimentAsync("default-versions");
         var entity = await _harness.GetExperimentEntityAsync(id);
         Assert.NotNull(entity);
-        Assert.Equal(ValidationMetricsContract.VersionV131, entity!.ValidationMetricsVersion);
+        Assert.Equal(ValidationMetricsContract.VersionV132, entity!.ValidationMetricsVersion);
         Assert.Equal(ValidationRiskBasisService.Version, entity.RiskBasisVersion);
         Assert.Equal(ValidationParameterFingerprintService.Version, entity.ParameterFingerprintVersion);
         Assert.Equal("ValidationSelectionIntegrity/v1", entity.SelectionIntegrityVersion);

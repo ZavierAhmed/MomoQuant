@@ -167,7 +167,8 @@ public enum ValidationTrialStatus
     Completed = 2,
     Failed = 3,
     GuardrailRejected = 4,
-    Interrupted = 5
+    Interrupted = 5,
+    LeakageFailed = 6
 }
 
 public enum ValidationTrialRecoverySource
@@ -272,5 +273,9 @@ public enum ValidationRiskBasisValidationStatus
     GrossRReconciliationFailed = 8,
     NetRReconciliationFailed = 9,
     LayerMismatch = 10,
-    NotAvailable = 11
+    NotAvailable = 11,
+    /// <summary>Aggregate-only: no statuses / no evaluable sample (ValidationMetrics/v1.3.2).</summary>
+    InsufficientSample = 12,
+    /// <summary>Aggregate-only: one or more invalid/missing/incompatible basis statuses.</summary>
+    InvalidRiskBasis = 13
 }

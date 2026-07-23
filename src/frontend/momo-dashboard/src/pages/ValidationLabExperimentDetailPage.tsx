@@ -27,6 +27,7 @@ import { SplitTimeline } from '@/pages/validationLab/SplitTimeline';
 import { JsonBlock } from '@/pages/validationLab/JsonBlock';
 import { SupersededBanner } from '@/pages/validationLab/SupersededBanner';
 import { ExportVerificationPanel } from '@/pages/validationLab/ExportVerificationPanel';
+import { PopulationMetricsLegend } from '@/pages/validationLab/PopulationMetricsLegend';
 import {
   ACTIVE_STATUSES,
   RESUMABLE_STATUSES,
@@ -34,9 +35,12 @@ import {
   buildValidationCandidateQuery,
   computeExperimentActionAvailability,
   formatExperimentVerdict,
+  formatNetExpectancyDisplay,
+  formatPopulationCount,
   isInsufficientSample,
   isLegacyMetrics,
   pickLayer,
+  POPULATION_COLUMN_LABELS,
   tryParseJson,
   verdictTone,
 } from '@/pages/validationLab/validationLabDetailHelpers';
@@ -947,17 +951,62 @@ export function ValidationLabExperimentDetailPage() {
               { key: 'seg', header: 'Segment', render: (row: ValidationSegmentResult) => row.segmentType },
               { key: 'layer', header: 'Layer', render: (row: ValidationSegmentResult) => row.layerType },
               { key: 'candles', header: 'Candles', render: (row: ValidationSegmentResult) => row.candleCount },
-              { key: 'cands', header: 'Candidates', render: (row: ValidationSegmentResult) => row.candidateCount },
-              { key: 'closed', header: 'Closed (n)', render: (row: ValidationSegmentResult) => row.closedTradeCount },
+              {
+                key: 'cands',
+                header: POPULATION_COLUMN_LABELS.candidates,
+                render: (row: ValidationSegmentResult) =>
+                  formatPopulationCount(row.candidatePopulationCount, row.candidateCount),
+              },
+              {
+                key: 'pathInc',
+                header: POPULATION_COLUMN_LABELS.pathInputsIncluded,
+                render: (row: ValidationSegmentResult) =>
+                  formatPopulationCount(row.includedPathInputCount, row.metricIncludedCandidateCount),
+              },
+              {
+                key: 'pathExc',
+                header: POPULATION_COLUMN_LABELS.pathInputsExcluded,
+                render: (row: ValidationSegmentResult) =>
+                  formatPopulationCount(row.excludedPathInputCount, row.metricExcludedCandidateCount),
+              },
+              {
+                key: 'closed',
+                header: POPULATION_COLUMN_LABELS.closedOutcomes,
+                render: (row: ValidationSegmentResult) =>
+                  formatPopulationCount(row.closedOutcomePopulationCount, row.closedTradeCount),
+              },
+              {
+                key: 'pnlPop',
+                header: POPULATION_COLUMN_LABELS.tradesUsedForPnl,
+                render: (row: ValidationSegmentResult) => formatPopulationCount(row.monetaryPnlPopulationCount),
+              },
+              {
+                key: 'grossRPop',
+                header: POPULATION_COLUMN_LABELS.tradesUsedForGrossR,
+                render: (row: ValidationSegmentResult) => formatPopulationCount(row.grossRPopulationCount),
+              },
+              {
+                key: 'netRPop',
+                header: POPULATION_COLUMN_LABELS.tradesUsedForNetR,
+                render: (row: ValidationSegmentResult) => formatPopulationCount(row.netRPopulationCount),
+              },
+              {
+                key: 'warn',
+                header: POPULATION_COLUMN_LABELS.includedWithWarnings,
+                render: (row: ValidationSegmentResult) =>
+                  formatPopulationCount(row.metricWarningBearingIncludedTradeCount),
+              },
               {
                 key: 'exp',
                 header: 'Expectancy R',
                 render: (row: ValidationSegmentResult) =>
                   row.segmentType === 'Validation' && !revealed
                     ? 'hidden'
-                    : row.netExpectancyR == null
-                      ? '—'
-                      : formatNumber(row.netExpectancyR),
+                    : formatNetExpectancyDisplay(row) === 'NotEvaluated'
+                      ? 'NotEvaluated'
+                      : row.netExpectancyR == null
+                        ? '—'
+                        : formatNumber(row.netExpectancyR),
               },
               {
                 key: 'pf',
@@ -983,6 +1032,7 @@ export function ValidationLabExperimentDetailPage() {
             rows={layerResults}
             emptyMessage="No segment results yet."
           />
+          <PopulationMetricsLegend />
           {revealed ? <JsonBlock title="Comparison Payload" value={JSON.stringify(comparison ?? tryParseJson(detail.comparisonJson), null, 2)} /> : null}
           <JsonBlock title="Overlay Results" value={detail.overlayResultsJson} />
         </div>

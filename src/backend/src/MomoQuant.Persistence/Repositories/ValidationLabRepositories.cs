@@ -313,6 +313,56 @@ public sealed class ValidationCandleAccessAuditRepository : IValidationCandleAcc
         await _db.SaveChangesAsync(cancellationToken);
     }
 
+    public async Task<int> AddRangeIdempotentByAccessEventIdAsync(
+        IReadOnlyList<ValidationCandleAccessAudit> audits,
+        CancellationToken cancellationToken = default)
+    {
+        if (audits.Count == 0)
+        {
+            return 0;
+        }
+
+        var eventIds = audits.Select(a => a.AccessEventId).Distinct().ToList();
+        var existing = await _db.ValidationCandleAccessAudits
+            .AsNoTracking()
+            .Where(a => eventIds.Contains(a.AccessEventId))
+            .Select(a => a.AccessEventId)
+            .ToListAsync(cancellationToken);
+        var existingSet = existing.ToHashSet();
+        var fresh = audits.Where(a => !existingSet.Contains(a.AccessEventId)).ToList();
+        if (fresh.Count == 0)
+        {
+            return 0;
+        }
+
+        await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            _db.ValidationCandleAccessAudits.AddRange(fresh);
+            await _db.SaveChangesAsync(cancellationToken);
+            await tx.CommitAsync(cancellationToken);
+            return fresh.Count;
+        }
+        catch (DbUpdateException ex) when (IsDuplicateAccessEventId(ex))
+        {
+            // Concurrent writer already persisted — treat as idempotent success.
+            foreach (var entry in _db.ChangeTracker.Entries<ValidationCandleAccessAudit>()
+                         .Where(e => fresh.Contains(e.Entity))
+                         .ToList())
+            {
+                entry.State = EntityState.Detached;
+            }
+
+            await tx.RollbackAsync(cancellationToken);
+            return 0;
+        }
+        catch
+        {
+            await tx.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
     public async Task<IReadOnlyList<ValidationCandleAccessAudit>> GetByExperimentIdAsync(
         long experimentId,
         CancellationToken cancellationToken = default) =>
@@ -321,5 +371,21 @@ public sealed class ValidationCandleAccessAuditRepository : IValidationCandleAcc
             .Where(a => a.ValidationExperimentId == experimentId)
             .OrderBy(a => a.AccessedAtUtc)
             .ToListAsync(cancellationToken);
+
+    private static bool IsDuplicateAccessEventId(Exception ex)
+    {
+        for (var cur = ex; cur is not null; cur = cur.InnerException!)
+        {
+            var msg = cur.Message ?? string.Empty;
+            if (msg.Contains("Duplicate entry", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("IX_ValCandleAccess_AccessEventId", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("UNIQUE constraint", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
 

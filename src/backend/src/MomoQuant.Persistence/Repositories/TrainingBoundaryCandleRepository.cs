@@ -1,4 +1,6 @@
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Research;
+using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.ValidationLab;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
@@ -8,13 +10,21 @@ namespace MomoQuant.Persistence.Repositories;
 /// <summary>
 /// Decorates candle reads: when a Validation Laboratory training scope is ambient,
 /// range/index access is enforced and recorded; prohibited access throws
-/// <see cref="ValidationDataLeakageException"/>.
+/// <see cref="ValidationDataLeakageException"/> or
+/// <see cref="ValidationTrainingUnscopedAccessException"/>.
 /// </summary>
 public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnscopedCandleReader
 {
     private readonly CandleRepository _inner;
+    private readonly IResearchExecutionContextAccessor? _executionContextAccessor;
 
-    public TrainingBoundaryCandleRepository(CandleRepository inner) => _inner = inner;
+    public TrainingBoundaryCandleRepository(
+        CandleRepository inner,
+        IResearchExecutionContextAccessor? executionContextAccessor = null)
+    {
+        _inner = inner;
+        _executionContextAccessor = executionContextAccessor;
+    }
 
     public Task<IReadOnlyList<Candle>> GetCandlesChronologicalUnscopedAsync(
         long symbolId,
@@ -22,8 +32,21 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
         DateTime? fromUtc,
         DateTime? toUtc,
         int warmUpCount = 0,
-        CancellationToken cancellationToken = default) =>
-        _inner.GetCandlesChronologicalAsync(symbolId, timeframe, fromUtc, toUtc, warmUpCount, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        // Unscoped bootstrap is only legal while the scope-factory capability token is active.
+        if (!ValidationScopeFactoryCapability.IsActive)
+        {
+            var current = _executionContextAccessor?.Current;
+            throw new ValidationTrainingUnscopedAccessException(
+                current?.ValidationExperimentId,
+                current?.TrainingBoundaryUtc,
+                nameof(GetCandlesChronologicalUnscopedAsync),
+                "Unscoped candle reads require ValidationScopeFactoryCapability.");
+        }
+
+        return _inner.GetCandlesChronologicalAsync(symbolId, timeframe, fromUtc, toUtc, warmUpCount, cancellationToken);
+    }
 
     public async Task<IReadOnlyList<Candle>> GetCandlesAsync(
         long symbolId,
@@ -33,6 +56,8 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
         int limit,
         CancellationToken cancellationToken = default)
     {
+        GuardUnscopedValidationTraining(nameof(GetCandlesAsync));
+
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
             var range = scope.GetRange(fromUtc, toUtc, nameof(GetCandlesAsync));
@@ -50,6 +75,8 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
         int warmUpCount = 0,
         CancellationToken cancellationToken = default)
     {
+        GuardUnscopedValidationTraining(nameof(GetCandlesChronologicalAsync));
+
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
             // Warm-up must still remain inside the training boundary.
@@ -77,6 +104,8 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
         Timeframe timeframe,
         CancellationToken cancellationToken = default)
     {
+        GuardUnscopedValidationTraining(nameof(GetLatestCandleAsync));
+
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
             var last = scope.Candles.LastOrDefault();
@@ -96,6 +125,8 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
         Timeframe timeframe,
         CancellationToken cancellationToken = default)
     {
+        GuardUnscopedValidationTraining(nameof(CountCandlesAsync));
+
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
             return Task.FromResult(scope.Count);
@@ -111,6 +142,8 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
         IReadOnlyCollection<DateTime> openTimesUtc,
         CancellationToken cancellationToken = default)
     {
+        GuardUnscopedValidationTraining(nameof(GetExistingOpenTimesAsync));
+
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
             foreach (var t in openTimesUtc)
@@ -139,6 +172,8 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
 
     public async Task<Candle?> GetByIdAsync(long id, CancellationToken cancellationToken = default)
     {
+        GuardUnscopedValidationTraining(nameof(GetByIdAsync));
+
         var candle = await _inner.GetByIdAsync(id, cancellationToken);
         if (candle is null)
         {
@@ -160,6 +195,8 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
         int count,
         CancellationToken cancellationToken = default)
     {
+        GuardUnscopedValidationTraining(nameof(GetRecentCandlesAsync));
+
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
             var ts = DateTime.SpecifyKind(beforeOrAtOpenTimeUtc, DateTimeKind.Utc);
@@ -185,6 +222,8 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
         DateTime toUtc,
         CancellationToken cancellationToken = default)
     {
+        GuardUnscopedValidationTraining(nameof(GetOpenTimesInRangeAsync));
+
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
             var range = scope.GetRange(fromUtc, toUtc, nameof(GetOpenTimesInRangeAsync));
@@ -202,6 +241,8 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
         DateTime toUtc,
         CancellationToken cancellationToken = default)
     {
+        GuardUnscopedValidationTraining(nameof(CountDuplicateKeysInRangeAsync));
+
         if (ValidationTrainingCandleScopeAmbient.Current is not null)
         {
             // Training scope is immutable and duplicate-free by construction.
@@ -210,5 +251,31 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
         }
 
         return _inner.CountDuplicateKeysInRangeAsync(exchangeId, symbolId, timeframe, fromUtc, toUtc, cancellationToken);
+    }
+
+    private void GuardUnscopedValidationTraining(string callerComponent)
+    {
+        if (_executionContextAccessor?.IsValidationTrainingActive != true)
+        {
+            return;
+        }
+
+        if (ValidationTrainingCandleScopeAmbient.Current is not null)
+        {
+            // Ambient training scope is the authorized secondary path.
+            return;
+        }
+
+        if (ValidationScopeFactoryCapability.IsActive)
+        {
+            return;
+        }
+
+        var current = _executionContextAccessor.Current!;
+        throw new ValidationTrainingUnscopedAccessException(
+            current.ValidationExperimentId,
+            current.TrainingBoundaryUtc,
+            callerComponent,
+            $"Unscoped candle repository access via {callerComponent} is forbidden during ValidationTraining.");
     }
 }

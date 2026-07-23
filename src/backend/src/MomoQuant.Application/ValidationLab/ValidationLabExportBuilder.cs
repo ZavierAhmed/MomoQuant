@@ -172,7 +172,7 @@ public static class ValidationLabExportBuilder
         var sb = new StringBuilder();
         sb.AppendLine("# validation-experiment-segment-results.csv");
         sb.AppendLine("# segment-results.csv");
-        sb.AppendLine("SegmentType,LayerType,ClosedTradeCount,GrossExpectancyR,NetExpectancyR,GrossProfitFactor,NetProfitFactor,GrossPnl,NetPnl,TransactionCosts,PersistedCandidateRowCount,MetricIncludedCandidateCount,MetricExcludedCandidateCount,CrossSegmentOverlapCount,GrossProfit,GrossLoss,NetProfit,NetLoss,ResultCalculationVersion,MetricWarningBearingIncludedTradeCount,MetricWarningCodes");
+        sb.AppendLine("SegmentType,LayerType,ClosedTradeCount,GrossExpectancyR,NetExpectancyR,GrossProfitFactor,NetProfitFactor,GrossPnl,NetPnl,TransactionCosts,PersistedCandidateRowCount,MetricIncludedCandidateCount,MetricExcludedCandidateCount,CrossSegmentOverlapCount,GrossProfit,GrossLoss,NetProfit,NetLoss,ResultCalculationVersion,MetricWarningBearingIncludedTradeCount,MetricWarningCodes,PopulationContractVersion,CandidatePopulationCount,BoundaryEligibleCandidateCount,PathInputPopulationCount,IncludedPathInputCount,ExcludedPathInputCount,ClosedOutcomePopulationCount,MonetaryPnlPopulationCount,GrossRPopulationCount,NetRPopulationCount,WinnerPopulationCount,LoserPopulationCount,NeutralPopulationCount,RiskBasisValidationStatus,MonetaryPnlApplicability,GrossExpectancyApplicability,NetExpectancyApplicability,ExclusionCountsByReason,WarningCountsByCode");
         foreach (var s in detail.SegmentResults ?? [])
         {
             sb.AppendLine(string.Join(',',
@@ -198,7 +198,26 @@ public static class ValidationLabExportBuilder
                 s.MetricWarningBearingIncludedTradeCount,
                 Csv(s.MetricWarningCodes is { Count: > 0 }
                     ? string.Join('|', s.MetricWarningCodes)
-                    : string.Empty)));
+                    : string.Empty),
+                Csv(s.PopulationContractVersion),
+                s.CandidatePopulationCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                s.BoundaryEligibleCandidateCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                s.PathInputPopulationCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                s.IncludedPathInputCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                s.ExcludedPathInputCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                s.ClosedOutcomePopulationCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                s.MonetaryPnlPopulationCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                s.GrossRPopulationCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                s.NetRPopulationCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                s.WinnerPopulationCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                s.LoserPopulationCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                s.NeutralPopulationCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                Csv(s.RiskBasisValidationStatus?.ToString()),
+                Csv(s.MonetaryPnlApplicability?.ToString()),
+                Csv(s.GrossExpectancyApplicability?.ToString()),
+                Csv(s.NetExpectancyApplicability?.ToString()),
+                Csv(FormatCountMap(s.ExclusionCountsByReason)),
+                Csv(FormatCountMap(s.WarningCountsByCode))));
         }
 
         sb.AppendLine();
@@ -462,6 +481,28 @@ public static class ValidationLabExportBuilder
         s.ResultCalculationVersion,
         s.MetricWarningBearingIncludedTradeCount,
         s.MetricWarningCodes,
+        s.PopulationContractVersion,
+        s.CandidatePopulationCount,
+        s.BoundaryEligibleCandidateCount,
+        s.PathInputPopulationCount,
+        s.IncludedPathInputCount,
+        s.ExcludedPathInputCount,
+        s.ClosedOutcomePopulationCount,
+        s.MonetaryPnlPopulationCount,
+        s.GrossRPopulationCount,
+        s.NetRPopulationCount,
+        s.WinnerPopulationCount,
+        s.LoserPopulationCount,
+        s.NeutralPopulationCount,
+        s.ExclusionCountsByReason,
+        s.WarningCountsByCode,
+        s.RiskBasisValidationStatus,
+        s.MonetaryPnlApplicability,
+        s.GrossProfitFactorApplicability,
+        s.NetProfitFactorApplicability,
+        s.GrossExpectancyApplicability,
+        s.NetExpectancyApplicability,
+        population = s.Population,
         metrics = SafeParse(s.MetricsJson)
     };
 
@@ -476,6 +517,13 @@ public static class ValidationLabExportBuilder
         {
             return json;
         }
+    }
+
+    private static string FormatCountMap(IReadOnlyDictionary<string, int>? map)
+    {
+        if (map is null || map.Count == 0) return string.Empty;
+        return string.Join('|', map.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            .Select(kv => $"{kv.Key}={kv.Value.ToString(CultureInfo.InvariantCulture)}"));
     }
 
     private static string Csv(string? value)

@@ -7,6 +7,14 @@ namespace MomoQuant.Domain.ValidationLab;
 /// </summary>
 public class ValidationCandleAccessAudit : Entity
 {
+    /// <summary>
+    /// Durable idempotency key generated once when the in-memory access event is created.
+    /// Never regenerated on flush/retry.
+    /// </summary>
+    public Guid AccessEventId { get; set; }
+
+    public Guid ScopeExecutionId { get; set; }
+
     public long ValidationExperimentId { get; set; }
     public long? TrialId { get; set; }
     public int? TrialNumber { get; set; }
@@ -22,5 +30,8 @@ public class ValidationCandleAccessAudit : Entity
     public DateTime AccessedAtUtc { get; set; }
     public bool WasDenied { get; set; }
     public string? DenialReason { get; set; }
+    public int FlushAttemptCount { get; set; }
+    public DateTime? PersistedAtUtc { get; set; }
+    public string RecorderVersion { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; }
 }

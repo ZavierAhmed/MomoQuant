@@ -30,9 +30,12 @@ public class ValidationLab230BProductionSeamsTests
         await recorder.FlushAsync(scope);
         Assert.Single(audits.Items);
         Assert.True(audits.Items[0].WasDenied);
+        Assert.NotEqual(Guid.Empty, audits.Items[0].AccessEventId);
+        var eventId = audits.Items[0].AccessEventId;
 
         await recorder.FlushAsync(scope);
         Assert.Single(audits.Items);
+        Assert.Equal(eventId, audits.Items[0].AccessEventId);
     }
 
     [Fact]
@@ -177,12 +180,19 @@ public class ValidationLab230BProductionSeamsTests
     {
         public List<ValidationCandleAccessAudit> Items { get; } = [];
 
-        public Task AddRangeAsync(
+        public async Task AddRangeAsync(
+            IReadOnlyList<ValidationCandleAccessAudit> audits,
+            CancellationToken cancellationToken = default) =>
+            await AddRangeIdempotentByAccessEventIdAsync(audits, cancellationToken);
+
+        public Task<int> AddRangeIdempotentByAccessEventIdAsync(
             IReadOnlyList<ValidationCandleAccessAudit> audits,
             CancellationToken cancellationToken = default)
         {
-            Items.AddRange(audits);
-            return Task.CompletedTask;
+            var existing = Items.Select(i => i.AccessEventId).ToHashSet();
+            var fresh = audits.Where(a => !existing.Contains(a.AccessEventId)).ToList();
+            Items.AddRange(fresh);
+            return Task.FromResult(fresh.Count);
         }
 
         public Task<IReadOnlyList<ValidationCandleAccessAudit>> GetByExperimentIdAsync(

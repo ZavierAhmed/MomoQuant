@@ -22,27 +22,45 @@ public interface IValidationSegmentCandleSource
 
 public interface IValidationTrainingCandleScope : IValidationSegmentCandleSource, IAsyncDisposable
 {
+    /// <summary>Stable id for this scope instance; shared by all access events logged here.</summary>
+    Guid ScopeExecutionId { get; }
+
     long? ActiveTrialId { get; set; }
     int? ActiveTrialNumber { get; set; }
     IReadOnlyList<ValidationCandleAccessRecord> AccessLog { get; }
 }
 
-public sealed record ValidationCandleAccessRecord(
-    long ValidationExperimentId,
-    long? TrialId,
-    int? TrialNumber,
-    string CallerComponent,
-    DateTime? RequestedStartUtc,
-    DateTime? RequestedEndUtc,
-    DateTime? ReturnedStartUtc,
-    DateTime? ReturnedEndUtc,
-    int ReturnedCandleCount,
-    DateTime? MinimumReturnedTimestampUtc,
-    DateTime? MaximumReturnedTimestampUtc,
-    string? CandleContentFingerprint,
-    DateTime AccessedAtUtc,
-    bool WasDenied,
-    string? DenialReason);
+/// <summary>
+/// In-memory candle access evidence collected during training. <see cref="AccessEventId"/> is
+/// generated exactly once when the event is created and never regenerated on flush/retry.
+/// </summary>
+public sealed class ValidationCandleAccessRecord
+{
+    public Guid AccessEventId { get; init; }
+    public Guid ScopeExecutionId { get; init; }
+    public long ValidationExperimentId { get; init; }
+    public long? TrialId { get; init; }
+    public int? TrialNumber { get; init; }
+    public string CallerComponent { get; init; } = string.Empty;
+    public DateTime? RequestedStartUtc { get; init; }
+    public DateTime? RequestedEndUtc { get; init; }
+    public DateTime? ReturnedStartUtc { get; init; }
+    public DateTime? ReturnedEndUtc { get; init; }
+    public int ReturnedCandleCount { get; init; }
+    public DateTime? MinimumReturnedTimestampUtc { get; init; }
+    public DateTime? MaximumReturnedTimestampUtc { get; init; }
+    public string? CandleContentFingerprint { get; init; }
+    public DateTime AccessedAtUtc { get; init; }
+    public bool WasDenied { get; init; }
+    public string? DenialReason { get; init; }
+    public string RecorderVersion { get; init; } = ValidationCandleAccessRecorder.RecorderVersion;
+
+    /// <summary>Optional; incremented when a flush attempt includes this event.</summary>
+    public int FlushAttemptCount { get; set; }
+
+    /// <summary>Set after a successful durable persist.</summary>
+    public DateTime? PersistedAtUtc { get; set; }
+}
 
 /// <summary>
 /// Ambient training candle scope. When set, candle repository reads must stay within the boundary.
@@ -86,9 +104,11 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         long validationExperimentId,
         DateTime segmentStartUtc,
         DateTime validationBoundaryUtc,
-        IReadOnlyList<Candle> trainingCandles)
+        IReadOnlyList<Candle> trainingCandles,
+        Guid? scopeExecutionId = null)
     {
         ValidationExperimentId = validationExperimentId;
+        ScopeExecutionId = scopeExecutionId ?? Guid.NewGuid();
         SegmentStartUtc = DateTime.SpecifyKind(segmentStartUtc, DateTimeKind.Utc);
         ValidationBoundaryUtc = DateTime.SpecifyKind(validationBoundaryUtc, DateTimeKind.Utc);
         SegmentEndExclusiveUtc = ValidationBoundaryUtc;
@@ -101,6 +121,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
             .ToImmutableArray();
     }
 
+    public Guid ScopeExecutionId { get; }
     public long ValidationExperimentId { get; }
     public DateTime SegmentStartUtc { get; }
     public DateTime SegmentEndExclusiveUtc { get; }
@@ -209,22 +230,28 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
     {
         lock (_gate)
         {
-            _accessLog.Add(new ValidationCandleAccessRecord(
-                ValidationExperimentId,
-                ActiveTrialId,
-                ActiveTrialNumber,
-                caller,
-                requestedStart,
-                requestedEnd,
-                returned.Count > 0 ? returned[0].OpenTimeUtc : null,
-                returned.Count > 0 ? returned[^1].OpenTimeUtc : null,
-                returned.Count,
-                returned.Count > 0 ? returned.Min(c => c.OpenTimeUtc) : null,
-                returned.Count > 0 ? returned.Max(c => c.OpenTimeUtc) : null,
-                returned.Count > 0 ? ComputeContentFingerprint(returned) : null,
-                DateTime.UtcNow,
-                WasDenied: false,
-                DenialReason: null));
+            _accessLog.Add(new ValidationCandleAccessRecord
+            {
+                // Generated exactly once at event creation — never regenerated on flush.
+                AccessEventId = Guid.NewGuid(),
+                ScopeExecutionId = ScopeExecutionId,
+                ValidationExperimentId = ValidationExperimentId,
+                TrialId = ActiveTrialId,
+                TrialNumber = ActiveTrialNumber,
+                CallerComponent = caller,
+                RequestedStartUtc = requestedStart,
+                RequestedEndUtc = requestedEnd,
+                ReturnedStartUtc = returned.Count > 0 ? returned[0].OpenTimeUtc : null,
+                ReturnedEndUtc = returned.Count > 0 ? returned[^1].OpenTimeUtc : null,
+                ReturnedCandleCount = returned.Count,
+                MinimumReturnedTimestampUtc = returned.Count > 0 ? returned.Min(c => c.OpenTimeUtc) : null,
+                MaximumReturnedTimestampUtc = returned.Count > 0 ? returned.Max(c => c.OpenTimeUtc) : null,
+                CandleContentFingerprint = returned.Count > 0 ? ComputeContentFingerprint(returned) : null,
+                AccessedAtUtc = DateTime.UtcNow,
+                WasDenied = false,
+                DenialReason = null,
+                RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion
+            });
         }
     }
 
@@ -237,24 +264,29 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
     {
         lock (_gate)
         {
-            _accessLog.Add(new ValidationCandleAccessRecord(
-                ValidationExperimentId,
-                ActiveTrialId,
-                ActiveTrialNumber,
-                callerComponent,
-                requestedStart,
-                requestedEnd,
-                null,
-                null,
-                0,
-                null,
-                null,
-                null,
-                DateTime.UtcNow,
-                WasDenied: true,
-                DenialReason: string.IsNullOrWhiteSpace(denialCode)
+            _accessLog.Add(new ValidationCandleAccessRecord
+            {
+                AccessEventId = Guid.NewGuid(),
+                ScopeExecutionId = ScopeExecutionId,
+                ValidationExperimentId = ValidationExperimentId,
+                TrialId = ActiveTrialId,
+                TrialNumber = ActiveTrialNumber,
+                CallerComponent = callerComponent,
+                RequestedStartUtc = requestedStart,
+                RequestedEndUtc = requestedEnd,
+                ReturnedStartUtc = null,
+                ReturnedEndUtc = null,
+                ReturnedCandleCount = 0,
+                MinimumReturnedTimestampUtc = null,
+                MaximumReturnedTimestampUtc = null,
+                CandleContentFingerprint = null,
+                AccessedAtUtc = DateTime.UtcNow,
+                WasDenied = true,
+                DenialReason = string.IsNullOrWhiteSpace(denialCode)
                     ? reason
-                    : $"{denialCode}: {reason}"));
+                    : $"{denialCode}: {reason}",
+                RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion
+            });
         }
     }
 

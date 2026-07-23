@@ -175,6 +175,7 @@ public sealed partial class ValidationLabService : IValidationLabService
     private readonly IValidationCandleAccessAuditRepository _candleAccessAudits;
     private readonly IValidationCandleAccessRecorder _candleAccessRecorder;
     private readonly IValidationTrainingScopeExecution _trainingScopeExecution;
+    private readonly IValidationTrainingFailureHandler _trainingFailureHandler;
     private readonly IValidationSegmentResultWriter _segmentResultWriter;
 
     public ValidationLabService(
@@ -205,6 +206,7 @@ public sealed partial class ValidationLabService : IValidationLabService
         IValidationCandleAccessAuditRepository candleAccessAudits,
         IValidationCandleAccessRecorder candleAccessRecorder,
         IValidationTrainingScopeExecution trainingScopeExecution,
+        IValidationTrainingFailureHandler trainingFailureHandler,
         IValidationSegmentResultWriter segmentResultWriter)
     {
         _experiments = experiments;
@@ -234,6 +236,7 @@ public sealed partial class ValidationLabService : IValidationLabService
         _candleAccessAudits = candleAccessAudits;
         _candleAccessRecorder = candleAccessRecorder;
         _trainingScopeExecution = trainingScopeExecution;
+        _trainingFailureHandler = trainingFailureHandler;
         _segmentResultWriter = segmentResultWriter;
     }
 
@@ -2170,7 +2173,29 @@ public sealed partial class ValidationLabService : IValidationLabService
             NetLoss = s.NetLoss,
             MetricWarningBearingIncludedTradeCount =
                 metrics?.MetricWarningBearingIncludedTradeCount ?? 0,
-            MetricWarningCodes = metrics?.MetricWarningCodes
+            MetricWarningCodes = metrics?.MetricWarningCodes,
+            Population = metrics?.Population,
+            MonetaryPnlApplicability = metrics?.MonetaryPnlApplicability,
+            GrossProfitFactorApplicability = metrics?.GrossProfitFactorApplicability,
+            NetProfitFactorApplicability = metrics?.NetProfitFactorApplicability,
+            GrossExpectancyApplicability = metrics?.GrossExpectancyApplicability,
+            NetExpectancyApplicability = metrics?.NetExpectancyApplicability,
+            RiskBasisValidationStatus = metrics?.RiskBasisValidationStatus,
+            CandidatePopulationCount = metrics?.CandidatePopulationCount,
+            BoundaryEligibleCandidateCount = metrics?.BoundaryEligibleCandidateCount,
+            PathInputPopulationCount = metrics?.PathInputPopulationCount,
+            IncludedPathInputCount = metrics?.IncludedPathInputCount,
+            ExcludedPathInputCount = metrics?.ExcludedPathInputCount,
+            ClosedOutcomePopulationCount = metrics?.ClosedOutcomePopulationCount,
+            MonetaryPnlPopulationCount = metrics?.MonetaryPnlPopulationCount,
+            GrossRPopulationCount = metrics?.GrossRPopulationCount,
+            NetRPopulationCount = metrics?.NetRPopulationCount,
+            WinnerPopulationCount = metrics?.WinnerPopulationCount,
+            LoserPopulationCount = metrics?.LoserPopulationCount,
+            NeutralPopulationCount = metrics?.NeutralPopulationCount,
+            PopulationContractVersion = metrics?.PopulationContractVersion,
+            ExclusionCountsByReason = metrics?.ExclusionCountsByReason,
+            WarningCountsByCode = metrics?.WarningCountsByCode
         };
     }
 

@@ -40,6 +40,7 @@ public sealed class ValidationSegmentResultWriter : IValidationSegmentResultWrit
     private readonly IValidationSegmentResultRepository _segments;
     private readonly IValidationPathMetricInputBuilder _pathMetricBuilder;
     private readonly IValidationRiskBasisService _riskBasis;
+    private readonly IValidationRiskBasisStatusReducer _statusReducer;
 
     public ValidationSegmentResultWriter(
         IStrategyLabRunRepository labRuns,
@@ -47,7 +48,8 @@ public sealed class ValidationSegmentResultWriter : IValidationSegmentResultWrit
         IValidationHoldoutExclusivityService exclusivity,
         IValidationSegmentResultRepository segments,
         IValidationPathMetricInputBuilder pathMetricBuilder,
-        IValidationRiskBasisService riskBasis)
+        IValidationRiskBasisService riskBasis,
+        IValidationRiskBasisStatusReducer statusReducer)
     {
         _labRuns = labRuns;
         _candidates = candidates;
@@ -55,6 +57,7 @@ public sealed class ValidationSegmentResultWriter : IValidationSegmentResultWrit
         _segments = segments;
         _pathMetricBuilder = pathMetricBuilder;
         _riskBasis = riskBasis;
+        _statusReducer = statusReducer;
     }
 
     public async Task BuildAndPersistSegmentResultsAsync(
@@ -128,8 +131,11 @@ public sealed class ValidationSegmentResultWriter : IValidationSegmentResultWrit
         foreach (ValidationLayerType layer in Enum.GetValues(typeof(ValidationLayerType)))
         {
             LayerSegmentMetrics metrics;
-            var usePathMetrics = ValidationMetricsContract.IsPathMetricsVersion(
-                experiment.ValidationMetricsVersion);
+            var metricsVersion = experiment.ValidationMetricsVersion ?? ValidationMetricsContract.Current;
+            var usePathMetrics = ValidationMetricsContract.IsPathMetricsVersion(metricsVersion);
+            // v1.3.2 (Current) uses population aggregation; historical v1.3 / v1.3.1 keep FromPathTradesV13.
+            var usePopulationPathMetrics =
+                ValidationMetricsContract.IsPopulationPathMetricsVersion(metricsVersion);
 
             if (usePathMetrics)
             {
@@ -150,13 +156,29 @@ public sealed class ValidationSegmentResultWriter : IValidationSegmentResultWrit
                     riskOnly,
                     fullPipeline,
                     costModel);
-                metrics = ValidationMetricsMapper.FromPathTradesV13(
-                    pathTrades,
-                    candleCount,
-                    metricsCandidates.Count,
-                    boundary,
-                    layer,
-                    _riskBasis);
+
+                if (usePopulationPathMetrics)
+                {
+                    metrics = ValidationMetricsMapper.FromPathTradesV132(
+                        pathTrades,
+                        candleCount,
+                        candidatePopulationCount: persistedCount,
+                        boundaryEligibleCandidateCount: metricsCandidates.Count,
+                        boundary,
+                        layer,
+                        _riskBasis,
+                        _statusReducer);
+                }
+                else
+                {
+                    metrics = ValidationMetricsMapper.FromPathTradesV13(
+                        pathTrades,
+                        candleCount,
+                        metricsCandidates.Count,
+                        boundary,
+                        layer,
+                        _riskBasis);
+                }
             }
             else if (layer is ValidationLayerType.RiskOnly or ValidationLayerType.FullPipeline)
             {
@@ -214,14 +236,35 @@ public sealed class ValidationSegmentResultWriter : IValidationSegmentResultWrit
             }
 
             metrics.PersistedCandidateRowCount = persistedCount;
-            metrics.MetricIncludedCandidateCount = metricsCandidates.Count;
-            metrics.MetricExcludedCandidateCount = metricExcludedCount;
             metrics.CrossSegmentOverlapCount = crossSegmentOverlapCount;
-            if (segmentType == ValidationSegmentType.Training)
+
+            if (usePopulationPathMetrics)
             {
-                // Training population after boundary censor = TrainingIncluded.
-                metrics.MetricIncludedCandidateCount = metricsCandidates.Count;
+                // Path-level included/excluded/warning counts come from the metric result — do not overwrite.
+                metrics.CandidatePopulationCount ??= persistedCount;
+                metrics.BoundaryEligibleCandidateCount ??= metricsCandidates.Count;
             }
+            else
+            {
+                metrics.MetricIncludedCandidateCount = metricsCandidates.Count;
+                metrics.MetricExcludedCandidateCount = metricExcludedCount;
+                if (segmentType == ValidationSegmentType.Training)
+                {
+                    // Training population after boundary censor = TrainingIncluded.
+                    metrics.MetricIncludedCandidateCount = metricsCandidates.Count;
+                }
+            }
+
+            var fingerprintFields = usePopulationPathMetrics
+                ? ValidationMetricsContract.BuildPathResultFingerprintFields(segmentType, layer, metrics)
+                : new Dictionary<string, string>
+                {
+                    ["segment"] = segmentType.ToString(),
+                    ["layer"] = layer.ToString(),
+                    ["closed"] = metrics.ClosedTradeCount.ToString(),
+                    ["net"] = (metrics.NetPnl ?? 0m).ToString("G29"),
+                    ["included"] = metricsCandidates.Count.ToString()
+                };
 
             var result = new ValidationSegmentResult
             {
@@ -240,17 +283,9 @@ public sealed class ValidationSegmentResultWriter : IValidationSegmentResultWrit
                 MaximumDrawdownPercent = metrics.MaximumRealizedDrawdownPercent,
                 TransactionCosts = metrics.TransactionCosts,
                 BoundaryCensoredCount = boundary,
-                ResultFingerprint = ValidationLabService.ParameterFingerprint(new Dictionary<string, string>
-                {
-                    ["segment"] = segmentType.ToString(),
-                    ["layer"] = layer.ToString(),
-                    ["closed"] = metrics.ClosedTradeCount.ToString(),
-                    ["net"] = (metrics.NetPnl ?? 0m).ToString("G29"),
-                    ["included"] = metricsCandidates.Count.ToString()
-                }),
+                ResultFingerprint = ValidationLabService.ParameterFingerprint(fingerprintFields),
                 CreatedAtUtc = DateTime.UtcNow,
-                ResultCalculationVersion = experiment.ValidationMetricsVersion
-                    ?? ValidationMetricsContract.VersionV12,
+                ResultCalculationVersion = metricsVersion,
                 GrossExpectancyR = metrics.GrossExpectancyR,
                 GrossProfitFactor = metrics.GrossProfitFactor,
                 NetProfitFactor = metrics.NetProfitFactor ?? metrics.ProfitFactor,
@@ -258,8 +293,12 @@ public sealed class ValidationSegmentResultWriter : IValidationSegmentResultWrit
                 NetAverageR = metrics.NetAverageR,
                 GrossPnl = metrics.GrossPnl,
                 PersistedCandidateRowCount = persistedCount,
-                MetricIncludedCandidateCount = metricsCandidates.Count,
-                MetricExcludedCandidateCount = metricExcludedCount,
+                MetricIncludedCandidateCount = usePopulationPathMetrics
+                    ? metrics.MetricIncludedCandidateCount
+                    : metricsCandidates.Count,
+                MetricExcludedCandidateCount = usePopulationPathMetrics
+                    ? metrics.MetricExcludedCandidateCount
+                    : metricExcludedCount,
                 CrossSegmentOverlapCount = crossSegmentOverlapCount,
                 GrossProfit = metrics.GrossProfit,
                 GrossLoss = metrics.GrossLoss,

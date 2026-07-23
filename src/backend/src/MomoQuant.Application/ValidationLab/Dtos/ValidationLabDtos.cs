@@ -233,6 +233,32 @@ public sealed class ValidationSegmentResultDto
 
     /// <summary>Distinct warning codes on included trades (never exclusion reasons).</summary>
     public IReadOnlyList<string>? MetricWarningCodes { get; init; }
+
+    /// <summary>Optional ValidationMetricPopulation/v1 (ValidationMetrics/v1.3.2+).</summary>
+    public ValidationMetricPopulationSummary? Population { get; init; }
+
+    public ValidationMetricApplicability? MonetaryPnlApplicability { get; init; }
+    public ValidationMetricApplicability? GrossProfitFactorApplicability { get; init; }
+    public ValidationMetricApplicability? NetProfitFactorApplicability { get; init; }
+    public ValidationMetricApplicability? GrossExpectancyApplicability { get; init; }
+    public ValidationMetricApplicability? NetExpectancyApplicability { get; init; }
+    public ValidationRiskBasisValidationStatus? RiskBasisValidationStatus { get; init; }
+
+    public int? CandidatePopulationCount { get; init; }
+    public int? BoundaryEligibleCandidateCount { get; init; }
+    public int? PathInputPopulationCount { get; init; }
+    public int? IncludedPathInputCount { get; init; }
+    public int? ExcludedPathInputCount { get; init; }
+    public int? ClosedOutcomePopulationCount { get; init; }
+    public int? MonetaryPnlPopulationCount { get; init; }
+    public int? GrossRPopulationCount { get; init; }
+    public int? NetRPopulationCount { get; init; }
+    public int? WinnerPopulationCount { get; init; }
+    public int? LoserPopulationCount { get; init; }
+    public int? NeutralPopulationCount { get; init; }
+    public string? PopulationContractVersion { get; init; }
+    public IReadOnlyDictionary<string, int>? ExclusionCountsByReason { get; init; }
+    public IReadOnlyDictionary<string, int>? WarningCountsByCode { get; init; }
 }
 
 public sealed class ValidationParameterTrialDto

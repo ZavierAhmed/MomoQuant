@@ -12,9 +12,9 @@ using MomoQuant.Shared.Contracts;
 namespace MomoQuant.IntegrationTests;
 
 /// <summary>
-/// Milestone 23.0B Part A — orchestrated candle-access leakage (adversarial + allowed)
-/// via production <see cref="IValidationTrainingScopeExecution"/> + recorder flush,
-/// then real freeze / validation APIs. Does not manually construct audits.
+/// Milestone 23.0B Part A — partially orchestrated candle-access leakage proof via
+/// <see cref="IValidationTrainingScopeExecution"/> + failure handler (not a full API→worker path).
+/// Prefer <c>Milestone230COrchestrationTests</c> for true API-to-worker orchestration coverage.
 /// </summary>
 [Collection("Integration")]
 public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWebApplicationFactory>
@@ -84,26 +84,63 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                     && a.RequestedStartUtc == validationStart
                     && (a.CallerComponent ?? string.Empty).Contains(correlationId, StringComparison.Ordinal)));
                 Assert.True(denied.Id > 0);
+                Assert.NotEqual(Guid.Empty, denied.AccessEventId);
+                Assert.NotEqual(Guid.Empty, denied.ScopeExecutionId);
                 Assert.Equal(1, denied.TrialNumber);
                 Assert.Equal(0, denied.ReturnedCandleCount);
                 Assert.Contains("BoundaryCrossed", denied.DenialReason ?? string.Empty, StringComparison.Ordinal);
 
-                // Mirror production training catch: status Failed from persisted denial evidence.
+                // Production failure handler owns leakage status transitions — do not manually set them.
                 experiment = await experiments.GetByIdAsync(id);
                 Assert.NotNull(experiment);
-                experiment!.Status = ValidationExperimentStatus.TrainingCompleted;
-                experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
-                experiment.CurrentStage = "LeakageDetected";
-                experiment.UpdatedAtUtc = DateTime.UtcNow;
-                await experiments.UpdateAsync(experiment);
+                var trials = sp.GetRequiredService<IValidationParameterTrialRepository>();
+                var trial = (await trials.GetByExperimentIdAsync(id)).FirstOrDefault()
+                    ?? new ValidationParameterTrial
+                    {
+                        ValidationExperimentId = id,
+                        TrialNumber = 1,
+                        Status = ValidationTrialStatus.Running,
+                        ParameterFingerprint = $"adv-{correlationId}",
+                        ParameterSnapshotJson = "{}"
+                    };
+                if (trial.Id == 0)
+                {
+                    await trials.AddAsync(trial);
+                }
+
+                var failureHandler = sp.GetRequiredService<IValidationTrainingFailureHandler>();
+                await using var scopeForHandler = await sp.GetRequiredService<IValidationTrainingCandleScopeFactory>()
+                    .CreateForExperimentAsync(experiment!, CancellationToken.None);
+                // Re-enter adversarial access so handler flushes denial evidence if needed.
+                try
+                {
+                    _ = scopeForHandler.GetByOpenTimeUtc(validationStart, $"AdversarialTrainer:{correlationId}");
+                }
+                catch (ValidationDataLeakageException handlerLeakage)
+                {
+                    var handled = await failureHandler.HandleBoundaryFailureAsync(
+                        experiment!,
+                        trial,
+                        scopeForHandler,
+                        handlerLeakage);
+                    Assert.Equal(ValidationTrainingFailureCodes.ValidationDataLeakage, handled.ErrorCode);
+                }
+
+                experiment = await experiments.GetByIdAsync(id);
+                Assert.NotNull(experiment);
+                Assert.Equal(ValidationExperimentStatus.Failed, experiment!.Status);
+                Assert.Equal(ValidationLeakageAuditStatus.Failed, experiment.LeakageAuditStatus);
+                Assert.Equal("LeakageDetected", experiment.CurrentStage);
+                Assert.Null(experiment.SelectedTrialId);
 
                 var freeze = await lab.FreezeAsync(id);
                 Assert.False(freeze.Succeeded);
-                Assert.Contains("Leakage", freeze.ErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-                Assert.Contains(
-                    "ValidationDataLeakageDetected",
-                    freeze.ErrorMessage ?? string.Empty,
-                    StringComparison.OrdinalIgnoreCase);
+                // Production sets Status=Failed on leakage; freeze is blocked by lifecycle and/or leakage gate.
+                Assert.True(
+                    (freeze.ErrorMessage ?? string.Empty).Contains("Leakage", StringComparison.OrdinalIgnoreCase)
+                    || (freeze.ErrorMessage ?? string.Empty).Contains("TrainingCompleted", StringComparison.OrdinalIgnoreCase)
+                    || (freeze.ErrorMessage ?? string.Empty).Contains("Failed", StringComparison.OrdinalIgnoreCase),
+                    freeze.ErrorMessage);
 
                 var validation = await lab.RunValidationAsync(id);
                 Assert.False(validation.Succeeded);

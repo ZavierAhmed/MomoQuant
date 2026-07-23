@@ -1,5 +1,8 @@
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.MarketData;
+using MomoQuant.Application.Research;
+using MomoQuant.Application.StrategyLab;
+using MomoQuant.Application.ValidationLab;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.Indicators;
 using MomoQuant.Domain.MarketData;
@@ -36,15 +39,18 @@ public sealed class BacktestDataLoader : IBacktestDataLoader
     private readonly ICandleRepository _candleRepository;
     private readonly IIndicatorSnapshotRepository _indicatorSnapshotRepository;
     private readonly ISymbolRepository _symbolRepository;
+    private readonly IResearchExecutionContextAccessor? _executionContextAccessor;
 
     public BacktestDataLoader(
         ICandleRepository candleRepository,
         IIndicatorSnapshotRepository indicatorSnapshotRepository,
-        ISymbolRepository symbolRepository)
+        ISymbolRepository symbolRepository,
+        IResearchExecutionContextAccessor? executionContextAccessor = null)
     {
         _candleRepository = candleRepository;
         _indicatorSnapshotRepository = indicatorSnapshotRepository;
         _symbolRepository = symbolRepository;
+        _executionContextAccessor = executionContextAccessor;
     }
 
     public async Task<BacktestDataset?> LoadSymbolTimeframeAsync(
@@ -56,6 +62,8 @@ public sealed class BacktestDataLoader : IBacktestDataLoader
         int warmUpCount,
         CancellationToken cancellationToken = default)
     {
+        GuardAgainstUnscopedValidationTraining();
+
         var symbol = await _symbolRepository.GetByIdAsync(symbolId, cancellationToken);
         if (symbol is null || symbol.ExchangeId != exchangeId)
         {
@@ -103,5 +111,26 @@ public sealed class BacktestDataLoader : IBacktestDataLoader
             IndicatorSnapshots = snapshots,
             EvaluationIndices = evaluationIndices
         };
+    }
+
+    private void GuardAgainstUnscopedValidationTraining()
+    {
+        var current = _executionContextAccessor?.Current;
+        if (current?.ExecutionPurpose != ExecutionPurpose.ValidationTraining)
+        {
+            return;
+        }
+
+        // Scope factory may activate capability during immutable-scope bootstrap only.
+        if (ValidationScopeFactoryCapability.IsActive)
+        {
+            return;
+        }
+
+        throw new ValidationTrainingUnscopedAccessException(
+            current.ValidationExperimentId,
+            current.TrainingBoundaryUtc,
+            nameof(BacktestDataLoader),
+            "Unscoped BacktestDataLoader access is forbidden during ValidationTraining.");
     }
 }

@@ -135,6 +135,8 @@ public static class DependencyInjection
         services.AddScoped<IAiSetupAdvisorService, AiSetupAdvisorService>();
 
         services.AddScoped<IBacktestDataLoader, BacktestDataLoader>();
+        services.AddSingleton<IResearchExecutionContextAccessor, ResearchExecutionContextAccessor>();
+        services.AddScoped<StandardStrategyLabCandleDataSource>();
         services.AddScoped<IBacktestEngine>(sp => new BacktestEngine(
             sp.GetRequiredService<IStrategyEngine>(),
             sp.GetRequiredService<IStrategyParameterProvider>(),
@@ -209,6 +211,7 @@ public static class DependencyInjection
         services.AddScoped<IValidationTrainingSelectionService, ValidationTrainingSelectionService>();
         services.AddScoped<IValidationSelectionIntegrityService, ValidationSelectionIntegrityService>();
         services.AddScoped<IValidationRiskBasisService, ValidationRiskBasisService>();
+        services.AddScoped<IValidationRiskBasisStatusReducer, ValidationRiskBasisStatusReducer>();
         services.AddScoped<IValidationPathMetricInputBuilder, ValidationPathMetricInputBuilder>();
         services.AddScoped<IValidationTrialSelectionAuditor, ValidationTrialSelectionAuditor>();
         services.AddScoped<IValidationLaboratoryCloseoutService, ValidationLaboratoryCloseoutService>();
@@ -217,6 +220,7 @@ public static class DependencyInjection
         services.AddScoped<IValidationTrainingExecutionLeaseService, ValidationTrainingExecutionLeaseService>();
         services.AddScoped<IValidationTrainingCandleScopeFactory, ValidationTrainingCandleScopeFactory>();
         services.AddScoped<IValidationCandleAccessRecorder, ValidationCandleAccessRecorder>();
+        services.AddScoped<IValidationTrainingFailureHandler, ValidationTrainingFailureHandler>();
         services.AddScoped<IValidationTrainingScopeExecution, ValidationTrainingScopeExecution>();
         services.AddScoped<IValidationSegmentResultWriter, ValidationSegmentResultWriter>();
         services.AddScoped<IValidationTrialRecoveryService, ValidationTrialRecoveryService>();

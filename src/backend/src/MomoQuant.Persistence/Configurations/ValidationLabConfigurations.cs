@@ -163,13 +163,25 @@ internal sealed class ValidationCandleAccessAuditConfiguration : IEntityTypeConf
     public void Configure(EntityTypeBuilder<ValidationCandleAccessAudit> builder)
     {
         builder.ToTable("ValidationCandleAccessAudits");
+        builder.Property(a => a.AccessEventId)
+            .HasColumnType("char(36)")
+            .IsRequired();
+        builder.Property(a => a.ScopeExecutionId)
+            .HasColumnType("char(36)")
+            .IsRequired();
         builder.Property(a => a.CallerComponent).HasMaxLength(128).IsRequired();
         builder.Property(a => a.CandleContentFingerprint).HasMaxLength(64);
         builder.Property(a => a.DenialReason).HasMaxLength(512);
+        builder.Property(a => a.RecorderVersion).HasMaxLength(64).IsRequired();
+        builder.HasIndex(a => a.AccessEventId)
+            .IsUnique()
+            .HasDatabaseName("IX_ValCandleAccess_AccessEventId");
         builder.HasIndex(a => a.ValidationExperimentId)
             .HasDatabaseName("IX_ValCandleAccess_ExperimentId");
         builder.HasIndex(a => new { a.ValidationExperimentId, a.AccessedAtUtc })
             .HasDatabaseName("IX_ValCandleAccess_Experiment_Accessed");
+        builder.HasIndex(a => new { a.ValidationExperimentId, a.TrialNumber, a.ScopeExecutionId, a.AccessedAtUtc })
+            .HasDatabaseName("IX_ValCandleAccess_Exp_Trial_Scope_Accessed");
     }
 }
 

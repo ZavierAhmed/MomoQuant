@@ -152,7 +152,8 @@ public sealed partial class ValidationLabService
                     {
                         // Explicit resume retries failed trials.
                     }
-                    else if (trial.Status == ValidationTrialStatus.Failed)
+                    else if (trial.Status is ValidationTrialStatus.Failed
+                             or ValidationTrialStatus.LeakageFailed)
                     {
                         continue;
                     }
@@ -182,7 +183,20 @@ public sealed partial class ValidationLabService
                                 trial.StrategyLabRunId = run.Id;
                                 await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
 
-                                await _labRunner.ExecuteAsync(run.Id, cancellationToken);
+                                var trainingBoundary = DateTime.SpecifyKind(
+                                    experiment.ValidationStartUtc!.Value,
+                                    DateTimeKind.Utc);
+                                var executionContext = StrategyLabExecutionContext.ForValidationTraining(
+                                    validationExperimentId: experiment.Id,
+                                    validationTrialId: trial.Id,
+                                    validationTrialNumber: trialNumber,
+                                    trainingBoundaryUtc: trainingBoundary,
+                                    candleDataSource: new ValidationTrainingStrategyLabCandleDataSource(
+                                        trainingScope,
+                                        "ValidationLab.Training"),
+                                    callerComponent: "ValidationLab.Training");
+
+                                await _labRunner.ExecuteAsync(run.Id, executionContext, cancellationToken);
                                 run = await _labRuns.GetByIdAsync(run.Id, cancellationToken) ?? run;
 
                                 if (run.Status != StrategyLabRunStatus.Completed)
@@ -201,23 +215,22 @@ public sealed partial class ValidationLabService
                             },
                             cancellationToken);
                     }
-                    catch (ValidationDataLeakageException ex)
+                    catch (ValidationTrainingBoundaryException ex)
                     {
-                        // Access evidence already flushed by ExecuteTrialAsync finally.
-                        trial.Status = ValidationTrialStatus.Failed;
-                        trial.ErrorMessage = ex.Message;
-                        trial.CompletedAtUtc = DateTime.UtcNow;
-                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
-
-                        experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
-                        AppendDiagnostic(experiment, "ValidationDataLeakageDetected", ex.Message);
-                        experiment.Status = ValidationExperimentStatus.Failed;
-                        experiment.ErrorMessage = ex.Message;
-                        experiment.CurrentStage = "LeakageDetected";
-                        await FinalizeLeakageFromPersistedEvidenceAsync(experiment, draft, cancellationToken);
-                        await _experiments.UpdateAsync(experiment, cancellationToken);
+                        // Production owns leakage/boundary status transitions (flush, trial, experiment, op-status).
+                        var optimizerFp = _parameterFingerprint.ComputeFingerprint(draft.Parameters);
+                        var handled = await _trainingFailureHandler.HandleBoundaryFailureAsync(
+                            experiment,
+                            trial,
+                            trainingScope,
+                            ex,
+                            optimizerInputFingerprint: optimizerFp,
+                            leaseOwner: leaseOwner,
+                            cancellationToken: cancellationToken);
                         await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
-                        result = ServiceResult<ValidationExperimentDto>.Fail(ex.Message);
+                        result = ServiceResult<ValidationExperimentDto>.Fail(
+                            handled.UserSafeErrorMessage,
+                            handled.ErrorCode);
                         return;
                     }
                     catch (Exception ex) when (ValidationTrainingDbRetry.IsTransient(ex))

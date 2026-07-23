@@ -314,6 +314,25 @@ export interface ValidationSegmentResult {
   grossLoss?: number | null;
   netProfit?: number | null;
   netLoss?: number | null;
+  metricWarningBearingIncludedTradeCount?: number;
+  metricWarningCodes?: string[] | null;
+  populationContractVersion?: string | null;
+  candidatePopulationCount?: number | null;
+  boundaryEligibleCandidateCount?: number | null;
+  pathInputPopulationCount?: number | null;
+  includedPathInputCount?: number | null;
+  excludedPathInputCount?: number | null;
+  closedOutcomePopulationCount?: number | null;
+  monetaryPnlPopulationCount?: number | null;
+  grossRPopulationCount?: number | null;
+  netRPopulationCount?: number | null;
+  winnerPopulationCount?: number | null;
+  loserPopulationCount?: number | null;
+  neutralPopulationCount?: number | null;
+  riskBasisValidationStatus?: string | null;
+  monetaryPnlApplicability?: string | null;
+  grossExpectancyApplicability?: string | null;
+  netExpectancyApplicability?: string | null;
 }
 
 export interface HoldoutReuseWarning {

@@ -20,6 +20,7 @@ public interface IValidationTrainingCandleScopeFactory
 public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCandleScopeFactory
 {
     private readonly IUnscopedCandleReader _candles;
+    private readonly ValidationScopeFactoryCapability _capability = ValidationScopeFactoryCapability.Create();
 
     public ValidationTrainingCandleScopeFactory(IUnscopedCandleReader candles) => _candles = candles;
 
@@ -40,21 +41,25 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
         var boundary = DateTime.SpecifyKind(experiment.ValidationStartUtc.Value, DateTimeKind.Utc);
         var from = DateTime.SpecifyKind(experiment.TrainingStartUtc.Value, DateTimeKind.Utc);
 
-        // Load through exclusive boundary so warm-up-adjacent training bars are available,
-        // then scope filters strictly OpenTimeUtc < ValidationStartUtc.
-        var loaded = await _candles.GetCandlesChronologicalUnscopedAsync(
-            experiment.SymbolId,
-            timeframe,
-            from,
-            boundary,
-            warmUpCount: 0,
-            cancellationToken);
+        // Capability token authorizes unrestricted bootstrap only for this factory.
+        using (_capability.Activate())
+        {
+            // Load through exclusive boundary so warm-up-adjacent training bars are available,
+            // then scope filters strictly OpenTimeUtc < ValidationStartUtc.
+            var loaded = await _candles.GetCandlesChronologicalUnscopedAsync(
+                experiment.SymbolId,
+                timeframe,
+                from,
+                boundary,
+                warmUpCount: 0,
+                cancellationToken);
 
-        return new ValidationTrainingCandleScope(
-            experiment.Id,
-            from,
-            boundary,
-            loaded);
+            return new ValidationTrainingCandleScope(
+                experiment.Id,
+                from,
+                boundary,
+                loaded);
+        }
     }
 }
 

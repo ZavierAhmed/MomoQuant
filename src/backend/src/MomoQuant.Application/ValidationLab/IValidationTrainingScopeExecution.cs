@@ -1,3 +1,5 @@
+using MomoQuant.Application.Research;
+using MomoQuant.Application.StrategyLab;
 using MomoQuant.Domain.ValidationLab;
 
 namespace MomoQuant.Application.ValidationLab;
@@ -32,13 +34,16 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
 {
     private readonly IValidationTrainingCandleScopeFactory _scopeFactory;
     private readonly IValidationCandleAccessRecorder _recorder;
+    private readonly IResearchExecutionContextAccessor _executionContextAccessor;
 
     public ValidationTrainingScopeExecution(
         IValidationTrainingCandleScopeFactory scopeFactory,
-        IValidationCandleAccessRecorder recorder)
+        IValidationCandleAccessRecorder recorder,
+        IResearchExecutionContextAccessor? executionContextAccessor = null)
     {
         _scopeFactory = scopeFactory;
         _recorder = recorder;
+        _executionContextAccessor = executionContextAccessor ?? new ResearchExecutionContextAccessor();
     }
 
     public async Task ExecuteWithScopeAsync(
@@ -49,6 +54,21 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
         ArgumentNullException.ThrowIfNull(experiment);
         ArgumentNullException.ThrowIfNull(body);
 
+        var boundary = experiment.ValidationStartUtc is null
+            ? (DateTime?)null
+            : DateTime.SpecifyKind(experiment.ValidationStartUtc.Value, DateTimeKind.Utc);
+
+        var bootstrapContext = new StrategyLabExecutionContext
+        {
+            ExecutionPurpose = ExecutionPurpose.ValidationTraining,
+            ValidationExperimentId = experiment.Id,
+            TrainingBoundaryUtc = boundary,
+            AllowCoverageImport = false,
+            CallerComponent = "ValidationTrainingScopeExecution",
+            CorrelationId = Guid.NewGuid().ToString("N")
+        };
+
+        using var execAmbient = _executionContextAccessor.Enter(bootstrapContext);
         await using var scope = await _scopeFactory.CreateForExperimentAsync(experiment, cancellationToken);
         using var ambient = ValidationTrainingCandleScopeAmbient.Enter(scope);
         try
