@@ -241,7 +241,7 @@
           "buildTransitive/net6.0/_._": {}
         }
       },
-      "Microsoft.Extensions.Configuration.Binder/8.0.0": {
+      "Microsoft.Extensions.Configuration.Binder/8.0.2": {
         "type": "package",
         "dependencies": {
           "Microsoft.Extensions.Configuration.Abstractions": "8.0.0"
@@ -2594,6 +2594,9 @@
         "type": "project",
         "framework": ".NETCoreApp,Version=v8.0",
         "dependencies": {
+          "Microsoft.Extensions.Configuration": "8.0.0",
+          "Microsoft.Extensions.Configuration.Abstractions": "8.0.0",
+          "Microsoft.Extensions.Configuration.Binder": "8.0.2",
           "Microsoft.Extensions.DependencyInjection.Abstractions": "8.0.2",
           "Microsoft.Extensions.Hosting.Abstractions": "8.0.1",
           "Microsoft.Extensions.Logging.Abstractions": "8.0.2",
@@ -3075,10 +3078,10 @@
         "useSharedDesignerContext.txt"
       ]
     },
-    "Microsoft.Extensions.Configuration.Binder/8.0.0": {
-      "sha512": "mBMoXLsr5s1y2zOHWmKsE9veDcx8h1x/c3rz4baEdQKTeDcmQAPNbB54Pi/lhFO3K431eEq6PFbMgLaa6PHFfA==",
+    "Microsoft.Extensions.Configuration.Binder/8.0.2": {
+      "sha512": "7IQhGK+wjyGrNsPBjJcZwWAr+Wf6D4+TwOptUt77bWtgNkiV8tDEbhFS+dDamtQFZ2X7kWG9m71iZQRj2x3zgQ==",
       "type": "package",
-      "path": "microsoft.extensions.configuration.binder/8.0.0",
+      "path": "microsoft.extensions.configuration.binder/8.0.2",
       "files": [
         ".nupkg.metadata",
         ".signature.p7s",
@@ -3111,7 +3114,7 @@
         "lib/net8.0/Microsoft.Extensions.Configuration.Binder.xml",
         "lib/netstandard2.0/Microsoft.Extensions.Configuration.Binder.dll",
         "lib/netstandard2.0/Microsoft.Extensions.Configuration.Binder.xml",
-        "microsoft.extensions.configuration.binder.8.0.0.nupkg.sha512",
+        "microsoft.extensions.configuration.binder.8.0.2.nupkg.sha512",
         "microsoft.extensions.configuration.binder.nuspec",
         "useSharedDesignerContext.txt"
       ]
@@ -7789,6 +7792,7 @@
   "projectFileDependencyGroups": {
     "net8.0": [
       "Microsoft.EntityFrameworkCore.InMemory >= 8.0.13",
+      "Microsoft.Extensions.Configuration >= 8.0.0",
       "Microsoft.NET.Test.Sdk >= 17.8.0",
       "MomoQuant.Application >= 1.0.0",
       "MomoQuant.Domain >= 1.0.0",
@@ -7802,7 +7806,7 @@
     ]
   },
   "packageFolders": {
-    "C:\\Users\\zasah\\.nuget\\packages\\": {},
+    "C:\\Users\\zasah\\AppData\\Local\\Temp\\cursor-sandbox-cache\\e20de74436e6d0b8ad0f1db66db85a0b\\nuget": {},
     "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages": {}
   },
   "project": {
@@ -7811,7 +7815,7 @@
       "projectUniqueName": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\tests\\MomoQuant.UnitTests\\MomoQuant.UnitTests.csproj",
       "projectName": "MomoQuant.UnitTests",
       "projectPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\tests\\MomoQuant.UnitTests\\MomoQuant.UnitTests.csproj",
-      "packagesPath": "C:\\Users\\zasah\\.nuget\\packages\\",
+      "packagesPath": "C:\\Users\\zasah\\AppData\\Local\\Temp\\cursor-sandbox-cache\\e20de74436e6d0b8ad0f1db66db85a0b\\nuget",
       "outputPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\tests\\MomoQuant.UnitTests\\obj\\",
       "projectStyle": "PackageReference",
       "fallbackFolders": [
@@ -7873,6 +7877,10 @@
           "Microsoft.EntityFrameworkCore.InMemory": {
             "target": "Package",
             "version": "[8.0.13, )"
+          },
+          "Microsoft.Extensions.Configuration": {
+            "target": "Package",
+            "version": "[8.0.0, )"
           },
           "Microsoft.NET.Test.Sdk": {
             "target": "Package",

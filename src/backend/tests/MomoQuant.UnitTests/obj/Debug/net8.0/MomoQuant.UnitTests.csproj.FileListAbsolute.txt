@@ -172,3 +172,5 @@ C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\bin\De
 C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\bin\Debug\net8.0\runtimes\win-x64\native\qpdf.dll
 C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\bin\Debug\net8.0\runtimes\win-x86\native\QuestPdfSkia.dll
 C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\bin\Debug\net8.0\runtimes\win-x86\native\qpdf.dll
+C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\bin\Debug\net8.0\Microsoft.Extensions.Configuration.Binder.dll
+C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\obj\Debug\net8.0\MomoQuant.UnitTests.sourcelink.json

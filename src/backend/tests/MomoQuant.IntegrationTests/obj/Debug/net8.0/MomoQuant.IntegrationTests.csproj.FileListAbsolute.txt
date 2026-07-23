@@ -510,3 +510,4 @@ C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.IntegrationTests
 C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.IntegrationTests\bin\Debug\net8.0\runtimes\win-x86\native\QuestPdfSkia.dll
 C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.IntegrationTests\bin\Debug\net8.0\runtimes\win-x86\native\qpdf.dll
 C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.IntegrationTests\bin\Debug\net8.0\appsettings.Example.json
+C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.IntegrationTests\obj\Debug\net8.0\MomoQuant.IntegrationTests.sourcelink.json

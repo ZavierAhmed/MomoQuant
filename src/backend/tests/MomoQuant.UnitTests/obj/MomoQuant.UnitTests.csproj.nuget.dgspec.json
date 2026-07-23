@@ -10,7 +10,7 @@
         "projectUniqueName": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Application\\MomoQuant.Application.csproj",
         "projectName": "MomoQuant.Application",
         "projectPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Application\\MomoQuant.Application.csproj",
-        "packagesPath": "C:\\Users\\zasah\\.nuget\\packages\\",
+        "packagesPath": "C:\\Users\\zasah\\AppData\\Local\\Temp\\cursor-sandbox-cache\\e20de74436e6d0b8ad0f1db66db85a0b\\nuget",
         "outputPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Application\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
@@ -60,6 +60,18 @@
           "framework": "net8.0",
           "targetAlias": "net8.0",
           "dependencies": {
+            "Microsoft.Extensions.Configuration": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
+            "Microsoft.Extensions.Configuration.Abstractions": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
+            "Microsoft.Extensions.Configuration.Binder": {
+              "target": "Package",
+              "version": "[8.0.2, )"
+            },
             "Microsoft.Extensions.DependencyInjection.Abstractions": {
               "target": "Package",
               "version": "[8.0.2, )"
@@ -107,7 +119,7 @@
         "projectUniqueName": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Domain\\MomoQuant.Domain.csproj",
         "projectName": "MomoQuant.Domain",
         "projectPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Domain\\MomoQuant.Domain.csproj",
-        "packagesPath": "C:\\Users\\zasah\\.nuget\\packages\\",
+        "packagesPath": "C:\\Users\\zasah\\AppData\\Local\\Temp\\cursor-sandbox-cache\\e20de74436e6d0b8ad0f1db66db85a0b\\nuget",
         "outputPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Domain\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
@@ -175,7 +187,7 @@
         "projectUniqueName": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Infrastructure\\MomoQuant.Infrastructure.csproj",
         "projectName": "MomoQuant.Infrastructure",
         "projectPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Infrastructure\\MomoQuant.Infrastructure.csproj",
-        "packagesPath": "C:\\Users\\zasah\\.nuget\\packages\\",
+        "packagesPath": "C:\\Users\\zasah\\AppData\\Local\\Temp\\cursor-sandbox-cache\\e20de74436e6d0b8ad0f1db66db85a0b\\nuget",
         "outputPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Infrastructure\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
@@ -287,7 +299,7 @@
         "projectUniqueName": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Persistence\\MomoQuant.Persistence.csproj",
         "projectName": "MomoQuant.Persistence",
         "projectPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Persistence\\MomoQuant.Persistence.csproj",
-        "packagesPath": "C:\\Users\\zasah\\.nuget\\packages\\",
+        "packagesPath": "C:\\Users\\zasah\\AppData\\Local\\Temp\\cursor-sandbox-cache\\e20de74436e6d0b8ad0f1db66db85a0b\\nuget",
         "outputPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Persistence\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
@@ -402,7 +414,7 @@
         "projectUniqueName": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Shared\\MomoQuant.Shared.csproj",
         "projectName": "MomoQuant.Shared",
         "projectPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Shared\\MomoQuant.Shared.csproj",
-        "packagesPath": "C:\\Users\\zasah\\.nuget\\packages\\",
+        "packagesPath": "C:\\Users\\zasah\\AppData\\Local\\Temp\\cursor-sandbox-cache\\e20de74436e6d0b8ad0f1db66db85a0b\\nuget",
         "outputPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Shared\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
@@ -470,7 +482,7 @@
         "projectUniqueName": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\tests\\MomoQuant.UnitTests\\MomoQuant.UnitTests.csproj",
         "projectName": "MomoQuant.UnitTests",
         "projectPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\tests\\MomoQuant.UnitTests\\MomoQuant.UnitTests.csproj",
-        "packagesPath": "C:\\Users\\zasah\\.nuget\\packages\\",
+        "packagesPath": "C:\\Users\\zasah\\AppData\\Local\\Temp\\cursor-sandbox-cache\\e20de74436e6d0b8ad0f1db66db85a0b\\nuget",
         "outputPath": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\tests\\MomoQuant.UnitTests\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
@@ -532,6 +544,10 @@
             "Microsoft.EntityFrameworkCore.InMemory": {
               "target": "Package",
               "version": "[8.0.13, )"
+            },
+            "Microsoft.Extensions.Configuration": {
+              "target": "Package",
+              "version": "[8.0.0, )"
             },
             "Microsoft.NET.Test.Sdk": {
               "target": "Package",

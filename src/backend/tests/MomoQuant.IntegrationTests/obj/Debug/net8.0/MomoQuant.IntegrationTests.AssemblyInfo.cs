@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MomoQuant.IntegrationTests")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ba4c486016e5c1c6893146565ba423baacd2a8b0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7cbfde1a177fe1d94396ec663d7307dba9da15bc")]
 [assembly: System.Reflection.AssemblyProductAttribute("MomoQuant.IntegrationTests")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MomoQuant.IntegrationTests")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
