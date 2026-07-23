@@ -1,0 +1,60 @@
+---
+description: "Core architecture and safety rules for MOMO Quant"
+alwaysApply: true
+---
+
+You are working on MOMO Quant, an AI-assisted quantitative crypto futures trading platform.
+
+Before coding, read the relevant files in /docs.
+
+Core rules:
+
+1. Build module by module.
+2. Do not generate the whole app at once.
+3. Use .NET 8 for backend.
+4. Use React + Vite + Tailwind CSS for frontend.
+5. Use MySQL with Entity Framework Core.
+6. Use Redis only where runtime cache/state is needed.
+7. Use Python FastAPI for the AI service.
+8. Build as a modular monolith first.
+9. Do not create microservices except the Python AI service.
+10. Do not implement real live trading in MVP.
+11. Do not allow AI to place orders.
+12. Do not allow strategies to place orders.
+13. Risk engine must approve every trade before execution.
+14. Backtesting, replay, paper trading, and future live trading must share common abstractions.
+15. Every important trading decision must be logged.
+16. All timestamps must use UTC.
+17. All trading financial values must use decimal, not float/double.
+18. Use the standard API response format from /docs/04-api-specification.md.
+19. Use role-based authorization.
+20. Dangerous actions must create audit logs.
+21. Live trading must remain disabled until readiness checks pass.
+22. Return full updated files when modifying code.
+23. Add tests for important logic.
+24. Do not invent architecture that conflicts with the documentation.
+
+
+## Build and Test Discipline
+
+After completing any implementation task, run the relevant verification commands.
+
+For backend changes:
+- dotnet build
+- dotnet test when tests exist
+
+For frontend changes:
+- npm install if package.json changed
+- npm run build
+
+For Python AI service changes:
+- python -m pytest when tests exist
+- python -m compileall app
+
+If a command fails:
+1. Read the error.
+2. Fix the issue.
+3. Run the command again.
+4. Do not claim the task is complete until the relevant checks pass.
+
+Never move to the next milestone until the current milestone builds successfully.

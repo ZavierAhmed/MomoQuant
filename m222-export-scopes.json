@@ -1,0 +1,64 @@
+﻿{
+    "success":  true,
+    "message":  "Request completed successfully.",
+    "data":  [
+                 {
+                     "scope":  "SkAnalysisRun",
+                     "label":  "SK System Analysis",
+                     "supportedFormats":  [
+                                              "json",
+                                              "pdf"
+                                          ]
+                 },
+                 {
+                     "scope":  "StrategyBacktestRun",
+                     "label":  "Strategy Backtest",
+                     "supportedFormats":  [
+                                              "json",
+                                              "pdf"
+                                          ]
+                 },
+                 {
+                     "scope":  "StrategyBenchmarkRun",
+                     "label":  "Strategy Benchmark",
+                     "supportedFormats":  [
+                                              "json",
+                                              "pdf"
+                                          ]
+                 },
+                 {
+                     "scope":  "LivePaperSession",
+                     "label":  "Live Paper Session",
+                     "supportedFormats":  [
+                                              "json",
+                                              "pdf"
+                                          ]
+                 },
+                 {
+                     "scope":  "SkLivePaperSession",
+                     "label":  "SK Live Paper Session",
+                     "supportedFormats":  [
+                                              "json",
+                                              "pdf"
+                                          ]
+                 },
+                 {
+                     "scope":  "StrategyLabRun",
+                     "label":  "Strategy Laboratory Run",
+                     "supportedFormats":  [
+                                              "json",
+                                              "pdf"
+                                          ]
+                 },
+                 {
+                     "scope":  "ValidationExperiment",
+                     "label":  "Validation Laboratory Experiment",
+                     "supportedFormats":  [
+                                              "json",
+                                              "csv",
+                                              "pdf"
+                                          ]
+                 }
+             ],
+    "errors":  null
+}

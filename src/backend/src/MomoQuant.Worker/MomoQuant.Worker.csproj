@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-MomoQuant.Worker-fa08e014-8b70-48d2-a1ed-860614d95e80</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MomoQuant.Application\MomoQuant.Application.csproj" />
+    <ProjectReference Include="..\MomoQuant.Infrastructure\MomoQuant.Infrastructure.csproj" />
+    <ProjectReference Include="..\MomoQuant.Persistence\MomoQuant.Persistence.csproj" />
+  </ItemGroup>
+</Project>

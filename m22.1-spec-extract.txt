@@ -1,0 +1,1494 @@
+<timestamp>Friday, Jul 17, 2026, 10:49 AM (UTC+5)</timestamp>
+<user_query>
+You are working on MOMO Quant.
+
+Task:
+Implement Milestone 22.1 — Validation Laboratory Verification Completion,
+Candidate-Reconciliation Integrity, Metric Contract Consistency, Mode-Aware
+Qualification, End-to-End Leakage Proof, Training-Search Verification, and
+Export Finalization.
+
+This milestone corrects and completes Milestone 22.
+
+Do not begin Deployment Qualification until every required verification in this
+milestone has passed.
+
+================================================================================
+PRIMARY GOAL
+================================================================================
+
+Make Validation Laboratory trustworthy enough to act as the historical
+robustness gate before Deployment Qualification.
+
+Milestone 22 established the main Validation Laboratory architecture:
+
+- chronological 70/30 candle split
+- training and validation lifecycle
+- frozen configuration
+- hidden holdout before reveal
+- raw strategy as primary qualification layer
+- confidence and risk overlays
+- deterministic data fingerprinting
+- training-trial persistence
+- Validation Laboratory frontend and APIs
+- fixed-configuration Manual Verification A
+
+However, the following mandatory issues remain:
+
+1. Experiment 1 candidate counts do not reconcile with the full-range Strategy
+   Lab baseline.
+2. Reported validation expectancy conflicts with the qualification verdict.
+3. Parameter stability is incorrectly applied to fixed-configuration validation.
+4. Manual Verification B was not executed end to end.
+5. Manual Verification C was not executed.
+6. Required JSON/CSV/PDF exports are incomplete.
+7. Several UI tabs still expose raw JSON instead of structured research views.
+8. Validation result contracts need stronger invariant and consistency checks.
+
+Reference baseline:
+
+Strategy Lab Run 28:
+
+- 377 deterministic raw candidates
+- independent Risk-Only and Full-Pipeline portfolios
+- stable setup fingerprints
+- confidence threshold 65
+- risk per trade 0.5%
+- explicit futures risk semantics
+- net fee accounting
+- path-specific decisions
+
+Run 28 must remain unchanged. :contentReference[oaicite:0]{index=0}
+
+================================================================================
+SCOPE LOCK
+================================================================================
+
+Do not change:
+
+- raw strategy detector logic
+- strategy parameters used by Run 28
+- candidate fingerprint logic unless an actual defect is proven and versioned
+- raw outcome logic
+- confidence model or component weights
+- confidence threshold semantics
+- CandidateRiskQuality/v1.1
+- financial-risk formulas
+- shadow-portfolio cost accounting
+- independent shadow-portfolio state
+- Run 28 records
+- SK System
+- real-trading lock
+- Binance public-data-only architecture
+
+No Binance private APIs.
+
+No real orders.
+
+Do not relax validation rules merely to produce a passing result.
+
+The goal is correctness, not profitability.
+
+================================================================================
+PART 1 — RECONCILE FULL-RANGE AND SEGMENT CANDIDATES
+================================================================================
+
+Experiment 1 reported:
+
+- Training closed trades: 238
+- Validation closed trades: 144
+- Boundary censored: 0
+
+238 + 144 = 382
+
+The full-range Strategy Lab baseline contains 377 candidates.
+
+Determine the exact cause of this five-candidate difference.
+
+Do not dismiss the difference as normal until every fingerprint is reconciled.
+
+Create a deterministic candidate reconciliation service.
+
+Recommended name:
+
+IValidationCandidateReconciliationService
+
+Input:
+
+- source full-range Strategy Lab run
+- training Strategy Lab run
+- validation Strategy Lab run
+- split boundary
+- experiment snapshot
+
+Output:
+
+- FullRangeCandidateCount
+- TrainingCandidateCount
+- ValidationCandidateCount
+- BoundaryCensoredCount
+- WarmupSuppressedCount
+- InvalidCount
+- UniqueFullRangeFingerprintCount
+- UniqueSegmentFingerprintCount
+- AddedFingerprintCount
+- MissingFingerprintCount
+- OverlappingFingerprintCount
+- DuplicateFingerprintCount
+- ChangedCandidateCount
+- ReconciliationStatus
+- DetailedDifferences
+
+================================================================================
+PART 2 — DEFINE THE RECONCILIATION CONTRACT
+================================================================================
+
+Classify every full-range candidate into exactly one validation classification:
+
+- Training
+- Validation
+- BoundaryCensored
+- ExcludedBySegmentSessionReset
+- AddedBySegmentSessionReset
+- WarmupSuppressed
+- Invalid
+
+For a fixed-configuration validation of an existing full-range Strategy Lab run,
+the expected default invariant is:
+
+FullRange fingerprints
+=
+Training fingerprints
+∪ Validation fingerprints
+∪ BoundaryCensored fingerprints
+
+with no overlap between the three primary sets.
+
+However, if fresh strategy sessions legitimately produce a different candidate
+population near the boundary, the difference must be:
+
+- explicitly detected
+- fingerprinted
+- explained
+- classified
+- surfaced as a warning or failure
+- never hidden inside aggregate metrics
+
+Add:
+
+CandidateReconciliationStatus
+
+Values:
+
+- ExactMatch
+- ExactMatchWithBoundaryCensoring
+- ExplainedSessionBoundaryDifference
+- UnexplainedDifference
+- Invalid
+
+Default qualification behavior:
+
+UnexplainedDifference
+→ FailedConfigurationMismatch or FailedDataIntegrity
+
+Do not continue to final robustness approval when candidate populations cannot
+be reconciled.
+
+================================================================================
+PART 3 — FIND THE FIVE-CANDIDATE DIFFERENCE
+================================================================================
+
+For Experiment 1, compare by setup fingerprint:
+
+- Run 28 full-range fingerprints
+- training-run fingerprints
+- validation-run fingerprints
+
+Report:
+
+- fingerprints present only in Run 28
+- fingerprints present only in training
+- fingerprints present only in validation
+- fingerprints present in both training and validation
+- duplicate fingerprints within either segment
+- same structural event with different fingerprint
+- candidates emitted from validation warmup
+- candidates emitted because strategy state was reset at the split
+
+For each difference persist:
+
+- Fingerprint
+- SetupDetectedAtUtc
+- Direction
+- Entry
+- Stop
+- Target
+- Segment
+- SourceRunId
+- DifferenceType
+- Explanation
+- IsExpected
+- AffectsMetrics
+
+Do not rely only on counts.
+
+================================================================================
+PART 4 — DEFINE SEGMENT CANDIDATE SEMANTICS
+================================================================================
+
+Training candidate:
+
+SetupDetectedAtUtc >= TrainingStartUtc
+and
+SetupDetectedAtUtc < ValidationStartUtc
+
+Validation candidate:
+
+SetupDetectedAtUtc >= ValidationStartUtc
+and
+SetupDetectedAtUtc <= ValidationEndUtc
+
+Boundary-censored training candidate:
+
+Setup detected in training
+and
+raw exit occurs at or after ValidationStartUtc
+
+Rules:
+
+- persist for audit
+- exclude from training performance
+- exclude from validation population
+- do not allow validation candles to affect training result
+- do not transfer its position to validation portfolio
+
+Validation warmup candles may build structure but may not emit validation
+candidates before ValidationStartUtc.
+
+Add diagnostics:
+
+- CandidateEmittedDuringWarmup
+- CandidateInMultipleSegments
+- CandidateOutsideExperimentRange
+- CandidatePopulationMismatch
+- DuplicateCandidateFingerprint
+- StructuralEventFingerprintDrift
+
+================================================================================
+PART 5 — HANDLE STATEFUL DETECTOR SPLIT EFFECTS
+================================================================================
+
+The strategy detector may be stateful.
+
+A fresh validation session can create or suppress setups near the split compared
+with a continuous full-range session.
+
+Make the behavior explicit.
+
+Add:
+
+SegmentDetectorContinuityMode
+
+Values:
+
+- FreshSessionWithWarmup
+- ContinuousDetectorState
+- SourceRunPartitionOnly
+
+Default for true holdout validation:
+
+FreshSessionWithWarmup
+
+Reason:
+
+Validation must start from a fresh runtime session while being allowed to use
+historically available pre-validation candles as warmup context.
+
+However, the system must compare the resulting candidate population with:
+
+- the equivalent isolated Strategy Lab segment run
+- the source full-range run
+
+Add a diagnostic when session reset changes the candidate population:
+
+DetectorSessionBoundaryEffect
+
+Include:
+
+- candidates added
+- candidates removed
+- structural-event differences
+- distance from split in candles
+
+If the difference occurs far from the split or exceeds a configured tolerance,
+treat it as suspicious.
+
+================================================================================
+PART 6 — METRIC CONTRACT: GROSS R VS NET EXPECTANCY
+================================================================================
+
+Experiment 1 reported:
+
+- Validation E[R] approximately +0.05
+- Validation profit factor approximately 0.67
+- Validation net PnL approximately -5367.05
+- verdict included negative validation expectancy
+
+These fields currently conflict or use different definitions.
+
+Create an explicit shared validation metric contract.
+
+Recommended version:
+
+ValidationMetrics/v1.1
+
+For every segment and layer persist separately:
+
+- GrossAverageR
+- GrossMedianR
+- NetAverageR
+- NetMedianR
+- GrossExpectancyR
+- NetExpectancyR
+- GrossPnl
+- TransactionCosts
+- NetPnl
+- GrossProfit
+- GrossLoss
+- NetProfit
+- NetLoss
+- GrossProfitFactor
+- NetProfitFactor
+- ClosedTradeCount
+- IncludedOutcomeTypes
+- PnlSizingMode
+- ExpectancyCalculationMode
+- ProfitFactorCalculationMode
+- CostModelVersion
+
+Do not use a single ambiguous field called:
+
+Expectancy
+
+or:
+
+ProfitFactor
+
+without stating whether it is gross or net.
+
+================================================================================
+PART 7 — CANONICAL EXPECTANCY FORMULAS
+================================================================================
+
+Define the canonical formulas.
+
+Gross expectancy in R:
+
+GrossExpectancyR =
+sum(GrossRMultiple for included closed trades)
+/
+ClosedTradeCount
+
+Net R per trade:
+
+NetRMultiple =
+NetPnl
+/
+RiskAmountAtEntry
+
+Net expectancy in R:
+
+NetExpectancyR =
+sum(NetRMultiple for included closed trades)
+/
+ClosedTradeCount
+
+When fixed risk amount is unavailable for a raw strategy candidate:
+
+Use an explicitly documented RawR calculation mode.
+
+Do not derive raw monetary net expectancy using an unrelated notional size.
+
+Profit factor:
+
+GrossProfitFactor =
+sum(positive GrossPnl)
+/
+abs(sum(negative GrossPnl))
+
+NetProfitFactor =
+sum(positive NetPnl)
+/
+abs(sum(negative NetPnl))
+
+Handle zero loss safely:
+
+- Infinity
+- NotMeaningful
+- Undefined
+
+according to an explicit result type.
+
+Do not silently substitute an arbitrary number.
+
+================================================================================
+PART 8 — DEFINE WHICH METRIC DRIVES QUALIFICATION
+================================================================================
+
+The qualification profile must explicitly select:
+
+ExpectancyMetric
+
+Allowed values:
+
+- GrossExpectancyR
+- NetExpectancyR
+
+Recommended default:
+
+NetExpectancyR
+
+ProfitFactorMetric:
+
+- GrossProfitFactor
+- NetProfitFactor
+
+Recommended default:
+
+NetProfitFactor
+
+RequirePositiveValidationNetPnl must use:
+
+NetPnl > 0
+
+RequirePositiveValidationNetExpectancy must use:
+
+NetExpectancyR > 0
+
+The verdict explanation must cite the exact metric:
+
+Incorrect:
+
+"Negative validation expectancy."
+
+Correct:
+
+"Validation NetExpectancyR was -0.08, below the required minimum of 0.00."
+
+Do not fail a positive GrossExpectancyR under a rule named
+NegativeValidationExpectancy unless the rule clearly says NetExpectancyR.
+
+================================================================================
+PART 9 — METRIC CONSISTENCY VALIDATOR
+================================================================================
+
+Create:
+
+IValidationMetricConsistencyService
+
+Validate for every segment/layer:
+
+- GrossPnl - TransactionCosts approximately equals NetPnl
+- winner + loser + breakeven counts equal closed-trade count
+- GrossProfitFactor matches gross profit/loss
+- NetProfitFactor matches net profit/loss
+- GrossExpectancyR matches included GrossR values
+- NetExpectancyR matches included net R values
+- verdict rules reference an existing metric
+- displayed value equals qualification value
+- metric units match
+- sample counts match candidate classification
+- no expired/open outcome is included as closed unless configured
+
+Diagnostics:
+
+- ValidationMetricMismatch
+- NetPnlCostMismatch
+- ProfitFactorMismatch
+- ExpectancyMismatch
+- QualificationMetricDisplayMismatch
+- ClosedTradeCountMismatch
+- UnsupportedOutcomeInClosedMetrics
+
+Any material metric inconsistency must block a Passed verdict.
+
+================================================================================
+PART 10 — EXPIRED TRADE AND OPEN-TRADE SEMANTICS
+================================================================================
+
+Define how expired candidates affect metrics.
+
+Add configuration:
+
+ExpiredTradeMetricPolicy
+
+Values:
+
+- IncludeAsClosedAtExpiry
+- ExcludeFromClosedMetrics
+- IncludeOnlyWhenExitPriceKnown
+
+Default:
+
+IncludeAsClosedAtExpiry
+only when an exact exit price and resulting R/PnL exist.
+
+Persist:
+
+- ExpiredCount
+- ExpiredIncludedInClosedCount
+- ExpiredExcludedCount
+
+Do not mix expired trades into some metrics and exclude them from others without
+disclosure.
+
+Open trades at the segment end must never be treated as resolved using candles
+outside the segment unless explicitly classified BoundaryCensored.
+
+================================================================================
+PART 11 — MODE-AWARE PARAMETER STABILITY
+================================================================================
+
+Parameter stability is meaningful only when parameter search occurred.
+
+For:
+
+ValidateExistingFrozenConfiguration
+
+set:
+
+ParameterStabilityStatus = NotApplicable
+
+Reason:
+
+"No parameter search was performed. A single frozen configuration cannot be
+evaluated for neighborhood stability."
+
+Do not produce:
+
+FailedParameterInstability
+
+for this experiment type.
+
+For:
+
+TrainingSearchHoldoutValidation
+
+parameter stability remains required when enabled in the qualification profile.
+
+Add:
+
+ParameterStabilityApplicability
+
+Values:
+
+- Applicable
+- NotApplicable
+- InsufficientTrials
+- Evaluated
+
+Qualification behavior:
+
+NotApplicable
+→ does not pass or fail the experiment
+
+InsufficientTrials
+→ may produce FailedParameterInstability or a conditional warning according to
+the frozen qualification profile
+
+Do not merely soften the rule.
+
+Make it semantically mode-aware.
+
+================================================================================
+PART 12 — CORRECT EXPERIMENT 1 VERDICT
+================================================================================
+
+After metric and applicability fixes, recompute Experiment 1 or clone it into a
+new corrected experiment.
+
+Do not silently mutate the completed historical record unless the system has an
+explicit result-recalculation/versioning mechanism.
+
+Preferred:
+
+- preserve Experiment 1
+- mark result model as ValidationMetrics/v1 legacy
+- clone or rerun exactly into a new experiment using ValidationMetrics/v1.1
+- compare results
+
+The corrected verdict must:
+
+- exclude parameter instability as NotApplicable
+- use canonical NetExpectancyR or the frozen selected metric
+- show exact training and validation failure reasons
+- include candidate reconciliation status
+- include data-integrity status
+
+The strategy may still fail. That is expected.
+
+================================================================================
+PART 13 — MANUAL VERIFICATION B: END-TO-END LEAKAGE FIXTURE
+================================================================================
+
+Manual Verification B is mandatory.
+
+Do not replace it with isolated ranking unit tests.
+
+Create a deterministic synthetic strategy and candle fixture.
+
+Recommended strategy:
+
+SYNTHETIC_PARAMETER_SELECTION_FIXTURE
+
+Parameters:
+
+- Mode = A
+- Mode = B
+
+or:
+
+- Lookback = 2
+- Lookback = 5
+
+Construct synthetic candles so that:
+
+Training segment:
+
+- Parameter A clearly outperforms Parameter B
+- Parameter A passes guardrails
+- Parameter B scores lower
+
+Validation segment:
+
+- Parameter B clearly outperforms Parameter A
+
+Expected process:
+
+1. Prepare data.
+2. Run training search using both configurations.
+3. Confirm Parameter A ranks first.
+4. Freeze Parameter A.
+5. Run validation.
+6. Confirm Parameter A is used despite Parameter B being better on validation.
+7. Modify only validation candles to make Parameter B even better.
+8. Rerun from the same training data.
+9. Confirm Parameter A is still selected.
+10. Confirm training trial ordering and fingerprint remain identical.
+
+Persist verification evidence:
+
+- training candle fingerprint
+- validation candle fingerprint before modification
+- validation candle fingerprint after modification
+- training trial rankings
+- selected parameter fingerprint
+- frozen parameter fingerprint
+- validation results
+- selection invariant result
+
+Add an automated integration test covering this full orchestration.
+
+================================================================================
+PART 14 — LEAKAGE AUDIT
+================================================================================
+
+Add a data-access audit for optimization.
+
+During training search record:
+
+- candle range supplied to each trial
+- maximum candle timestamp accessed
+- metric sources accessed
+- segment type
+- optimizer input fingerprint
+
+Validation leakage audit must prove:
+
+MaximumTimestampAccessedByOptimizer
+<
+ValidationStartUtc
+
+or, where warmup context is allowed only for validation execution, no validation
+candidate/outcome/metric is exposed to training.
+
+Add:
+
+ValidationLeakageAuditStatus
+
+Values:
+
+- Passed
+- Failed
+- NotAvailable
+
+Any failed leakage audit:
+
+- blocks freeze or validation
+- produces ValidationDataLeakageDetected
+- prevents a Passed verdict
+
+================================================================================
+PART 15 — MANUAL VERIFICATION C: REAL TRAINING SEARCH
+================================================================================
+
+Manual Verification C is mandatory.
+
+Run a TrainingSearchHoldoutValidation experiment using:
+
+- at least 90 days of market data where available
+- one selected strategy
+- one symbol
+- one timeframe
+- bounded search of 20–50 trials
+- deterministic seed
+- fixed confidence settings
+- fixed risk settings
+- fixed cost model
+- chronological 70/30 split
+
+Recommended first verification:
+
+Strategy:
+PRICE_STRUCTURE_BREAKOUT_RETEST
+
+Symbol:
+BTCUSDT
+
+Timeframe:
+15m
+
+Range:
+at least 90 complete days
+
+Search only a small number of strategy parameters that already exist and are
+safe to vary.
+
+Do not add new strategy parameters merely to create an optimizer demo.
+
+Suggested search size:
+
+20–30 combinations
+
+Maximum:
+
+50 trials
+
+Required output:
+
+- data range and candle count
+- split
+- search-space snapshot
+- actual trials executed
+- every trial persisted
+- training-score ranking
+- guardrail outcomes
+- selected trial
+- near-best trials
+- parameter-stability result
+- frozen configuration
+- validation metrics
+- degradation metrics
+- final verdict
+- holdout reveal audit
+- exact fingerprints
+
+The experiment is not required to pass.
+
+The workflow must complete correctly.
+
+================================================================================
+PART 16 — TRAINING TRIAL RECONCILIATION
+================================================================================
+
+For Manual C verify:
+
+- requested trial count
+- generated trial count
+- distinct parameter fingerprints
+- completed trial count
+- failed trial count
+- duplicate trial count
+- ranked trial count
+
+Add diagnostics:
+
+- DuplicateParameterTrial
+- MissingParameterTrial
+- TrialFingerprintCollision
+- TrialCountMismatch
+- TrialResultMissing
+- RankingIncludesFailedGuardrailTrial
+
+Every generated trial must have a terminal status.
+
+================================================================================
+PART 17 — PARAMETER STABILITY COMPLETION
+================================================================================
+
+For actual training-search experiments calculate:
+
+- best score
+- top 10 trials
+- near-best trial count
+- near-best score range
+- neighboring parameter performance
+- selected-parameter distance from search boundaries
+- parameter cliffs
+- dominant parameter values
+- single-winner dominance
+- excessive search relative to sample
+
+Do not calculate neighbor stability for:
+
+- enum parameters without a meaningful ordering
+- booleans as if they are numeric distance
+- fixed parameters
+
+Parameter stability report must identify:
+
+- ApplicableParameters
+- NonApplicableParameters
+- StabilityScore
+- StabilityStatus
+- Warnings
+- Evidence
+
+================================================================================
+PART 18 — COMPLETE EXPORT INFRASTRUCTURE
+================================================================================
+
+The Audit & Exports tab must no longer be a placeholder.
+
+Use the existing common ExportJob/ExportService architecture.
+
+Add export scope:
+
+ValidationExperiment
+
+Supported formats:
+
+- JSON
+- CSV
+- PDF summary
+
+Required export targets:
+
+1. Complete Experiment
+2. Data and Split Snapshot
+3. Candidate Reconciliation
+4. Training Trial History
+5. Frozen Configuration
+6. Training Segment Results
+7. Validation Segment Results
+8. Training-vs-Validation Comparison
+9. Confidence Analysis
+10. Risk Analysis
+11. Regime Comparison
+12. Training Candidates
+13. Validation Candidates
+14. Boundary-Censored Candidates
+15. Risk-Only Ledger
+16. Full-Pipeline Ledger
+17. Diagnostics
+18. Leakage Audit
+19. Qualification Rule Results
+
+================================================================================
+PART 19 — EXPORT METADATA
+================================================================================
+
+Every export must include:
+
+- ValidationExperimentId
+- ExperimentName
+- ExperimentType
+- Status
+- StrategyCode
+- StrategyVersion
+- Symbol
+- Timeframe
+- RequestedRange
+- TrainingRange
+- ValidationRange
+- SplitAlgorithmVersion
+- CandleDataFingerprint
+- CandidateReconciliationStatus
+- FrozenParameterFingerprint
+- FrozenStrategyFingerprint
+- FrozenConfidenceSnapshot
+- FrozenRiskSnapshot
+- FrozenCostSnapshot
+- QualificationProfileSnapshot
+- ValidationMetricsVersion
+- RevealStatus
+- RevealedAtUtc
+- HoldoutReuseStatus
+- StrategyRobustnessDecision
+- FailureReasons
+- GeneratedAtUtc
+- FiltersApplied
+- TotalRecordCount
+- ExportedRecordCount
+
+Candidate exports must indicate whether filters are active.
+
+Do not silently export only visible filtered rows without metadata.
+
+================================================================================
+PART 20 — JSON EXPORT
+================================================================================
+
+Complete Experiment JSON must be structured.
+
+Recommended top-level shape:
+
+{
+  "experiment": {},
+  "dataSnapshot": {},
+  "split": {},
+  "candidateReconciliation": {},
+  "trainingSearch": {},
+  "frozenConfiguration": {},
+  "trainingResults": {},
+  "validationResults": {},
+  "comparison": {},
+  "confidenceAnalysis": {},
+  "riskAnalysis": {},
+  "regimeComparison": {},
+  "leakageAudit": {},
+  "diagnostics": [],
+  "qualification": {},
+  "audit": {}
+}
+
+Do not embed every structured result as an escaped JSON string when a nested
+object can be returned.
+
+================================================================================
+PART 21 — CSV EXPORT
+================================================================================
+
+Provide separate CSV datasets where one flat table is not appropriate.
+
+Examples:
+
+- validation-experiment-{id}-training-trials.csv
+- validation-experiment-{id}-segment-results.csv
+- validation-experiment-{id}-candidate-reconciliation.csv
+- validation-experiment-{id}-training-candidates.csv
+- validation-experiment-{id}-validation-candidates.csv
+- validation-experiment-{id}-risk-only-ledger.csv
+- validation-experiment-{id}-full-pipeline-ledger.csv
+- validation-experiment-{id}-qualification-rules.csv
+
+Use clear prefixed path fields for Risk-Only and Full-Pipeline data.
+
+================================================================================
+PART 22 — PDF SUMMARY
+================================================================================
+
+Generate a readable Validation Laboratory report.
+
+Sections:
+
+1. Experiment Overview
+2. Strategy and Version
+3. Data Quality
+4. Chronological Split
+5. Candidate Reconciliation
+6. Training Search Summary
+7. Frozen Configuration
+8. Raw Strategy Training Results
+9. Raw Strategy Validation Results
+10. Performance Degradation
+11. Confidence Overlay
+12. Risk-Only Overlay
+13. Full-Pipeline Overlay
+14. Regime Comparison
+15. Parameter Stability
+16. Leakage Audit
+17. Diagnostics
+18. Qualification Rules
+19. Final Verdict
+20. Limitations and Holdout-Reuse Warning
+
+The PDF must clearly distinguish:
+
+- gross vs net metrics
+- training vs validation
+- raw vs gated layers
+- sufficient vs insufficient sample
+- failure vs not applicable
+
+Do not render raw JSON as the main report body.
+
+================================================================================
+PART 23 — STRUCTURED FRONTEND VIEWS
+================================================================================
+
+Replace raw JSON-first analysis tabs with structured UI.
+
+Raw JSON may remain under:
+
+View Raw Data
+
+but not as the primary presentation.
+
+Overview:
+
+- lifecycle
+- reveal state
+- final verdict
+- critical diagnostics
+- data-integrity status
+- reconciliation status
+
+Split & Data:
+
+- timeline
+- candle counts
+- fingerprints
+- gap/duplicate diagnostics
+
+Training Search:
+
+- trials table
+- score chart
+- guardrails
+- top trials
+- stability summary
+
+Frozen Configuration:
+
+- strategy parameters
+- confidence
+- risk
+- costs
+- qualification
+- immutable fingerprints
+
+Holdout Validation:
+
+- raw metrics
+- overlay metrics
+- sample-size status
+- verdict rules
+
+Layer Comparison:
+
+- training and validation side-by-side
+- raw/confidence/risk-only/full-pipeline
+
+Confidence Analysis:
+
+- winner vs loser score statistics
+- bucket table
+- discrimination warnings
+
+Risk Analysis:
+
+- approval rates
+- failed rules
+- drawdown effects
+- path summaries
+
+Regime Comparison:
+
+- volatility
+- directional return
+- range
+- trend proxy
+- regime classification
+
+Candidates:
+
+- paginated structured grid
+- segment filters
+- layer filters
+
+Diagnostics:
+
+- severity
+- diagnostic key
+- explanation
+- affected records
+- status
+
+Audit & Exports:
+
+- export buttons
+- export job status
+- generated files
+- freeze/reveal audit
+- leakage audit
+
+================================================================================
+PART 24 — RESULT VERSIONING
+================================================================================
+
+Introduce:
+
+ValidationMetricsVersion
+
+New experiments:
+
+ValidationMetrics/v1.1
+
+Historical Experiment 1:
+
+ValidationMetrics/v1 or Legacy
+
+Do not silently reinterpret old stored values as v1.1.
+
+Add:
+
+ResultCalculationVersion
+
+to ValidationSegmentResult.
+
+Re-run Exactly must use the current implementation only when explicitly cloned
+into a new recalculation experiment, or preserve the historical calculation
+version where supported.
+
+Clearly label:
+
+Legacy metric definitions
+
+in old experiments.
+
+================================================================================
+PART 25 — QUALIFICATION RULE RESULT CONTRACT
+================================================================================
+
+Every qualification rule result must include:
+
+- RuleKey
+- RuleName
+- Segment
+- Layer
+- MetricKey
+- ActualValue
+- LimitValue
+- Unit
+- ComparisonOperator
+- Status
+- Applicability
+- Reason
+- MetricVersion
+
+Status:
+
+- Passed
+- Failed
+- Warning
+- NotApplicable
+- NotEvaluated
+
+Applicability:
+
+- Applicable
+- NotApplicableForExperimentType
+- InsufficientSample
+- MissingMetric
+
+A NotApplicable rule must not appear in failure reasons.
+
+================================================================================
+PART 26 — FINAL VERDICT CONSISTENCY
+================================================================================
+
+The final verdict must be reproducible solely from persisted qualification rule
+results.
+
+Add:
+
+IValidationVerdictService.Recalculate(...)
+
+It must:
+
+- use the frozen qualification profile
+- use the selected primary layer
+- use canonical metric keys
+- ignore NotApplicable rules
+- retain multiple failure reasons
+- choose a deterministic primary failure reason
+- store the decision explanation
+
+Add a diagnostic:
+
+VerdictRuleMismatch
+
+when:
+
+- stored verdict is not reproducible
+- failure reasons do not match failed rules
+- a NotApplicable rule contributes to failure
+- displayed metric differs from qualification metric
+
+================================================================================
+PART 27 — REQUIRED TESTS: CANDIDATE RECONCILIATION
+================================================================================
+
+Add tests for:
+
+- exact full-range partition
+- boundary-censored candidate
+- candidate overlap
+- duplicate candidate fingerprint
+- validation warmup candidate suppression
+- fresh-session boundary addition
+- fresh-session boundary removal
+- unexplained difference blocks pass
+- reconciliation detail export
+- source full-range count equals reconciled union when ExactMatch
+
+Create a fixture reproducing a stateful detector around the split.
+
+================================================================================
+PART 28 — REQUIRED TESTS: METRIC CONSISTENCY
+================================================================================
+
+Test:
+
+- gross expectancy formula
+- net expectancy formula
+- gross and net profit factor
+- net PnL equals gross minus costs
+- expired-trade inclusion policy
+- zero-loss profit factor handling
+- positive gross R but negative net R after costs
+- verdict uses NetExpectancyR when configured
+- displayed expectancy equals verdict expectancy
+- contradictory metric triggers diagnostic
+- closed-trade count reconciles
+
+================================================================================
+PART 29 — REQUIRED TESTS: MODE-AWARE STABILITY
+================================================================================
+
+Test:
+
+ValidateExistingFrozenConfiguration:
+
+- ParameterStabilityStatus = NotApplicable
+- no instability failure
+- no stability score required
+
+TrainingSearchHoldoutValidation:
+
+- stability is Applicable
+- insufficient trials handled explicitly
+- parameter cliff detected
+- near-best configurations calculated
+- failed stability rule can affect verdict only when configured
+
+================================================================================
+PART 30 — REQUIRED TESTS: END-TO-END LEAKAGE
+================================================================================
+
+Integration test the complete synthetic workflow:
+
+- create experiment
+- prepare data
+- run training trials
+- rank Parameter A first
+- freeze A
+- reveal validation
+- confirm B would have performed better in validation
+- confirm A remains selected
+- alter validation candles
+- rerun new experiment with identical training data
+- confirm training rankings unchanged
+- confirm selected fingerprint unchanged
+- confirm leakage audit Passed
+
+This test must use the real Validation Laboratory orchestration, not only a
+ranking helper.
+
+================================================================================
+PART 31 — REQUIRED TESTS: EXPORTS
+================================================================================
+
+Test:
+
+- JSON complete experiment export
+- CSV trials export
+- CSV candidate reconciliation export
+- CSV segment candidate export
+- PDF summary generation
+- validation result export blocked before reveal
+- candidate export contains filter metadata
+- old experiments export with Legacy metric label
+- both shadow ledgers exported independently
+- export jobs use the common ExportJob lifecycle
+
+================================================================================
+PART 32 — MANUAL VERIFICATION A2
+================================================================================
+
+Create a corrected fixed-configuration experiment from Run 28.
+
+Use the exact same configuration as Experiment 1.
+
+Verify:
+
+- deterministic 70/30 split
+- candidate reconciliation report
+- all five previous extra candidates explained or eliminated
+- no unexplained candidate difference
+- canonical gross and net metrics
+- parameter stability NotApplicable
+- corrected final verdict
+- validation results hidden until freeze/reveal
+- all exports function
+
+Return:
+
+- new experiment ID
+- source Run 28 ID
+- training run ID
+- validation run ID
+- reconciliation counts
+- added/missing/overlap fingerprints
+- gross training expectancy
+- net training expectancy
+- gross validation expectancy
+- net validation expectancy
+- gross and net profit factors
+- final failure reasons
+- final verdict
+
+================================================================================
+PART 33 — MANUAL VERIFICATION B
+================================================================================
+
+Run the synthetic leakage experiment end to end.
+
+Return:
+
+- experiment IDs
+- training ranking
+- selected parameter before validation modification
+- selected parameter after validation modification
+- frozen fingerprints
+- validation result difference
+- leakage audit status
+- proof that validation did not influence training selection
+
+This is mandatory.
+
+================================================================================
+PART 34 — MANUAL VERIFICATION C
+================================================================================
+
+Run the real 90-day bounded-search experiment.
+
+Return:
+
+- experiment ID
+- symbol
+- timeframe
+- date range
+- candle count
+- split
+- number of trials
+- completed/failed trials
+- top 10 trials
+- selected trial
+- training score
+- training metrics
+- parameter-stability result
+- frozen fingerprint
+- validation metrics
+- degradation
+- candidate reconciliation status
+- leakage audit status
+- final verdict
+- exports generated
+
+This is mandatory.
+
+================================================================================
+PART 35 — ACCEPTANCE CRITERIA
+================================================================================
+
+Milestone 22.1 is complete only when:
+
+- Experiment 1's candidate-count discrepancy is fully explained.
+- Candidate sets are reconciled by fingerprint.
+- Added, missing, overlapping and duplicate candidates are reported.
+- Warmup/session-boundary effects are explicit.
+- Unexplained candidate mismatch blocks a Passed verdict.
+- Gross and net expectancy are separate.
+- Gross and net profit factor are separate.
+- Qualification uses explicitly selected canonical metrics.
+- UI metrics match qualification metrics.
+- Metric inconsistencies produce diagnostics.
+- Expired-trade metric policy is explicit.
+- Fixed-configuration experiments mark parameter stability NotApplicable.
+- NotApplicable stability cannot fail a fixed experiment.
+- The corrected fixed experiment is rerun.
+- Manual Verification B passes end to end.
+- Manual Verification C completes with 20–50 real trials.
+- Optimizer leakage audit passes.
+- Every generated training trial has a terminal state.
+- Parameter stability works for search mode.
+- JSON exports work.
+- CSV exports work.
+- PDF summary works.
+- Validation exports are blocked before reveal.
+- Audit & Exports tab is functional.
+- Analysis tabs use structured UI.
+- Raw JSON is secondary only.
+- Verdict is reproducible from persisted rule results.
+- Historical Experiment 1 remains readable as legacy.
+- Run 28 remains unchanged.
+- Backend builds.
+- Validation tests pass.
+- Integration tests pass.
+- Frontend builds.
+- No real trading is added.
+- No Binance private APIs are added.
+- SK System remains unchanged.
+
+Do not mark the milestone complete while Manual Verification B, Manual
+Verification C, or export wiring remain pending.
+
+================================================================================
+OUTPUT REQUIRED FROM CURSOR
+================================================================================
+
+Return:
+
+1. Exact root cause of the 382 versus 377 candidate difference.
+2. Candidate reconciliation algorithm.
+3. Added fingerprints.
+4. Missing fingerprints.
+5. Overlapping fingerprints.
+6. Duplicate fingerprints.
+7. Detector session-boundary findings.
+8. Canonical metric definitions.
+9. Corrected training gross and net expectancy.
+10. Corrected validation gross and net expectancy.
+11. Corrected gross and net profit factors.
+12. Exact metric used by qualification.
+13. Mode-aware parameter-stability behavior.
+14. Migration details.
+15. Entities and fields added.
+16. APIs added or changed.
+17. Frontend changes.
+18. Export targets implemented.
+19. Unit-test results.
+20. Integration-test results.
+21. Backend build result.
+22. Frontend build result.
+23. Manual Verification A2 experiment ID and verdict.
+24. Manual Verification B experiment IDs and leakage proof.
+25. Manual Verification C experiment ID and complete results.
+26. Candidate reconciliation status for A2 and C.
+27. Leakage audit status for B and C.
+28. Parameter-stability result for C.
+29. Generated export files and formats.
+30. Any remaining blocker before Deployment Qualification.
+</user_query>

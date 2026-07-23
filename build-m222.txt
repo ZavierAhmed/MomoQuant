@@ -1,0 +1,14 @@
+﻿  Determining projects to restore...
+  All projects are up-to-date for restore.
+  MomoQuant.Domain -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Domain\bin\Debug\net8.0\MomoQuant.Domain.dll
+  MomoQuant.Shared -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Shared\bin\Debug\net8.0\MomoQuant.Shared.dll
+  MomoQuant.Application -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\bin\Debug\net8.0\MomoQuant.Application.dll
+  MomoQuant.Persistence -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Persistence\bin\Debug\net8.0\MomoQuant.Persistence.dll
+  MomoQuant.Infrastructure -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Infrastructure\bin\Debug\net8.0\MomoQuant.Infrastructure.dll
+  MomoQuant.Api -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Api\bin\Debug\net8.0\MomoQuant.Api.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:03.20

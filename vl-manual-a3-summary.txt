@@ -1,0 +1,102 @@
+﻿MANUAL VERIFICATION A3 — HoldoutExclusivity v1
+GeneratedUtc: 2026-07-18T00:19:10.6607356Z
+ExperimentId: 10
+Name: Manual Verification A3 - HoldoutExclusivity v1
+ExperimentType: ValidateExistingFrozenConfiguration
+Status: Completed
+SourceStrategyLabRunId: 28
+TrainingStrategyLabRunId: 93
+ValidationStrategyLabRunId: 94
+
+POLICY / VERSIONS
+validationMetricsVersion: ValidationMetrics/v1.2
+holdoutExclusivityPolicyVersion: ValidationHoldoutExclusivity/v1
+expectancyMetric: NetExpectancyR
+profitFactorMetric: NetProfitFactor
+segmentDetectorContinuityMode: FreshSessionWithWarmup
+primaryQualificationLayer: RawStrategy
+parameterStabilityApplicability: NotApplicable
+
+CANDLE / SPLIT
+totalEligibleCandleCount: 1344
+trainingCandleCount: 940
+validationCandleCount: 404
+trainingStartUtc: 2026-07-01T00:00:00
+trainingEndUtc: 2026-07-10T18:45:00
+validationStartUtc: 2026-07-10T19:00:00
+validationEndUtc: 2026-07-14T23:45:00
+splitCandleOpenTimeUtc: 2026-07-10T19:00:00
+candleDataFingerprint: 87C4CB2B8F0B2594
+frozenParameterFingerprint: E3B0C44298FC1C14
+frozenStrategyFingerprint: PSBR-BTCUSDT-15m-D196BF
+
+PERSISTED VS METRIC COUNTS (RawStrategy)
+Training persistedCandidateRowCount: 238
+Training metricIncludedCandidateCount: 238
+Training metricExcludedCandidateCount: 0
+Validation persistedCandidateRowCount: 144
+Validation metricIncludedCandidateCount: 139
+Validation metricExcludedCandidateCount: 5
+
+EXCLUSIVITY REPORT COUNTS
+trainingPersistedRowCount: 238
+validationPersistedRowCount: 144
+trainingMetricIncludedCount: 238
+validationMetricIncludedCount: 139
+crossSegmentOverlapCount: 5
+metricIntersectionEmpty: True
+unionReconcilesWithProvidedRange: True
+explanation: Holdout exclusivity applied: 5 cross-segment fingerprint(s) excluded from validation metrics; training owns earlier occurrences. Metric union size=377.
+
+OVERLAP FINGERPRINTS (5)
+077580D802819209
+B3164119173CD0B2
+D1C21FA248CC98FB
+F764B923DCBCA215
+FBA84CCE6EBF3C74
+
+RECONCILIATION
+candidateReconciliationStatus: ExplainedSessionBoundaryDifference
+leakageAuditStatus: Passed
+fullRangeCandidateCount (recon): 377
+trainingCandidateCount (recon persisted): 238
+validationCandidateCount (recon persisted): 144
+overlappingFingerprintCount: 5
+Metric union after exclusivity: 238 + 139 = 377
+
+RAW STRATEGY METRICS (primary layer)
+TRAINING:
+  closedTradeCount: 238
+  grossExpectancyR: -0.124227640000
+  netExpectancyR: -149.404320120000
+  grossProfitFactor: 0.820982650000
+  netProfitFactor: 0.540363350000
+  grossPnl: -5121.981300000000
+  netPnl: -17005.648276680000
+  transactionCosts: 11883.666976680000
+VALIDATION:
+  closedTradeCount: 139
+  grossExpectancyR: 0.085159390000
+  netExpectancyR: -48.911194490000
+  grossProfitFactor: 1.367945950000
+  netProfitFactor: 0.761279850000
+  grossPnl: 3643.291200000000
+  netPnl: -3440.863158360000
+  transactionCosts: 7084.154358360000
+
+CONSISTENCY / VERDICT
+metricConsistencyStatus: Passed
+strategyRobustnessDecision (verdict): FailedNegativeTrainingExpectancy
+primaryFailureReason: FailedNegativeTrainingExpectancy
+decisionExplanation: Primary holdout qualification failed: FailedNegativeTrainingExpectancy; FailedNegativeValidationExpectancy; FailedNegativeValidationExpectancy. Training NetExpectancyR was -149.4043, below the required minimum of 0. Validation NetExpectancyR was -48.9112, below the required minimum of 0. Validation NetPnl was -3440.8632, which is not greater than 0.
+failureReasonsJson: ["FailedNegativeTrainingExpectancy","FailedNegativeValidationExpectancy"]
+
+EXPORT VERIFICATION
+exportVerificationStatus: Passed
+exportVerificationJson: {"status":1,"manifest":{"manifestVersion":"ValidationExportManifest/v1","contentSha256":"E981D073ADA2670E89173033976C7B67FDBA87D3F93E4B61CE6F7141B7E116A0","segmentResultCount":8,"overlapCandidateCount":5,"qualificationRuleCount":14,"hasOverlapCandidatesCsv":true,"hasExclusivityReport":true,"hasPopulationCounts":true,"verificationStatus":1,"issues":[],"verifiedAtUtc":"2026-07-18T00:18:45.9095946Z"},"issues":[]}
+Exports:
+  json exportId=11 status=Completed sizeBytes=248792 file=ValidationExperiment_10_20260718_0018.json downloadOk=true
+  csv  exportId=12 status=Completed sizeBytes=8679 file=ValidationExperiment_10_20260718_0018.csv
+  pdf  exportId=13 status=Completed sizeBytes=2693 file=ValidationExperiment_10_20260718_0018.pdf
+
+STRATEGY VERDICT NOTE: Do NOT invent Passed. Recorded verdict is FailedNegativeTrainingExpectancy.

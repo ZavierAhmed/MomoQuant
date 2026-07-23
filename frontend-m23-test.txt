@@ -1,0 +1,84 @@
+﻿node.exe : npm warn Unknown env config "devdir". This will stop working in the next major version of npm. See `npm 
+help npmrc` for supported config options.
+At line:1 char:1
++ & "C:\nvm4w\nodejs/node.exe" "C:\nvm4w\nodejs/node_modules/npm/bin/np ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (npm warn Unknow...config options.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+ RUN  v3.2.4 C:/Users/zasah/Documents/MOMO Quant/src/frontend/momo-dashboard
+
+stderr | src/research/researchIntegrity.test.tsx > ResearchErrorBoundary > renders fallback when child throws
+Error: holdout tab crashed
+    at Boom (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\src\research\researchIntegrity.test.tsx:30:13)
+    at Object.react_stack_bottom_frame (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:25904:20)
+    at renderWithHooks (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:7662:22)
+    at updateFunctionComponent (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:10166:19)
+    at beginWork (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:11778:18)
+    at runWithFiberInDEV (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:874:13)
+    at performUnitOfWork (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:17641:22)
+    at workLoopSync (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:17469:41)
+    at renderRootSync (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:17450:11)
+    at performWorkOnRoot (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:16583:35) {
+  [stack]: [Getter/Setter],
+  [message]: 'holdout tab crashed'
+}
+
+The above error occurred in the <Boom> component.
+
+React will try to recreate this component tree from scratch using the error boundary you provided, 
+ResearchErrorBoundary.
+
+ResearchErrorBoundary Error: holdout tab crashed
+    at Boom (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\src\research\researchIntegrity.test.tsx:30:13)
+    at Object.react_stack_bottom_frame (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:25904:20)
+    at renderWithHooks (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:7662:22)
+    at updateFunctionComponent (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:10166:19)
+    at beginWork (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:11778:18)
+    at runWithFiberInDEV (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:874:13)
+    at performUnitOfWork (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:17641:22)
+    at workLoopSync (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:17469:41)
+    at renderRootSync (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:17450:11)
+    at performWorkOnRoot (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\node_modules\react-dom\cjs\react-dom-client.development.js:16583:35) 
+    at Boom (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\src\research\researchIntegrity.test.tsx:45:13)
+    at ResearchErrorBoundary (C:\Users\zasah\Documents\MOMO 
+Quant\src\frontend\momo-dashboard\src\components\ResearchErrorBoundary.tsx:7:1)
+
+stdout | src/research/researchIntegrity.test.tsx > apiClient resilience > maps 403 to ApiClientError
+[API Request] GET /validation-lab/experiments null
+
+stdout | src/research/researchIntegrity.test.tsx > apiClient resilience > maps 403 to ApiClientError
+[API Response] GET /validation-lab/experiments 403 { success: false, message: 'Forbidden for Viewer.' }
+
+stdout | src/research/researchIntegrity.test.tsx > apiClient resilience > supports cancellation via AbortSignal
+[API Request] GET /x null
+
+ Γ£ô src/research/researchIntegrity.test.tsx (5 tests) 87ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  15:48:30
+   Duration  1.46s (transform 97ms, setup 171ms, collect 297ms, tests 87ms, environment 449ms, prepare 171ms)
+

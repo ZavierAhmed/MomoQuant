@@ -1,0 +1,4 @@
+﻿Build started...
+Build succeeded.
+Applying migration '20260717120000_AddValidationLab221Integrity'.
+Done.

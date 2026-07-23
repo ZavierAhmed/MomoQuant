@@ -1,0 +1,18 @@
+﻿  MomoQuant.Shared -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Shared\bin\Debug\net8.0\MomoQuant.Shared.dll
+  MomoQuant.Domain -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Domain\bin\Debug\net8.0\MomoQuant.Domain.dll
+  MomoQuant.Application -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\bin\Debug\net8.0\MomoQuant.Application.dll
+  MomoQuant.Persistence -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Persistence\bin\Debug\net8.0\MomoQuant.Persistence.dll
+  MomoQuant.Infrastructure -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Infrastructure\bin\Debug\net8.0\MomoQuant.Infrastructure.dll
+  MomoQuant.Api -> C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Api\bin\Debug\net8.0\MomoQuant.Api.dll
+C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\Monitoring\MonitoringTests.cs(200,31): warning CS8602: Dereference of a possibly null reference. [C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\MomoQuant.UnitTests.csproj]
+C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\Monitoring\MonitoringTests.cs(221,58): warning CS8602: Dereference of a possibly null reference. [C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\MomoQuant.UnitTests.csproj]
+  MomoQuant.UnitTests -> C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\bin\Debug\net8.0\MomoQuant.UnitTests.dll
+Test run for C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.UnitTests\bin\Debug\net8.0\MomoQuant.UnitTests.dll (.NETCoreApp,Version=v8.0)
+A total of 1 test files matched the specified pattern.
+  MomoQuant.IntegrationTests -> C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.IntegrationTests\bin\Debug\net8.0\MomoQuant.IntegrationTests.dll
+Test run for C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.IntegrationTests\bin\Debug\net8.0\MomoQuant.IntegrationTests.dll (.NETCoreApp,Version=v8.0)
+A total of 1 test files matched the specified pattern.
+
+Passed!  - Failed:     0, Passed:    50, Skipped:     0, Total:    50, Duration: 50 ms - MomoQuant.UnitTests.dll (net8.0)
+No test matches the given testcase filter `FullyQualifiedName~ValidationLab` in C:\Users\zasah\Documents\MOMO Quant\src\backend\tests\MomoQuant.IntegrationTests\bin\Debug\net8.0\MomoQuant.IntegrationTests.dll
+

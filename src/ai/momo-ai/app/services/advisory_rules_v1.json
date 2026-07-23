@@ -1,0 +1,53 @@
+{
+  "advisoryRulesVersion": "AdvisoryRules/v1",
+  "strategies": {
+    "EMA_PULLBACK": {
+      "supportedRegimes": ["Trending", "Breakout"],
+      "supportedInputs": [
+        "strategyStrength",
+        "marketRegime",
+        "signalDirection",
+        "emaAlignmentScore",
+        "volumeConfirmation",
+        "rsi14",
+        "atrPercent",
+        "rewardRiskRatio",
+        "spreadPercent",
+        "recentWinRate"
+      ],
+      "requiredInputs": ["strategyStrength", "marketRegime", "signalDirection"]
+    },
+    "VWAP_MEAN_REVERSION": {
+      "supportedRegimes": ["Ranging", "Reversal"],
+      "supportedInputs": [
+        "strategyStrength",
+        "marketRegime",
+        "signalDirection",
+        "emaAlignmentScore",
+        "volumeConfirmation",
+        "rsi14",
+        "atrPercent",
+        "rewardRiskRatio",
+        "spreadPercent",
+        "recentWinRate"
+      ],
+      "requiredInputs": ["strategyStrength", "marketRegime", "signalDirection"]
+    },
+    "LIQUIDITY_SWEEP": {
+      "supportedRegimes": ["Reversal", "Ranging", "HighVolatility"],
+      "supportedInputs": [
+        "strategyStrength",
+        "marketRegime",
+        "signalDirection",
+        "emaAlignmentScore",
+        "volumeConfirmation",
+        "rsi14",
+        "atrPercent",
+        "rewardRiskRatio",
+        "spreadPercent",
+        "recentWinRate"
+      ],
+      "requiredInputs": ["strategyStrength", "marketRegime", "signalDirection"]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "MomoQuant.Api, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Api",
+  "MomoQuant.Application, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Application",
+  "MomoQuant.Domain, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Domain",
+  "MomoQuant.Infrastructure, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Infrastructure",
+  "MomoQuant.Persistence, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Persistence",
+  "MomoQuant.Shared, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "C:\\Users\\zasah\\Documents\\MOMO Quant\\src\\backend\\src\\MomoQuant.Shared"
+}

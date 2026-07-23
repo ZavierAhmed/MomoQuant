@@ -1,0 +1,652 @@
+################################################################################
+# MOMO Quant — Root .gitignore
+#
+# Repository structure:
+# - .NET 8 backend
+# - React + Vite frontend
+# - Python FastAPI advisory service
+# - MySQL / Redis / Docker local infrastructure
+#
+# Keep source code, migrations, tests, package lock files, documentation,
+# example configuration, and deterministic fixtures under version control.
+################################################################################
+
+
+################################################################################
+# OPERATING SYSTEM FILES
+################################################################################
+
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+
+################################################################################
+# IDE AND EDITOR FILES
+################################################################################
+
+# Visual Studio
+.vs/
+**/.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.rsuser
+*.scc
+*.vssscc
+*.vspscc
+
+# JetBrains
+.idea/
+**/.idea/
+*.sln.iml
+*.iws
+*.ipr
+
+# Visual Studio Code — local configuration
+.vscode/
+**/.vscode/
+*.code-workspace
+
+# Editors
+*.swp
+*.swo
+*.tmp
+*.temp
+*~
+.#*
+\#*\#
+
+
+################################################################################
+# .NET / C# BUILD OUTPUT
+################################################################################
+
+**/[Bb]in/
+**/[Oo]bj/
+**/[Dd]ebug/
+**/[Rr]elease/
+**/x64/
+**/x86/
+**/[Aa][Rr][Mm]/
+**/[Aa][Rr][Mm]64/
+**/publish/
+**/AppPackages/
+**/BundleArtifacts/
+**/Package.StoreAssociation.xml
+**/_pkginfo.txt
+
+# Build artifacts
+/artifacts/
+**/artifacts/
+*.dll
+*.exe
+*.pdb
+*.cache
+*.ilk
+*.obj
+*.iobj
+*.ipdb
+*.pch
+*.tlog
+*.lastbuildstate
+*.deps.json
+*.runtimeconfig.dev.json
+
+# Keep source-controlled runtimeconfig files only when intentionally required
+!**/*.runtimeconfig.json
+
+# NuGet
+**/.nuget/packages/
+packages/
+*.nupkg
+*.snupkg
+.nuget/
+!NuGet.Config
+!nuget.config
+
+# EF bundle output
+efbundle
+efbundle.exe
+efbundle-*
+efbundle_*
+
+# Generated scaffolding or local service references
+ConnectedService.json
+ServiceFabricBackup/
+
+
+################################################################################
+# .NET TEST RESULTS, COVERAGE, AND BENCHMARKS
+################################################################################
+
+TestResults/
+**/TestResults/
+*.trx
+*.coverage
+*.coveragexml
+*.testlog
+
+coverage/
+**/coverage/
+coverage.*
+*.opencover.xml
+*.cobertura.xml
+lcov.info
+
+BenchmarkDotNet.Artifacts/
+**/BenchmarkDotNet.Artifacts/
+
+
+################################################################################
+# FRONTEND / NODE / REACT / VITE
+################################################################################
+
+**/node_modules/
+**/.pnpm-store/
+**/.yarn/
+**/.npm/
+
+# Production and generated builds
+**/dist/
+**/build/
+**/.vite/
+**/.vite-cache/
+**/.cache/
+**/.parcel-cache/
+**/.turbo/
+**/.next/
+**/.nuxt/
+**/.svelte-kit/
+
+# Frontend testing
+**/coverage/
+**/.nyc_output/
+playwright-report/
+**/playwright-report/
+test-results/
+**/test-results/
+blob-report/
+**/blob-report/
+
+# TypeScript
+*.tsbuildinfo
+
+# Package-manager logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Local development server metadata
+.vite-inspect/
+stats.html
+
+
+################################################################################
+# PYTHON / FASTAPI ADVISORY SERVICE
+################################################################################
+
+# Virtual environments
+**/.venv/
+**/venv/
+**/env/
+**/ENV/
+**/env.bak/
+**/venv.bak/
+
+# Python bytecode
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Native extensions
+*.so
+*.pyd
+
+# Packaging
+.Python
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Python testing and analysis
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+.pyre/
+.pytype/
+.hypothesis/
+.nox/
+.tox/
+
+# Python coverage
+.coverage
+.coverage.*
+htmlcov/
+**/htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Python profiling
+*.prof
+
+
+################################################################################
+# ENVIRONMENT FILES AND LOCAL SECRETS
+################################################################################
+
+# Environment files
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Keep safe templates
+!.env.example
+!.env.*.example
+!**/.env.example
+!**/.env.*.example
+
+# Local .NET configuration containing secrets
+appsettings.Local.json
+appsettings.*.Local.json
+appsettings.local.json
+appsettings.*.local.json
+
+appsettings.Secrets.json
+appsettings.*.Secrets.json
+appsettings.secrets.json
+appsettings.*.secrets.json
+
+**/appsettings.Local.json
+**/appsettings.*.Local.json
+**/appsettings.local.json
+**/appsettings.*.local.json
+
+**/appsettings.Secrets.json
+**/appsettings.*.Secrets.json
+**/appsettings.secrets.json
+**/appsettings.*.secrets.json
+
+secrets.json
+**/secrets.json
+local.settings.json
+**/local.settings.json
+
+# Private keys, certificates, signing material, and keystores
+*.key
+*.pem
+*.pfx
+*.p12
+*.jks
+*.keystore
+*.ppk
+*.crt
+*.cer
+*.der
+
+# Local authentication artifacts
+*access-token*
+*access_token*
+*refresh-token*
+*refresh_token*
+*auth-token*
+*jwt-token*
+*login-response*
+*login_response*
+*decoded-jwt*
+*decoded_token*
+*credentials.local*
+*secret.local*
+
+# Do not ignore safe documentation/examples with an extra extension
+!*.example
+!*.example.json
+!*.example.txt
+!*.example.pem
+
+
+################################################################################
+# DATABASES, DATABASE BACKUPS, AND LOCAL STORAGE
+################################################################################
+
+# Local database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.mdf
+*.ldf
+
+# Backups and dumps
+*.bak
+*.backup
+*.dump
+*.sql.gz
+*.sql.zip
+
+/backups/
+**/backups/
+/dumps/
+**/dumps/
+
+# Do not ignore normal source-controlled .sql migration or seed scripts.
+
+# MySQL and Redis local data
+mysql-data/
+**/mysql-data/
+redis-data/
+**/redis-data/
+docker-data/
+**/docker-data/
+.docker-data/
+**/.docker-data/
+
+dump.rdb
+appendonly.aof
+appendonlydir/
+
+
+################################################################################
+# DOCKER LOCAL OVERRIDES
+################################################################################
+
+docker-compose.override.yml
+docker-compose.override.yaml
+docker-compose.local.yml
+docker-compose.local.yaml
+compose.override.yml
+compose.override.yaml
+compose.local.yml
+compose.local.yaml
+
+# Keep checked-in standard Docker files:
+# docker-compose.yml
+# Dockerfile
+# compose.yml
+
+
+################################################################################
+# LOGS, EXPORTS, REPORTS, AND RUNTIME DATA
+################################################################################
+
+# Logs
+*.log
+logs/
+**/logs/
+
+# MOMO Quant exports
+exports/
+**/exports/
+local-exports/
+**/local-exports/
+momo_quants_exports/
+**/momo_quants_exports/
+
+# Runtime data
+runtime/
+**/runtime/
+runtime-data/
+**/runtime-data/
+local-data/
+**/local-data/
+
+# Temporary files
+tmp/
+**/tmp/
+temp/
+**/temp/
+scratch/
+**/scratch/
+.local/
+**/.local/
+
+# Generated reports
+reports/generated/
+**/reports/generated/
+generated-reports/
+**/generated-reports/
+
+# Application crash data
+crash-dumps/
+**/crash-dumps/
+*.dmp
+*.dumpstack
+
+
+################################################################################
+# CURSOR / AGENT / MANUAL VERIFICATION ARTIFACTS
+################################################################################
+
+# Dedicated artifact directories
+cursor-artifacts/
+**/cursor-artifacts/
+agent-artifacts/
+**/agent-artifacts/
+verification-artifacts/
+**/verification-artifacts/
+manual-verification-output/
+**/manual-verification-output/
+local-artifacts/
+**/local-artifacts/
+
+# Root-level temporary evidence commonly generated during MOMO Quant milestones
+/_*.json
+/_*.txt
+/_*.csv
+/_*.log
+/_*.pdf
+/_*.html
+/_*.zip
+
+# Common monitoring, polling, login, token, and experiment artifacts at root
+/*-monitor*
+/*-poll*
+/*-stdout*
+/*-stderr*
+/*-status.json
+/*-status.txt
+/*-progress.json
+/*-progress.txt
+/*-token.txt
+/*-token.json
+/*login-response*
+/*decoded-jwt*
+/*health-response*
+/*migration-status*
+/*build-output*
+/*test-output*
+
+# MOMO Quant temporary milestone artifacts at repository root
+/c2-*
+/vl-c2-*
+/exp*-status*
+/m22*-closeout*
+/m23-*
+/milestone-*-output*
+/manual-verification-*
+/strategy-lab-*-candidates.json
+/validation-lab-*-candidates.json
+
+
+################################################################################
+# ARCHIVES AND COPIED SOURCE BUNDLES
+################################################################################
+
+# Root-level source archives should not be committed
+/*.zip
+/*.7z
+/*.rar
+/*.tar
+/*.tar.gz
+/*.tgz
+
+# Local packaged source copies
+/backend.zip
+/Frontend.zip
+/frontend.zip
+/ai.zip
+
+
+################################################################################
+# LOCAL SCRIPTS AND ONE-OFF COMMAND OUTPUT
+################################################################################
+
+# Keep proper scripts under a source-controlled scripts/ directory.
+# Ignore temporary root scripts created during debugging or agent work.
+
+/tmp-*.ps1
+/tmp-*.cmd
+/tmp-*.bat
+/tmp-*.sh
+/debug-*.ps1
+/debug-*.cmd
+/inspect-*.ps1
+/poll-*.ps1
+/recover-*.ps1
+/monitor-*.ps1
+
+
+################################################################################
+# SECURITY SCANNERS AND LOCAL TOOL OUTPUT
+################################################################################
+
+.semgrep/
+**/.semgrep/
+.sonar/
+**/.sonar/
+.sonarqube/
+**/.sonarqube/
+
+.snyk/
+**/.snyk/
+
+.trivy/
+**/.trivy/
+
+.gitleaks-report.*
+secret-scan-report.*
+security-scan-output/
+
+
+################################################################################
+# LOCAL HTTP / API CLIENT FILES
+################################################################################
+
+# JetBrains HTTP Client
+.idea/httpRequests/
+**/.idea/httpRequests/
+http-client.private.env.json
+**/http-client.private.env.json
+
+# REST Client local environment
+rest-client.private.env.json
+**/rest-client.private.env.json
+
+# Postman local exports containing tokens
+*.postman_environment.local.json
+*.postman_collection.local.json
+
+
+################################################################################
+# LOCAL CERTIFICATE / HTTPS DEVELOPMENT OUTPUT
+################################################################################
+
+.aspnet/
+**/.aspnet/
+https/
+**/https/
+certs/local/
+**/certs/local/
+
+
+################################################################################
+# MACHINE-SPECIFIC FILES
+################################################################################
+
+*.local
+*.machine
+*.computer
+*.workstation
+*.pid
+*.pid.lock
+*.lock.local
+
+
+################################################################################
+# FILES THAT MUST REMAIN TRACKED
+################################################################################
+
+# Lock files for reproducible builds
+!package-lock.json
+!**/package-lock.json
+!pnpm-lock.yaml
+!**/pnpm-lock.yaml
+!yarn.lock
+!**/yarn.lock
+!packages.lock.json
+!**/packages.lock.json
+!poetry.lock
+!**/poetry.lock
+!Pipfile.lock
+!**/Pipfile.lock
+
+# Safe configuration templates
+!appsettings.Example.json
+!**/appsettings.Example.json
+!.env.example
+!**/.env.example
+
+# Source-controlled project essentials
+!.editorconfig
+!.gitattributes
+!.gitignore
+!Directory.Build.props
+!Directory.Build.targets
+!Directory.Packages.props
+
+# Keep source-controlled database migrations and source scripts
+!**/Migrations/**
+!**/migrations/**
+!**/*.sql
+
+# Keep documentation and actual source tests
+!docs/**
+!**/docs/**
+!**/tests/**
+!**/Tests/**

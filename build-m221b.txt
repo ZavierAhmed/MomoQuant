@@ -1,0 +1,17 @@
+﻿C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\Trading\TradingSessionPreflightValidator.cs(5,7): warning CS0105: The using directive for 'MomoQuant.Application.MarketData' appeared previously in this namespace [C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\MomoQuant.Application.csproj]
+C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\Strategies\PriceStructure\PriceStructureBreakoutRetestEvaluator.cs(58,37): warning CS0219: The variable 'bestCandidate' is assigned but its value is never used [C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\MomoQuant.Application.csproj]
+C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\TradingSystems\SkSystemAnalysisService.cs(1029,16): warning CS8321: The local function 'Fmt' is declared but never used [C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\MomoQuant.Application.csproj]
+C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\StrategyBenchmarks\StrategyBenchmarkReportService.cs(1043,71): warning CS8602: Dereference of a possibly null reference. [C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\MomoQuant.Application.csproj]
+C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\StrategyBenchmarks\StrategyBenchmarkReportService.cs(1048,65): warning CS8602: Dereference of a possibly null reference. [C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\MomoQuant.Application.csproj]
+
+Build succeeded.
+
+C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\Trading\TradingSessionPreflightValidator.cs(5,7): warning CS0105: The using directive for 'MomoQuant.Application.MarketData' appeared previously in this namespace [C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\MomoQuant.Application.csproj]
+C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\Strategies\PriceStructure\PriceStructureBreakoutRetestEvaluator.cs(58,37): warning CS0219: The variable 'bestCandidate' is assigned but its value is never used [C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\MomoQuant.Application.csproj]
+C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\TradingSystems\SkSystemAnalysisService.cs(1029,16): warning CS8321: The local function 'Fmt' is declared but never used [C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\MomoQuant.Application.csproj]
+C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\StrategyBenchmarks\StrategyBenchmarkReportService.cs(1043,71): warning CS8602: Dereference of a possibly null reference. [C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\MomoQuant.Application.csproj]
+C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\StrategyBenchmarks\StrategyBenchmarkReportService.cs(1048,65): warning CS8602: Dereference of a possibly null reference. [C:\Users\zasah\Documents\MOMO Quant\src\backend\src\MomoQuant.Application\MomoQuant.Application.csproj]
+    5 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:03.99

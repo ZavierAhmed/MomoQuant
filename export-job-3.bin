@@ -1,0 +1,26 @@
+MOMO Quant — Validation Laboratory Report
+Experiment: Manual Verification A - Run 28 (Clone) (Id=4)
+Strategy: PRICE_STRUCTURE_BREAKOUT_RETEST 1.0.0
+Symbol/TF: BTCUSDT 15m
+MetricsVersion: ValidationMetrics/v1.1
+RevealStatus: Revealed
+Reconciliation: ExplainedSessionBoundaryDifference
+LeakageAudit: Passed
+ParameterStability: NotApplicable
+ExpectancyMetric: NetExpectancyR
+ProfitFactorMetric: NetProfitFactor
+Verdict: FailedNegativeTrainingExpectancy
+PrimaryFailure: FailedNegativeTrainingExpectancy
+Explanation: Primary holdout qualification failed: FailedNegativeTrainingExpectancy; FailedNegativeValidationExpectancy; FailedNegativeValidationExpectancy; FailedExcessiveValidationDrawdown. Training NetExpectancyR was -0.12, below the required minimum of 0. Validation NetExpectancyR was -0.05, below the required minimum of 0. Validation NetPnl was -5367.0501, which is not greater than 0. Validation drawdown 5292.31% exceeds limit 25%.
+
+Segment metrics (gross vs net):
+  Training/ConfidenceQualified: n=111 GrossE[R]=-0.2001 NetE[R]=-147.5896 GrossPF=0.8183 NetPF=0.5218 GrossPnl=-2215.1794 NetPnl=-7767.332
+  Training/FullPipeline: n=15 GrossE[R]= NetE[R]=-0.2391 GrossPF=0.7275 NetPF=0.495 GrossPnl=-1.4929 NetPnl=-3.5859
+  Training/RawStrategy: n=238 GrossE[R]=-0.12 NetE[R]=-0.12 GrossPF=0.5404 NetPF=0.54 GrossPnl=-17005.6483 NetPnl=-17005.6483
+  Training/RiskOnly: n=11 GrossE[R]= NetE[R]=-0.4781 GrossPF=0.2026 NetPF=0.1402 GrossPnl=-3.9143 NetPnl=-5.2586
+  Validation/ConfidenceQualified: n=54 GrossE[R]=0.0355 NetE[R]=-66.0099 GrossPF=1.2658 NetPF=0.6793 GrossPnl=983.8049 NetPnl=-1763.0391
+  Validation/FullPipeline: n=20 GrossE[R]= NetE[R]=-0.0418 GrossPF=1.4329 NetPF=0.8865 GrossPnl=2.3626 NetPnl=-0.8362
+  Validation/RawStrategy: n=144 GrossE[R]=0.05 NetE[R]=-0.05 GrossPF=0.6715 NetPF=0.67 GrossPnl=-5367.0501 NetPnl=-5367.0501
+  Validation/RiskOnly: n=19 GrossE[R]= NetE[R]=-0.2449 GrossPF=0.7099 NetPF=0.4702 GrossPnl=-2.0025 NetPnl=-4.653
+
+Limitations: observational research only; holdout reuse may contaminate future decisions.

@@ -1,0 +1,34 @@
+MOMO Quant — Validation Laboratory Report
+Experiment: Manual Verification A3 - Run 28 Exclusivity (Id=12)
+Strategy: PRICE_STRUCTURE_BREAKOUT_RETEST 1.0.0
+Symbol/TF: BTCUSDT 15m
+MetricsVersion: ValidationMetrics/v1.2
+RevealStatus: Revealed
+Reconciliation: ExplainedSessionBoundaryDifference
+LeakageAudit: Passed
+ParameterStability: NotApplicable
+ExpectancyMetric: NetExpectancyR
+ProfitFactorMetric: NetProfitFactor
+Verdict: FailedNegativeTrainingExpectancy
+PrimaryFailure: FailedNegativeTrainingExpectancy
+Explanation: Primary holdout qualification failed: FailedNegativeTrainingExpectancy; FailedNegativeValidationExpectancy; FailedNegativeValidationExpectancy. Training NetExpectancyR was -149.4043, below the required minimum of 0. Validation NetExpectancyR was -48.9112, below the required minimum of 0. Validation NetPnl was -3440.8632, which is not greater than 0.
+
+Holdout Exclusivity
+  PolicyVersion: ValidationHoldoutExclusivity/v1
+  CrossSegmentOverlapCount: 5
+  TrainingMetricIncluded: 238
+  ValidationMetricIncluded: 139
+  ReportedOverlapCount: 5
+  Explanation: Holdout exclusivity applied: 5 cross-segment fingerprint(s) excluded from validation metrics; training owns earlier occurrences. Metric union size=377.
+
+Segment metrics (gross vs net):
+  Training/ConfidenceQualified: n=111 persisted=238 included=238 excluded=0 GrossE[R]=-0.2001 NetE[R]=-147.5896 GrossPF=0.8183 NetPF=0.5218 GrossPnl=-2215.1794 NetPnl=-7767.332
+  Training/FullPipeline: n=15 persisted=238 included=238 excluded=0 GrossE[R]= NetE[R]=-0.2391 GrossPF=0.7275 NetPF=0.495 GrossPnl=-1.4929 NetPnl=-3.5859
+  Training/RawStrategy: n=238 persisted=238 included=238 excluded=0 GrossE[R]=-0.1242 NetE[R]=-149.4043 GrossPF=0.821 NetPF=0.5404 GrossPnl=-5121.9813 NetPnl=-17005.6483
+  Training/RiskOnly: n=11 persisted=238 included=238 excluded=0 GrossE[R]= NetE[R]=-0.4781 GrossPF=0.2026 NetPF=0.1402 GrossPnl=-3.9143 NetPnl=-5.2586
+  Validation/ConfidenceQualified: n=54 persisted=144 included=139 excluded=5 GrossE[R]=0.0355 NetE[R]=-66.0099 GrossPF=1.2658 NetPF=0.6793 GrossPnl=983.8049 NetPnl=-1763.0391
+  Validation/FullPipeline: n=20 persisted=144 included=139 excluded=5 GrossE[R]= NetE[R]=-0.0418 GrossPF=1.4329 NetPF=0.8865 GrossPnl=2.3626 NetPnl=-0.8362
+  Validation/RawStrategy: n=139 persisted=144 included=139 excluded=5 GrossE[R]=0.0852 NetE[R]=-48.9112 GrossPF=1.3679 NetPF=0.7613 GrossPnl=3643.2912 NetPnl=-3440.8632
+  Validation/RiskOnly: n=30 persisted=144 included=139 excluded=5 GrossE[R]= NetE[R]=-0.1501 GrossPF=0.9906 NetPF=0.6496 GrossPnl=-0.0923 NetPnl=-4.5038
+
+Limitations: observational research only; holdout reuse may contaminate future decisions.

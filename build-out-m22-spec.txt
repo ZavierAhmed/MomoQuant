@@ -1,0 +1,1807 @@
+<timestamp>Friday, Jul 17, 2026, 9:22 AM (UTC+5)</timestamp>
+<user_query>
+You are working on MOMO Quant.
+
+Task:
+Implement Milestone 22 — Validation Laboratory: Training-Only Parameter
+Selection, Frozen Configuration, Unseen 70/30 Holdout Validation, Robustness
+Qualification, and Overfitting Protection.
+
+This milestone begins only after Strategy Laboratory Milestone 21.5.3.
+
+================================================================================
+PRIMARY GOAL
+================================================================================
+
+Build a dedicated Validation Laboratory that determines whether a strategy has
+robust historical edge on unseen data.
+
+The Validation Laboratory must answer:
+
+1. Does the raw strategy remain viable on candles that were not used to select
+   or optimize its parameters?
+2. Does performance collapse from training to validation?
+3. Is the validation sample large enough to support a conclusion?
+4. Are results dependent on one fragile parameter combination?
+5. Do confidence and risk improve or damage the strategy on unseen data?
+6. Are transaction costs responsible for apparent performance?
+7. Is the strategy robust enough to move to Deployment Qualification?
+8. Can the exact experiment be reproduced from immutable snapshots?
+
+Core principle:
+
+Strategy Laboratory:
+"Does the implementation work, and what does each layer do?"
+
+Validation Laboratory:
+"Does the frozen strategy survive genuinely unseen historical data?"
+
+The mandatory flow is:
+
+Select data
+    ↓
+Create deterministic 70/30 chronological split
+    ↓
+Use only the first 70% for training and parameter selection
+    ↓
+Freeze strategy parameters and every dependent configuration
+    ↓
+Run once on the final unseen 30%
+    ↓
+Compare training versus validation
+    ↓
+Issue a robustness verdict
+
+The unseen validation period must never influence training, optimization,
+parameter selection, ranking, or threshold selection.
+
+================================================================================
+CURRENT VERIFIED BASELINE
+================================================================================
+
+Run 28 verified the following Strategy Laboratory foundation:
+
+- 377 deterministic raw candidates
+- stable setup fingerprints
+- stable entries, stops, targets, exits, and raw outcomes
+- StrategySetupQuality/v1 confidence scoring
+- CandidateRiskQuality/v1.1
+- independent Risk-Only and Full-Pipeline shadow portfolios
+- path-specific balances and drawdown
+- net transaction-cost accounting
+- explicit futures margin semantics
+- immutable custom risk-profile snapshot
+- final pipeline decisions based on Full-Pipeline state
+
+Run 28 results included approximately:
+
+Risk-Only:
+- 11 trades
+- ending balance approximately 94.7414
+- maximum drawdown approximately 5.547%
+
+Full-Pipeline:
+- 15 trades
+- ending balance approximately 96.4141
+- maximum drawdown approximately 5.237%
+
+This is a valid negative strategy result, not an infrastructure defect.
+
+Milestone 22 must preserve all Strategy Laboratory behavior.
+
+Important:
+
+- Do not modify raw strategy detection.
+- Do not modify confidence scoring.
+- Do not modify risk-scoring formulas.
+- Do not modify shadow-portfolio accounting.
+- Do not optimize confidence or risk thresholds in this milestone.
+- Do not modify the SK System.
+- Do not add real trading.
+- Do not use Binance private APIs.
+- Existing historical Strategy Lab runs must remain readable.
+- Existing validation-related code should be reused or refactored rather than
+  duplicated where correct.
+
+================================================================================
+PART 1 — VALIDATION EXPERIMENT TYPES
+================================================================================
+
+Support two explicit experiment types.
+
+-------------------------------------------------------------------------------
+A. Validate Existing Frozen Configuration
+-------------------------------------------------------------------------------
+
+Purpose:
+
+Validate a strategy configuration that already exists in Strategy Laboratory.
+
+Inputs:
+
+- source Strategy Lab run
+- exact strategy code
+- exact strategy version
+- exact strategy parameters
+- exact confidence configuration
+- exact risk configuration
+- exact cost model
+- selected historical range
+- selected split profile
+
+No parameter optimization occurs.
+
+The existing configuration is frozen immediately and tested independently on:
+
+- Training segment
+- Validation segment
+
+This is the recommended first mode for verifying Milestone 22.
+
+-------------------------------------------------------------------------------
+B. Training Search + Holdout Validation
+-------------------------------------------------------------------------------
+
+Purpose:
+
+Search a bounded strategy-parameter space using only training data, select one
+configuration, freeze it, and run it once on validation data.
+
+Only strategy parameters may be optimized in Milestone 22.
+
+Do not optimize:
+
+- confidence component weights
+- confidence threshold
+- risk profile thresholds
+- risk per trade
+- leverage
+- fee model
+- slippage model
+- validation pass criteria
+
+These values must be configured before training starts and included in the
+experiment snapshot.
+
+Gate optimization belongs to Deployment Qualification or a later dedicated
+milestone.
+
+================================================================================
+PART 2 — PRIMARY VALIDATION SUBJECT
+================================================================================
+
+The primary subject of validation is:
+
+Raw Strategy Robustness
+
+Confidence, financial risk, Risk-Only, and Full-Pipeline results are secondary
+overlay analyses.
+
+A strategy must not pass validation solely because aggressive gates reduce a
+large losing raw population to a tiny profitable sample.
+
+Add:
+
+PrimaryQualificationLayer
+
+Allowed values:
+
+- RawStrategy
+- ConfidenceQualified
+- RiskOnly
+- FullPipeline
+
+Default and recommended:
+
+RawStrategy
+
+If a non-raw layer is selected, show a warning:
+
+"Validation of a gated layer does not replace proof of raw strategy edge."
+
+Always calculate:
+
+- RawStrategyRobustnessDecision
+- ConfidenceOverlayObservation
+- RiskOnlyOverlayObservation
+- FullPipelineOverlayObservation
+
+A negative raw strategy must remain visibly negative even when a gated layer
+looks better.
+
+================================================================================
+PART 3 — DETERMINISTIC 70/30 SPLIT
+================================================================================
+
+Use a chronological split.
+
+Default:
+
+- Training = first 70%
+- Validation = final 30%
+
+The split must be based on eligible analysis candle count, not random sampling.
+
+Given:
+
+TotalEligibleCandles = N
+
+Calculate:
+
+TrainingCandleCount =
+floor(N * 0.70)
+
+Training indices:
+
+0 through TrainingCandleCount - 1
+
+Validation indices:
+
+TrainingCandleCount through N - 1
+
+Persist:
+
+- TotalEligibleCandleCount
+- TrainingCandleCount
+- ValidationCandleCount
+- TrainingStartUtc
+- TrainingEndUtc
+- ValidationStartUtc
+- ValidationEndUtc
+- SplitCandleOpenTimeUtc
+- SplitRatio
+- SplitAlgorithmVersion
+
+Recommended version:
+
+ChronologicalHoldout/v1
+
+The same inputs must always create the same split.
+
+Do not calculate the split from candidate count.
+
+Candidate generation depends on strategy behavior and must not determine the
+data boundary.
+
+================================================================================
+PART 4 — DATA WARMUP AND CONTEXT
+================================================================================
+
+Both training and validation require adequate strategy warmup.
+
+Training:
+
+- load required candles before TrainingStartUtc
+- suppress candidate emission before TrainingStartUtc
+- exclude warmup candles from metrics
+
+Validation:
+
+- create a fresh strategy session
+- load the required context candles before ValidationStartUtc
+- context candles may come from the end of the training period
+- suppress candidate emission before ValidationStartUtc
+- do not carry training portfolio state into validation
+- do not carry training open positions into validation
+- do not carry training balance, drawdown, daily loss, or exposure into
+  validation
+
+Using historical candles before ValidationStartUtc as structural warmup is
+allowed because those candles would be known at the start of the validation
+period.
+
+Using validation candles to choose parameters is forbidden.
+
+Persist:
+
+- RequiredWarmupCandles
+- TrainingWarmupStartUtc
+- ValidationWarmupStartUtc
+- WarmupAlgorithmVersion
+
+================================================================================
+PART 5 — SPLIT-BOUNDARY TRADE HANDLING
+================================================================================
+
+A training candidate may be detected before the split but exit after the split.
+
+Do not allow its validation-period outcome to improve or damage training
+metrics.
+
+Classify such candidates as:
+
+BoundaryCensored
+
+Rules:
+
+- persist the candidate for audit
+- exclude it from training performance metrics
+- do not transfer it into the validation portfolio
+- do not count it as a validation candidate
+- report the number of boundary-censored candidates
+
+Validation candidates are candidates with:
+
+SetupDetectedAtUtc >= ValidationStartUtc
+
+A validation candidate may use pre-validation candles as structural context,
+but its actual setup detection must occur inside the validation segment.
+
+Add:
+
+SegmentClassification
+
+Values:
+
+- Training
+- Validation
+- BoundaryCensored
+- WarmupSuppressed
+- Invalid
+
+================================================================================
+PART 6 — DATA SNAPSHOT AND FINGERPRINT
+================================================================================
+
+Every validation experiment must persist an immutable market-data snapshot.
+
+Store:
+
+- Exchange
+- Symbol
+- Timeframe
+- RequestedStartUtc
+- RequestedEndUtc
+- CandleCount
+- FirstCandleOpenTimeUtc
+- LastCandleOpenTimeUtc
+- CandleDataFingerprint
+- DataSource
+- ImportBatchIds where available
+- MissingCandleCount
+- DuplicateCandleCount
+- GapDiagnosticsJson
+- CreatedAtUtc
+
+The fingerprint must cover at least:
+
+- open time
+- open
+- high
+- low
+- close
+- volume where available
+
+If candle data changes after the experiment is created:
+
+- do not silently use the changed data
+- mark DataSnapshotMismatch
+- require a new experiment or an explicit clone using the new data snapshot
+
+Re-run Exactly must use the original snapshot identity.
+
+================================================================================
+PART 7 — EXPERIMENT LIFECYCLE
+================================================================================
+
+Add an immutable staged lifecycle.
+
+Statuses:
+
+- Draft
+- DataPreparing
+- DataReady
+- TrainingRunning
+- TrainingCompleted
+- ConfigurationFrozen
+- ValidationRunning
+- Completed
+- Failed
+- Cancelled
+
+Rules:
+
+Draft:
+configuration may be edited.
+
+TrainingRunning:
+configuration is locked.
+
+TrainingCompleted:
+training results are available, validation remains unexecuted.
+
+ConfigurationFrozen:
+selected configuration and snapshots are immutable.
+
+ValidationRunning:
+holdout is being evaluated.
+
+Completed:
+results and verdict are immutable.
+
+After ConfigurationFrozen:
+
+Do not allow edits to:
+
+- strategy version
+- strategy parameters
+- parameter search space
+- confidence settings
+- risk settings
+- cost settings
+- data range
+- split
+- qualification criteria
+- optimization objective
+
+To change anything:
+
+Clone as New Experiment
+
+Re-run Exactly may rerun only identical frozen snapshots.
+
+================================================================================
+PART 8 — HOLDOUT BLINDNESS
+================================================================================
+
+Before the configuration is frozen:
+
+Do not expose:
+
+- validation candidate count
+- validation outcomes
+- validation win rate
+- validation PnL
+- validation profit factor
+- validation drawdown
+- validation charts
+- validation candidate details
+
+The UI may display:
+
+- validation date range
+- validation candle count
+- data-quality status
+
+but not performance results.
+
+Add:
+
+ValidationRevealStatus
+
+Values:
+
+- Hidden
+- Frozen
+- Revealed
+
+Once validation is run:
+
+- mark Revealed
+- record RevealedAtUtc
+- record the user initiating the reveal where available
+- prevent training changes
+
+The system must not offer:
+
+"Optimize using validation results"
+
+================================================================================
+PART 9 — STRATEGY PARAMETER SEARCH
+================================================================================
+
+For Training Search + Holdout Validation:
+
+Use only the training segment.
+
+Reuse the existing optimizer infrastructure where correct.
+
+Support parameter definitions:
+
+- IntegerRange
+- DecimalRange
+- BooleanSet
+- EnumSet
+- ExplicitValueSet
+
+Each parameter definition must include:
+
+- Name
+- Type
+- Minimum
+- Maximum
+- Step
+- AllowedValues
+- DefaultValue
+
+Persist:
+
+ParameterSearchSpaceSnapshotJson
+
+Add hard search limits:
+
+- MaximumCombinations
+- MaximumTrials
+- Timeout
+- DeterministicSeed
+- ParallelismLimit
+
+The optimizer must not receive:
+
+- validation candles
+- validation outcomes
+- validation candidate metrics
+- validation summary values
+
+================================================================================
+PART 10 — TRAINING OBJECTIVE
+================================================================================
+
+The optimization objective must be selected before training.
+
+Default:
+
+Raw Strategy Training Quality
+
+Recommended components:
+
+- net expectancy in R
+- profit factor
+- sample-size sufficiency
+- maximum drawdown
+- fee impact
+- opportunity frequency
+- stability penalty
+- excessive-trade penalty where appropriate
+
+Create:
+
+ValidationTrainingScore/v1
+
+Suggested deterministic structure:
+
+A. Net Expectancy Quality — 0–30
+B. Profit Factor Quality — 0–20
+C. Drawdown Quality — 0–15
+D. Sample Sufficiency — 0–15
+E. Cost Efficiency — 0–10
+F. Opportunity Stability — 0–10
+
+Total:
+100
+
+The exact formula must be documented and persisted.
+
+Hard guardrails should be evaluated before final ranking.
+
+Suggested configurable training guardrails:
+
+- MinimumClosedTrades
+- MinimumNetExpectancyR
+- MinimumProfitFactor
+- MaximumDrawdownPercent
+- MaximumFeeToGrossProfitPercent
+
+Do not fabricate a high score for configurations with insufficient samples.
+
+================================================================================
+PART 11 — TRAINING TRIAL PERSISTENCE
+================================================================================
+
+Persist every attempted parameter configuration.
+
+Create or update:
+
+ValidationParameterTrial
+
+Fields:
+
+- Id
+- ValidationExperimentId
+- TrialNumber
+- ParameterSnapshotJson
+- ParameterFingerprint
+- Status
+- StartedAtUtc
+- CompletedAtUtc
+- RawCandidateCount
+- ClosedTradeCount
+- WinnerCount
+- LoserCount
+- ExpiredCount
+- NetExpectancyR
+- GrossPnl
+- NetPnl
+- ProfitFactor
+- MaximumDrawdownPercent
+- FeeImpactPercent
+- TrainingScore
+- GuardrailDecision
+- GuardrailFailureReasonsJson
+- Rank
+- DiagnosticWarningsJson
+- StrategyLabRunId where reused
+
+Do not persist only the winning trial.
+
+The complete search history is required to detect parameter fragility and
+multiple-comparison risk.
+
+================================================================================
+PART 12 — WINNER SELECTION AND FREEZE
+================================================================================
+
+After training:
+
+Rank only training trials that passed required guardrails.
+
+Select:
+
+- highest TrainingScore
+- deterministic tie-breaking
+
+Suggested tie-breaking order:
+
+1. Higher net expectancy R
+2. Higher profit factor
+3. Lower maximum drawdown
+4. Higher closed-trade count
+5. Lexicographically smaller parameter fingerprint
+
+Before validation, show a Freeze Review containing:
+
+- selected parameters
+- selected strategy version
+- selected training metrics
+- confidence snapshot
+- risk snapshot
+- cost snapshot
+- data fingerprint
+- split
+- qualification criteria
+- trial count
+- search-space size
+- parameter-stability warnings
+
+Require explicit:
+
+Freeze Configuration
+
+Once frozen, persist:
+
+- FrozenStrategyParameterSnapshotJson
+- FrozenParameterFingerprint
+- FrozenStrategyFingerprint
+- FrozenConfidenceSnapshotJson
+- FrozenRiskSnapshotJson
+- FrozenCostModelSnapshotJson
+- FrozenQualificationProfileJson
+- FrozenAtUtc
+
+Validation must use these exact snapshots.
+
+================================================================================
+PART 13 — PARAMETER STABILITY ANALYSIS
+================================================================================
+
+Use training data only.
+
+Analyze the top training configurations.
+
+Show:
+
+- top 10 trial scores
+- distance between selected configuration and neighboring configurations
+- number of near-best configurations
+- performance range among near-best configurations
+- parameter cliff warnings
+- trial-count warning
+- dominant parameter values
+
+Define a near-best configuration as configurable, for example:
+
+TrainingScore >= BestTrainingScore - 5
+
+Add warnings:
+
+ParameterCliff:
+selected parameters perform well while adjacent values perform materially worse.
+
+SingleWinnerDominance:
+only one configuration passes guardrails.
+
+ExcessiveSearchRelativeToSample:
+too many trials relative to closed training trades.
+
+LowParameterStability:
+near-best configurations have highly inconsistent performance.
+
+Do not use validation performance in parameter stability analysis.
+
+================================================================================
+PART 14 — VALIDATION EXECUTION
+================================================================================
+
+Validation must:
+
+- create a fresh strategy instance
+- use only the frozen strategy version
+- use only frozen strategy parameters
+- use frozen confidence settings
+- use frozen risk settings
+- use frozen cost model
+- use frozen validation criteria
+- use the validation warmup context
+- reset both shadow portfolios to the configured starting balance
+- run Risk-Only and Full-Pipeline independently
+- apply all fees and configured slippage
+- preserve raw candidates
+- evaluate all raw candidates observationally
+
+Do not:
+
+- rerank parameters after validation
+- automatically choose a different trial
+- tune thresholds after seeing validation
+- merge training and validation portfolio balances
+
+================================================================================
+PART 15 — SEGMENT RESULTS
+================================================================================
+
+Persist separate results for:
+
+Training
+
+and:
+
+Validation
+
+For each segment calculate four layers:
+
+1. Raw Strategy
+2. Confidence-Qualified
+3. Risk-Only Shadow Portfolio
+4. Full-Pipeline Shadow Portfolio
+
+For each layer calculate:
+
+- CandleCount
+- CandidateCount
+- OpportunityRatePer1000Candles
+- ClosedTradeCount
+- WinnerCount
+- LoserCount
+- ExpiredCount
+- WinRate
+- AverageR
+- MedianR
+- NetExpectancyR
+- GrossPnl
+- TransactionCosts
+- NetPnl
+- NetReturnPercent
+- ProfitFactor
+- MaximumRealizedDrawdownPercent
+- AverageTradeDuration
+- LongCount
+- ShortCount
+- LongNetExpectancyR
+- ShortNetExpectancyR
+- FeeToGrossProfitPercent
+- ConsecutiveLossMaximum
+- BoundaryCensoredCount where applicable
+
+Raw strategy calculations must use the existing raw simulation definitions.
+
+Shadow portfolio calculations must use their actual independent ledgers.
+
+================================================================================
+PART 16 — TRAINING VS VALIDATION COMPARISON
+================================================================================
+
+For each layer calculate:
+
+- CandidateCountChangePercent
+- OpportunityRateChangePercent
+- WinRateChangePoints
+- NetExpectancyChange
+- NetExpectancyRetentionPercent
+- ProfitFactorChange
+- NetReturnChange
+- DrawdownChange
+- FeeImpactChange
+- LongShortDistributionChange
+- TradeDurationChange
+- SampleSizeRatio
+
+Handle zero and negative values safely.
+
+Do not display mathematically misleading retention percentages when the training
+value is zero or negative.
+
+In those cases show:
+
+NotMeaningful
+
+and use absolute comparison fields.
+
+Add:
+
+PerformanceCollapseDetected
+
+Suggested triggers:
+
+- training expectancy positive and validation expectancy negative
+- training profit factor above 1 and validation profit factor materially below 1
+- validation drawdown exceeds qualification limit
+- opportunity rate collapses beyond configured tolerance
+- validation sample is insufficient
+- validation net performance is dominated by one trade
+
+================================================================================
+PART 17 — VALIDATION QUALIFICATION PROFILE
+================================================================================
+
+Create configurable validation profiles.
+
+Recommended default:
+
+StandardHoldoutQualification/v1
+
+Suggested fields:
+
+- PrimaryQualificationLayer = RawStrategy
+- MinimumTrainingClosedTrades = 30
+- MinimumValidationClosedTrades = 15
+- MinimumTrainingProfitFactor = 1.10
+- MinimumValidationProfitFactor = 1.05
+- MinimumTrainingNetExpectancyR = 0
+- MinimumValidationNetExpectancyR = 0
+- MaximumTrainingDrawdownPercent
+- MaximumValidationDrawdownPercent
+- MinimumOpportunityRetentionPercent
+- MaximumAllowedExpectancyDegradation
+- MaximumSingleTradePnlContributionPercent
+- RequirePositiveValidationNetPnl
+- RequirePositiveValidationNetExpectancy
+- RequireParameterStability
+
+These must be editable before training and frozen with the experiment.
+
+Do not silently hardcode approval rules.
+
+================================================================================
+PART 18 — FINAL VERDICT TAXONOMY
+================================================================================
+
+Return a primary Strategy Robustness verdict.
+
+Values:
+
+- Passed
+- ConditionallyPassed
+- FailedInsufficientTrainingSample
+- FailedInsufficientValidationSample
+- FailedNegativeTrainingExpectancy
+- FailedNegativeValidationExpectancy
+- FailedPerformanceCollapse
+- FailedExcessiveValidationDrawdown
+- FailedOpportunityCollapse
+- FailedParameterInstability
+- FailedCostSensitivity
+- FailedDataQuality
+- FailedConfigurationMismatch
+- Invalid
+
+Allow multiple failure reasons.
+
+Persist:
+
+- StrategyRobustnessDecision
+- PrimaryFailureReason
+- FailureReasonsJson
+- QualificationRuleResultsJson
+- DecisionExplanation
+- DecidedAtUtc
+
+A strategy with negative raw validation expectancy must not be marked Passed
+because Full-Pipeline had only two profitable trades.
+
+================================================================================
+PART 19 — OVERLAY VERDICTS
+================================================================================
+
+In addition to the raw strategy verdict, report observational overlay outcomes.
+
+Confidence overlay:
+
+- Did confidence improve validation expectancy?
+- Did it improve profit factor?
+- How many validation winners did it reject?
+- How many validation losers did it reject?
+- Did it reduce the sample below sufficiency?
+
+Risk-Only overlay:
+
+- Did financial risk reduce drawdown?
+- Did it reduce net loss?
+- Did it reject too many winners?
+- Did risk limits halt the portfolio?
+
+Full-Pipeline overlay:
+
+- Did confidence + risk improve unseen results?
+- Did the pipeline remain sample-sufficient?
+- Was the pipeline positive after costs?
+- Did gates produce a better result only by eliminating almost every trade?
+
+Overlay statuses:
+
+- Improved
+- Mixed
+- Degraded
+- InsufficientSample
+- NotEvaluated
+
+These overlays must not override a failed raw-strategy robustness verdict.
+
+================================================================================
+PART 20 — CONFIDENCE VALIDATION ANALYSIS
+================================================================================
+
+Compare confidence behavior between training and validation.
+
+Calculate:
+
+- winner average confidence
+- loser average confidence
+- winner median confidence
+- loser median confidence
+- confidence separation
+- point-biserial correlation where valid
+- score-bucket win rates
+- score-bucket expectancy
+- threshold-approved count
+- threshold-rejected count
+- rejected winners
+- rejected losers
+
+Warnings:
+
+ConfidenceDiscriminationReversed:
+validation losers score higher than winners by a material amount.
+
+ConfidenceThresholdSampleCollapse:
+threshold leaves too few validation trades.
+
+ConfidenceTrainingValidationDrift:
+confidence distribution shifts materially between segments.
+
+Do not optimize the confidence threshold using validation results.
+
+================================================================================
+PART 21 — RISK VALIDATION ANALYSIS
+================================================================================
+
+Compare risk behavior between training and validation.
+
+Calculate separately for Risk-Only and Full-Pipeline:
+
+- financial-risk approval rate
+- most common failed rules
+- risk-score distribution
+- winner vs loser risk score
+- rejected winners
+- rejected losers
+- drawdown reduction
+- net-loss avoidance
+- transaction-cost impact
+- portfolio halt reason
+- accepted sample size
+
+Warnings:
+
+RiskRuleDominance:
+one rule rejects an overwhelming majority of validation candidates.
+
+RiskSampleCollapse:
+risk leaves too few trades to assess.
+
+RiskValidationDrift:
+validation risk metrics differ materially from training.
+
+Do not optimize risk thresholds using validation results.
+
+================================================================================
+PART 22 — REGIME AND DISTRIBUTION OBSERVATIONS
+================================================================================
+
+Without adding external indicators, provide simple candle-derived segment
+context.
+
+For training and validation calculate:
+
+- realized volatility
+- average candle range percent
+- directional return
+- up-candle percentage
+- trend persistence proxy
+- gap count
+- large-range candle frequency
+
+Add a qualitative comparison:
+
+- SimilarRegime
+- ModeratelyDifferentRegime
+- MateriallyDifferentRegime
+
+This is observational only.
+
+Do not use validation regime metrics to change the frozen strategy.
+
+Display:
+
+"Validation occurred under materially different volatility conditions."
+
+when applicable.
+
+================================================================================
+PART 23 — HOLDOUT REUSE AND CONTAMINATION WARNINGS
+================================================================================
+
+Track prior validation experiments by:
+
+- strategy code
+- strategy version
+- symbol
+- timeframe
+- validation date range
+- candle fingerprint
+
+If the same or substantially overlapping validation period has already been
+revealed for the same strategy version, show:
+
+HoldoutReuseWarning
+
+Fields:
+
+- PriorExperimentIds
+- OverlapPercent
+- RevealCount
+- FirstRevealedAtUtc
+- ContaminationRisk
+
+Do not necessarily block reuse in v1, but mark the experiment:
+
+RepeatedHoldoutExposure
+
+A repeatedly reused holdout should not be treated as pristine unseen evidence.
+
+================================================================================
+PART 24 — VALIDATION EXPERIMENT PERSISTENCE
+================================================================================
+
+Create or update:
+
+ValidationExperiment
+
+Suggested fields:
+
+- Id
+- Name
+- Description
+- ExperimentType
+- Status
+- StrategyCode
+- StrategyVersion
+- SourceStrategyLabRunId nullable
+- Exchange
+- Symbol
+- Timeframe
+- RequestedStartUtc
+- RequestedEndUtc
+- SplitRatio
+- SplitAlgorithmVersion
+- TrainingStartUtc
+- TrainingEndUtc
+- ValidationStartUtc
+- ValidationEndUtc
+- CandleDataSnapshotJson
+- CandleDataFingerprint
+- WarmupSnapshotJson
+- ParameterSearchSpaceSnapshotJson
+- OptimizationObjectiveSnapshotJson
+- FrozenStrategyParameterSnapshotJson
+- FrozenParameterFingerprint
+- FrozenConfidenceSnapshotJson
+- FrozenRiskSnapshotJson
+- FrozenCostModelSnapshotJson
+- QualificationProfileSnapshotJson
+- ValidationRevealStatus
+- FrozenAtUtc nullable
+- ValidationRevealedAtUtc nullable
+- StrategyRobustnessDecision
+- PrimaryFailureReason
+- FailureReasonsJson
+- QualificationRuleResultsJson
+- DiagnosticsJson
+- CreatedOn
+- UpdatedOn
+
+Create:
+
+ValidationSegmentResult
+
+Fields:
+
+- Id
+- ValidationExperimentId
+- SegmentType
+- LayerType
+- StrategyLabRunId nullable
+- MetricsJson
+- CandidateCount
+- ClosedTradeCount
+- NetExpectancyR
+- ProfitFactor
+- NetPnl
+- NetReturnPercent
+- MaximumDrawdownPercent
+- TransactionCosts
+- BoundaryCensoredCount
+- ResultFingerprint
+- CreatedOn
+
+Unique constraint:
+
+ValidationExperimentId + SegmentType + LayerType
+
+================================================================================
+PART 25 — REUSE STRATEGY LAB EXECUTION ENGINE
+================================================================================
+
+Do not build a second strategy simulator.
+
+Validation Laboratory must reuse:
+
+- strategy registry
+- strategy-version resolution
+- candle loader
+- warmup logic
+- raw candidate simulator
+- confidence evaluator
+- candidate financial-risk evaluator
+- independent shadow portfolios
+- cost model
+- fingerprint generation
+- exports
+
+Add a validation orchestration layer around the existing deterministic engine.
+
+The same frozen configuration and candle segment must produce the same candidate
+fingerprints as an equivalent Strategy Lab run.
+
+================================================================================
+PART 26 — API ENDPOINTS
+================================================================================
+
+Add:
+
+POST /api/v1/validation-lab/experiments
+
+GET /api/v1/validation-lab/experiments
+
+GET /api/v1/validation-lab/experiments/{id}
+
+PUT /api/v1/validation-lab/experiments/{id}
+Draft only.
+
+POST /api/v1/validation-lab/experiments/{id}/prepare-data
+
+POST /api/v1/validation-lab/experiments/{id}/run-training
+
+GET /api/v1/validation-lab/experiments/{id}/training-trials
+
+POST /api/v1/validation-lab/experiments/{id}/freeze
+
+POST /api/v1/validation-lab/experiments/{id}/run-validation
+
+GET /api/v1/validation-lab/experiments/{id}/comparison
+
+GET /api/v1/validation-lab/experiments/{id}/confidence-analysis
+
+GET /api/v1/validation-lab/experiments/{id}/risk-analysis
+
+GET /api/v1/validation-lab/experiments/{id}/candidates
+
+GET /api/v1/validation-lab/experiments/{id}/diagnostics
+
+POST /api/v1/validation-lab/experiments/{id}/clone
+
+POST /api/v1/validation-lab/experiments/{id}/rerun-exactly
+
+Rerun Exactly must validate every frozen fingerprint before execution.
+
+================================================================================
+PART 27 — FRONTEND ROUTES
+================================================================================
+
+Add:
+
+/validation-lab
+
+/validation-lab/new
+
+/validation-lab/experiments/:experimentId
+
+Main list columns:
+
+- ID
+- Name
+- Strategy
+- Version
+- Symbol
+- Timeframe
+- Date Range
+- Experiment Type
+- Status
+- Validation Reveal Status
+- Final Verdict
+- Created On
+
+Experiment detail tabs:
+
+1. Overview
+2. Split & Data
+3. Training Search
+4. Frozen Configuration
+5. Holdout Validation
+6. Layer Comparison
+7. Confidence Analysis
+8. Risk Analysis
+9. Regime Comparison
+10. Candidates
+11. Diagnostics
+12. Audit & Exports
+
+================================================================================
+PART 28 — CREATE EXPERIMENT WIZARD
+================================================================================
+
+Step 1 — Strategy
+
+- strategy selector
+- version selector
+- source Strategy Lab run selector when validating existing configuration
+
+Step 2 — Market Data
+
+- exchange
+- symbol
+- timeframe
+- start date
+- end date
+- auto-import missing candles
+- data-quality preview
+
+Step 3 — Split
+
+- default 70/30
+- training and validation date preview
+- candle counts
+- warmup requirements
+
+Step 4 — Strategy Parameters
+
+For existing configuration:
+show frozen source parameters.
+
+For search:
+configure bounded search space.
+
+Step 5 — Fixed Overlays
+
+- confidence model and threshold
+- risk profile/custom snapshot
+- cost model
+- slippage
+- starting balance
+
+Clearly state:
+
+"These settings will not be optimized."
+
+Step 6 — Qualification Profile
+
+- minimum samples
+- expectancy
+- profit factor
+- drawdown
+- degradation limits
+
+Step 7 — Review
+
+Show:
+
+- training range
+- unseen validation range
+- data fingerprint
+- estimated trial count
+- warnings
+
+================================================================================
+PART 29 — SPLIT VISUALIZATION
+================================================================================
+
+Add a simple timeline/chart.
+
+Show:
+
+- warmup
+- training
+- split boundary
+- validation
+
+Use clearly different labels.
+
+Display:
+
+Training:
+used for parameter selection.
+
+Validation:
+hidden from optimization and evaluated only after freeze.
+
+Show boundary-censored candidates after execution.
+
+Do not display validation performance before reveal.
+
+================================================================================
+PART 30 — RESULTS UI
+================================================================================
+
+Overview must show:
+
+STRATEGY ROBUSTNESS VERDICT
+
+Example:
+
+Failed — Negative Validation Expectancy
+
+TRAINING
+
+- closed trades
+- expectancy
+- profit factor
+- net return
+- drawdown
+
+VALIDATION
+
+same metrics.
+
+DEGRADATION
+
+- expectancy change
+- profit-factor change
+- drawdown change
+- opportunity change
+
+LAYER RESULTS
+
+- Raw Strategy
+- Confidence Qualified
+- Risk Only
+- Full Pipeline
+
+Always display sample sizes beside performance metrics.
+
+Do not show a green profitability result without indicating that it came from
+an insufficient sample.
+
+================================================================================
+PART 31 — CANDIDATE EXPLORATION
+================================================================================
+
+Candidate grid must support:
+
+Segment:
+
+- Training
+- Validation
+- BoundaryCensored
+
+Layer:
+
+- Raw
+- Confidence
+- RiskOnly
+- FullPipeline
+
+Filters:
+
+- outcome
+- net result
+- confidence decision
+- risk decision
+- entry decision
+- failed risk rule
+- direction
+- date
+- confidence score range
+- risk score range
+
+Validation candidates must be unavailable until the holdout is revealed.
+
+================================================================================
+PART 32 — EXPORTS
+================================================================================
+
+Support JSON, CSV, and PDF/summary export for:
+
+- complete validation experiment
+- training trials
+- frozen configuration
+- training results
+- validation results
+- training-vs-validation comparison
+- candidate population
+- Risk-Only ledger
+- Full-Pipeline ledger
+- diagnostics
+
+Every export must include:
+
+- experiment ID
+- strategy/version
+- data fingerprint
+- split snapshot
+- frozen parameter fingerprint
+- confidence snapshot
+- risk snapshot
+- cost snapshot
+- qualification profile
+- reveal status
+- final verdict
+- generated-at timestamp
+
+Do not export validation results before reveal.
+
+================================================================================
+PART 33 — DIAGNOSTICS
+================================================================================
+
+Add:
+
+ValidationDataLeakageDetected
+
+Trigger if training selection accessed validation candles or metrics.
+
+FrozenConfigurationMismatch
+
+Trigger if validation runtime parameters differ from the frozen snapshot.
+
+ValidationDataSnapshotMismatch
+
+Trigger if candle fingerprint changed.
+
+ValidationCandidateBeforeStart
+
+Trigger if a validation candidate was emitted before ValidationStartUtc.
+
+TrainingOutcomeCrossedBoundary
+
+Trigger when a training trade used validation-period candles without being
+classified BoundaryCensored.
+
+PortfolioStateCarriedAcrossSplit
+
+Trigger if validation balance, drawdown, daily loss, exposure, or open positions
+are inherited from training.
+
+ValidationResultBeforeFreeze
+
+Trigger if validation executed before ConfigurationFrozen.
+
+ValidationSampleInsufficient
+
+Trigger according to qualification profile.
+
+ParameterSearchTooLarge
+
+Trigger when trial count is excessive relative to data/sample size.
+
+RepeatedHoldoutExposure
+
+Trigger when the same holdout was revealed previously.
+
+================================================================================
+PART 34 — TESTS
+================================================================================
+
+Split tests:
+
+- 70/30 candle split is deterministic
+- split uses candle count, not candidate count
+- no candle belongs to both primary segments
+- boundary timestamps are correct
+- small datasets fail safely
+
+Warmup tests:
+
+- training warmup does not emit candidates
+- validation warmup does not emit candidates
+- validation uses a fresh strategy instance
+- validation portfolio starts from configured starting balance
+- no open training position enters validation
+
+Leakage tests:
+
+- optimizer receives training candles only
+- optimizer cannot access validation summaries
+- changing validation candles does not change selected training parameters
+- changing validation outcomes does not change training ranking
+- validation cannot run before freeze
+
+Boundary tests:
+
+- training trade exiting after split becomes BoundaryCensored
+- boundary-censored outcome does not affect training metrics
+- boundary-censored trade does not enter validation portfolio
+
+Freeze tests:
+
+- frozen settings cannot be edited
+- clone creates a new editable experiment
+- Re-run Exactly preserves every snapshot
+- configuration mismatch blocks execution
+
+Optimizer tests:
+
+- every trial is persisted
+- deterministic seed reproduces trial order
+- tie-breaking is deterministic
+- failed guardrail trial cannot win
+- validation metrics never influence ranking
+
+Data tests:
+
+- candle fingerprint is deterministic
+- changed candles trigger mismatch
+- missing/duplicate candle diagnostics persist
+
+Segment tests:
+
+- training and validation metrics are independent
+- candidate fingerprints match equivalent Strategy Lab segment runs
+- transaction costs are segment-specific
+- both shadow portfolios reset at validation start
+
+Verdict tests:
+
+- positive training and negative validation expectancy fails
+- insufficient validation sample fails as insufficient sample
+- excessive validation drawdown fails
+- strong validation result passes when all rules pass
+- gated tiny sample cannot override failed raw-strategy verdict
+- multiple failure reasons persist
+
+Holdout tests:
+
+- validation results hidden before freeze/reveal
+- revealing records timestamp
+- repeated overlapping holdout triggers warning
+
+Historical compatibility:
+
+- old validation records remain readable
+- old Strategy Lab runs remain unchanged
+
+Frontend tests where available:
+
+- wizard creates experiment
+- validation metrics hidden before reveal
+- freeze review displays immutable snapshots
+- comparison tables display
+- failed sample size is visibly distinguished from performance failure
+- exports respect reveal state
+
+================================================================================
+PART 35 — REQUIRED MANUAL VERIFICATION A
+================================================================================
+
+Create:
+
+Validate Existing Frozen Configuration
+
+Use the exact Run 28 strategy configuration.
+
+Use:
+
+- same strategy code
+- same strategy version
+- same raw strategy parameters
+- same symbol
+- same timeframe
+- same July 1–14, 2026 range
+- same confidence model
+- confidence threshold 65
+- risk per trade 0.5%
+- preferred leverage 10x
+- maximum leverage 10x
+- maximum margin per symbol 25%
+- maximum total margin 50%
+- maximum concurrent risk 2%
+- maximum open positions 2
+- maximum daily loss 2%
+- maximum drawdown 5%
+- no policy minimum confidence
+- same taker/taker cost model
+- zero slippage
+- 70/30 chronological split
+
+This is an infrastructure smoke test.
+
+Because the period is short, the expected verdict may be:
+
+FailedInsufficientValidationSample
+
+or another truthful negative verdict.
+
+Do not force a Passed result.
+
+Verify:
+
+- split is deterministic
+- validation portfolio starts independently
+- raw candidate fingerprints match equivalent segment Strategy Lab runs
+- validation metrics remain hidden until freeze
+- frozen settings are used exactly
+- no training position crosses into validation
+- boundary candidates are handled correctly
+
+================================================================================
+PART 36 — REQUIRED MANUAL VERIFICATION B
+================================================================================
+
+Create a small synthetic validation fixture with a parameterized test strategy.
+
+Purpose:
+
+Prove that validation cannot influence parameter selection.
+
+Use at least two parameter configurations.
+
+Construct:
+
+- training candles where Parameter A ranks above Parameter B
+- validation candles where Parameter B would perform better
+
+Expected:
+
+Training selection chooses Parameter A.
+
+After validation candles are modified to favor Parameter B even more:
+
+Frozen selected configuration remains Parameter A.
+
+This must prove:
+
+- no validation leakage
+- no post-validation parameter reselection
+- frozen configuration integrity
+
+================================================================================
+PART 37 — REQUIRED MANUAL VERIFICATION C
+================================================================================
+
+Run a Training Search + Holdout experiment on a sufficiently longer historical
+range.
+
+Recommended verification range:
+
+At least 90 days of candles where available.
+
+Use a tightly bounded parameter search.
+
+Do not use hundreds or thousands of combinations for the first verification.
+
+Recommended:
+
+Maximum trials:
+20–50
+
+Return:
+
+- number of trials
+- training winner
+- training metrics
+- near-best configurations
+- parameter stability
+- frozen configuration
+- validation metrics
+- degradation
+- final verdict
+
+The purpose is to validate the workflow, not to force discovery of a profitable
+strategy.
+
+================================================================================
+ACCEPTANCE CRITERIA
+================================================================================
+
+Milestone 22 is complete only when:
+
+- A deterministic chronological 70/30 split exists.
+- Training and validation are candle-based, not candidate-based.
+- Validation remains hidden from optimization.
+- Strategy parameters are selected using training only.
+- Confidence and risk settings are fixed, not optimized.
+- The selected configuration is frozen before validation.
+- Validation uses the exact frozen snapshots.
+- Training and validation use fresh independent sessions.
+- Validation portfolio state resets.
+- Boundary-crossing training trades are censored.
+- Candle data fingerprints are immutable.
+- Every training trial is persisted.
+- Parameter stability is calculated using training only.
+- Training and validation results are stored separately.
+- Raw, confidence, Risk-Only, and Full-Pipeline layers are compared.
+- The primary verdict defaults to raw strategy robustness.
+- Gates cannot rescue a failed raw strategy using an insufficient sample.
+- Sample-size insufficiency is distinct from performance failure.
+- Validation degradation is calculated.
+- Confidence behavior is compared out of sample.
+- Risk behavior is compared out of sample.
+- Holdout reuse warnings exist.
+- Validation cannot run before freeze.
+- Re-run Exactly reproduces the same experiment.
+- Existing Strategy Lab runs remain unchanged.
+- Run 28 behavior remains unchanged.
+- No real trading is added.
+- No private Binance APIs are added.
+- SK System remains unchanged.
+- Backend builds.
+- Tests pass.
+- Frontend builds.
+
+Milestone success means the validation system is correct.
+
+It does not require the current breakout-retest strategy to pass validation.
+
+================================================================================
+OUTPUT REQUIRED FROM CURSOR
+================================================================================
+
+Return:
+
+1. Existing validation code discovered and what was reused.
+2. Final Validation Laboratory architecture.
+3. Exact split algorithm.
+4. Warmup and boundary-censoring behavior.
+5. Validation leakage protections.
+6. Database migration details.
+7. New entities and fields.
+8. API endpoints.
+9. Frontend routes and pages.
+10. Training scoring formula.
+11. Default qualification profile.
+12. Unit-test results.
+13. Integration-test results.
+14. Backend build result.
+15. Frontend build result.
+16. Manual Verification A experiment ID.
+17. Training and validation candle ranges.
+18. Boundary-censored candidate count.
+19. Raw training metrics.
+20. Raw validation metrics.
+21. Confidence overlay comparison.
+22. Risk-Only overlay comparison.
+23. Full-Pipeline overlay comparison.
+24. Final robustness verdict.
+25. Manual Verification B leakage-test result.
+26. Manual Verification C experiment ID and results.
+27. Data and configuration fingerprints.
+28. Any remaining blocker before Deployment Qualification.
+</user_query>

@@ -1,0 +1,20 @@
+﻿{
+    "success":  true,
+    "message":  "Request completed successfully.",
+    "data":  {
+                 "exportId":  5,
+                 "scope":  "ValidationExperiment",
+                 "sourceId":  "8",
+                 "format":  "json",
+                 "detailLevel":  "full",
+                 "status":  "Completed",
+                 "fileName":  "ValidationExperiment_8_20260717_2358.json",
+                 "contentType":  "application/json",
+                 "sizeBytes":  248125,
+                 "errorMessage":  null,
+                 "requestedAtUtc":  "2026-07-17T23:58:25.3143687Z",
+                 "completedAtUtc":  "2026-07-17T23:58:25.5217802Z",
+                 "downloadUrl":  "/api/v1/exports/5/download"
+             },
+    "errors":  null
+}

@@ -1,0 +1,193 @@
+﻿MOMO Quant Manual C2 Experiment 9 — Final Summary
+GeneratedUtc: 2026-07-18T02:45:29Z
+================================================================================
+
+FINAL VERDICT: FAILED (training cancelled mid-run — exclusive C2 takeover)
+errorMessage: Cancelled: exclusive C2 takeover for Manual Verification C2 exact spec
+Last observed progress: percentComplete=45.000000000000 stage=Training updatedAtUtc=2026-07-18T02:40:53
+Monitor: 43% @ 02:34Z -> 45% @ 02:38Z -> Failed @ 02:40Z (advancing, not stuck).
+Freeze/validation NOT executed (prerequisite TrainingCompleted never reached).
+Exports: see appendix if appended after export attempts.
+
+--- Experiment identity & range ---
+experimentId: 9
+name: Manual Verification C2 - Long Range 25 Trials Exclusivity
+strategyCode: PRICE_STRUCTURE_BREAKOUT_RETEST version=1.0.0
+symbol: BTCUSDT exchange=Binance Futures timeframe=15m
+requestedRange: 2026-03-01T00:00:00 .. 2026-07-14T23:59:59
+splitRatio: 0.700000000000 splitAlgorithmVersion: ChronologicalHoldout/v1
+totalEligibleCandleCount: 13056
+trainingCandleCount: 9139
+validationCandleCount: 3917
+trainingStartUtc: 2026-03-01T00:00:00
+trainingEndUtc: 2026-06-04T04:30:00
+validationStartUtc: 2026-06-04T04:45:00
+validationEndUtc: 2026-07-14T23:45:00
+splitCandleOpenTimeUtc: 2026-06-04T04:45:00
+requiredWarmupCandles: 600
+trainingWarmupStartUtc: 2026-03-01T00:00:00
+validationWarmupStartUtc: 2026-05-28T22:45:00
+candleDataFingerprint: 5F4FF7AF02736355
+maximumTrials: 25 deterministicSeed: 42
+expectancyMetric: NetExpectancyR profitFactorMetric: NetProfitFactor
+initialBalance: 100.000000000000
+
+--- Trial counts ---
+requested: 25
+generated/completed/failed/unique fingerprints: UNAVAILABLE
+GET /training-trials returned data: [] ; trainingStrategyLabRunId is null
+At cancel (~45%): formula 25+50*(i+1)/25 implies ~trial index 9-10/25; no persisted trial rows.
+
+--- Top 10 trials ---
+(none)
+
+--- Selected trial / training score ---
+N/A — training did not complete
+
+--- Parameter stability ---
+parameterStabilityApplicability: Applicable
+parameterStabilityJson: {}
+
+--- Frozen fingerprint ---
+frozenParameterFingerprint: (empty)
+frozenStrategyFingerprint: (empty)
+frozenAtUtc: 
+
+--- Training exact metrics ---
+N/A — TrainingCompleted never reached
+
+--- Validation exact metrics ---
+N/A — validation never started
+crossSegmentOverlapCount: 0
+
+--- Integrity statuses ---
+reconciliation: available=False status= message=Candidate reconciliation has not been computed yet.
+leakage: available=False status=NotAvailable message=Leakage audit has not been computed yet.
+metricConsistencyStatus: (empty/not computed) field=''
+exportVerificationStatus: (empty/not computed) field=''
+holdout exclusivity: available=False overlaps=0 message=Holdout exclusivity has not been computed yet.
+
+--- Freeze / run-validation ---
+freeze: SKIPPED (status Failed, never TrainingCompleted)
+run-validation: SKIPPED (status Failed, never TrainingCompleted)
+
+--- Readiness ---
+lab status: Blocked
+summary: Validation Laboratory is blocked until failed integrity/consistency checks are resolved.
+experiment 9 entry: {"experimentId":9,"name":"Manual Verification C2 - Long Range 25 Trials Exclusivity","status":"Blocked","metricsVersion":"ValidationMetrics/v1.2","notes":null}
+  check HoldoutExclusivityPolicy: passed=True warn=False — ValidationHoldoutExclusivity/v1 (EarlierOccurrenceOwnsFingerprint) is available.
+  check MetricsContract: passed=True warn=False — ValidationMetrics/v1.2 is the default for new experiments.
+  check RecentExperiments: passed=False warn=False — 0 ready, 10 with warnings, 10 blocked among 20 recent.
+  check LegacyMetrics: passed=True warn=True — 3 experiment(s) use Legacy Metrics (ValidationMetrics/v1).
+
+--- Key JSON snippets ---
+draftConfigurationJson:
+{
+    "parameters":  {
+
+                   },
+    "observationSettings":  {
+                                "confidenceModel":  "StrategySetupQuality/v1",
+                                "useSystemDefaultConfidenceThreshold":  false,
+                                "customConfidenceThreshold":  65,
+                                "effectiveConfidenceThreshold":  80,
+                                "useSystemDefaultRiskSettings":  false,
+                                "riskProfileId":  null,
+                                "riskApprovalThreshold":  50,
+                                "riskPerTradePercent":  0.5,
+                                "preferredLeverage":  10,
+                                "maximumLeverage":  10,
+                                "maximumPositionExposurePercent":  null,
+                                "maximumConcurrentExposurePercent":  null,
+                                "maxNotionalExposurePerSymbolPercent":  null,
+                                "maxTotalNotionalExposurePercent":  null,
+                                "maxMarginUsagePerSymbolPercent":  25,
+                                "maxTotalMarginUsagePercent":  50,
+                                "maxConcurrentRiskPercent":  2,
+                                "maxOpenPositions":  2,
+                                "maxDailyLossPercent":  2,
+                                "maxDrawdownPercent":  5,
+                                "minimumRewardRisk":  1.2,
+                                "feeEfficiencyHardLimitPercent":  null,
+                                "exposureSemanticsVersion":  4,
+                                "legacyExposureResolution":  null,
+                                "slippageBasisPoints":  null,
+                                "entryOrderType":  "Taker",
+                                "exitOrderType":  "Taker"
+                            },
+    "makerFeeRate":  0.0002,
+    "takerFeeRate":  0.0004,
+    "slippagePercent":  0,
+    "qualificationProfile":  {
+                                 "profileVersion":  "StandardHoldoutQualification/v1",
+                                 "primaryQualificationLayer":  1,
+                                 "minimumTrainingClosedTrades":  30,
+                                 "minimumValidationClosedTrades":  15,
+                                 "minimumTrainingProfitFactor":  1.1,
+                                 "minimumValidationProfitFactor":  1.05,
+                                 "minimumTrainingNetExpectancyR":  0,
+                                 "minimumValidationNetExpectancyR":  0,
+                                 "maximumTrainingDrawdownPercent":  25,
+                                 "maximumValidationDrawdownPercent":  25,
+                                 "minimumOpportunityRetentionPercent":  40,
+                                 "maximumAllowedExpectancyDegradation":  0.5,
+                                 "maximumSingleTradePnlContributionPercent":  40,
+                                 "requirePositiveValidationNetPnl":  true,
+                                 "requirePositiveValidationNetExpectancy":  true,
+                                 "requireParameterStability":  true,
+                                 "expectancyMetric":  null,
+                                 "profitFactorMetric":  null,
+                                 "expiredTradeMetricPolicy":  null
+                             },
+    "parameterSearchSpaceOverrides":  {
+                                          "swingRightBarsStep":  "1",
+                                          "swingLeftBarsMax":  "5",
+                                          "maxRetestBarsMax":  "20",
+                                          "fixedRewardRiskMin":  "2",
+                                          "fixedRewardRiskStep":  "0.5",
+                                          "swingRightBarsMin":  "2",
+                                          "fixedRewardRiskMax":  "2",
+                                          "swingLeftBarsMin":  "1",
+                                          "maxRetestBarsStep":  "5",
+                                          "retestTolerancePercentMax":  "0.25",
+                                          "stopBufferPercentMax":  "0.05",
+                                          "swingRightBarsMax":  "2",
+                                          "stopBufferPercentMin":  "0.05",
+                                          "stopBufferPercentStep":  "0.05",
+                                          "swingLeftBarsStep":  "1",
+                                          "retestTolerancePercentMin":  "0.05",
+                                          "retestTolerancePercentStep":  "0.05",
+                                          "maxRetestBarsMin":  "20"
+                                      },
+    "autoImportMissingCandles":  true
+}
+
+exclusivity: {"available":false,"policyVersion":"ValidationHoldoutExclusivity/v1","crossSegmentOverlapCount":0,"message":"Holdout exclusivity has not been computed yet."}
+reconciliation: {"available":false,"status":null,"message":"Candidate reconciliation has not been computed yet."}
+leakage-audit: {"available":false,"status":"NotAvailable","message":"Leakage audit has not been computed yet."}
+training-trials data: []
+
+NOTE: Readiness lists newer exclusive C2 experiments (ids 18-20), including
+'Manual Verification C2 FINAL - Exclusive 5x5 PSBR' (id 20). Experiment 9 error
+message references that exclusive takeover. Per instructions this monitor did
+not start run-training or create a new experiment.
+================================================================================
+END
+
+
+--- Exports (Scope=ValidationExperiment SourceId=9) ---
+format=json CREATE_FAILED: The remote server returned an error: (400) Bad Request.
+format=csv CREATE_FAILED: The remote server returned an error: (400) Bad Request.
+format=pdf CREATE_FAILED: The remote server returned an error: (400) Bad Request.
+
+--- Post-export GETs (refresh) ---
+readiness.status=Blocked summary=Validation Laboratory is blocked until failed integrity/consistency checks are resolved.
+exclusivity: {"available":false,"policyVersion":"ValidationHoldoutExclusivity/v1","crossSegmentOverlapCount":0,"message":"Holdout exclusivity has not been computed yet."}
+reconciliation: {"available":false,"status":null,"message":"Candidate reconciliation has not been computed yet."}
+leakage: {"available":false,"status":"NotAvailable","message":"Leakage audit has not been computed yet."}
+training-trials count=0
+
+--- Exports retry (sourceId as string, detailLevel=full) ---
+format=json CREATE_FAILED: The remote server returned an error: (400) Bad Request. | {"success":false,"message":"Export failed: Validation result exports are blocked until ValidationRevealStatus is Revealed.","data":null,"errors":null}
+format=csv CREATE_FAILED: The remote server returned an error: (400) Bad Request. | {"success":false,"message":"Export failed: Validation result exports are blocked until ValidationRevealStatus is Revealed.","data":null,"errors":null}
+format=pdf CREATE_FAILED: The remote server returned an error: (400) Bad Request. | {"success":false,"message":"Export failed: Validation result exports are blocked until ValidationRevealStatus is Revealed.","data":null,"errors":null}

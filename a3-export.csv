@@ -1,0 +1,71 @@
+# validation-experiment-segment-results.csv
+SegmentType,LayerType,ClosedTradeCount,GrossExpectancyR,NetExpectancyR,GrossProfitFactor,NetProfitFactor,GrossPnl,NetPnl,TransactionCosts,PersistedCandidateRowCount,MetricIncludedCandidateCount,MetricExcludedCandidateCount,CrossSegmentOverlapCount,GrossProfit,GrossLoss,NetProfit,NetLoss,ResultCalculationVersion
+Training,ConfidenceQualified,111,-0.2001,-147.5896,0.8183,0.5218,-2215.1794,-7767.332,5552.1527,238,238,0,0,9978.1035,12193.2829,8475.6624,16242.9944,ValidationMetrics/v1.2
+Training,FullPipeline,15,,-0.2391,0.7275,0.495,-1.4929,-3.5859,2.093,238,238,0,0,,,,,ValidationMetrics/v1.2
+Training,RawStrategy,238,-0.12,-0.12,0.5404,0.54,-17005.6483,-17005.6483,,238,238,0,0,19992.3768,36998.0251,,,ValidationMetrics/v1.2
+Training,RiskOnly,11,,-0.4781,0.2026,0.1402,-3.9143,-5.2586,1.3443,238,238,0,0,,,,,ValidationMetrics/v1.2
+Validation,ConfidenceQualified,54,0.0355,-66.0099,1.2658,0.6793,983.8049,-1763.0391,2746.844,144,139,5,5,4684.4073,3700.6024,3734.0095,5497.0486,ValidationMetrics/v1.2
+Validation,FullPipeline,20,,-0.0418,1.4329,0.8865,2.3626,-0.8362,3.1988,144,139,5,5,,,,,ValidationMetrics/v1.2
+Validation,RawStrategy,139,0.0852,-48.9112,1.3679,0.7613,3643.2912,-3440.8632,7084.1544,144,139,5,5,13544.9934,9901.7022,10972.931,14413.7941,ValidationMetrics/v1.2
+Validation,RiskOnly,30,,-0.1501,0.9906,0.6496,-0.0923,-4.5038,4.4115,144,139,5,5,,,,,ValidationMetrics/v1.2
+
+# validation-experiment-qualification-rules.csv
+RuleKey,Status,Applicability,MetricKey,ActualValue,LimitValue,Reason
+DataQuality,1,1,,Ok,Ok,Data quality checks passed.
+ConfigurationMatch,1,1,,Match,Match,Configuration fingerprints match.
+CandidateReconciliation,1,1,CandidateReconciliationStatus,ExplainedSessionBoundaryDifference,ExactMatch|ExplainedSessionBoundaryDifference,Candidate reconciliation status ExplainedSessionBoundaryDifference.
+LeakageAudit,1,1,ValidationLeakageAuditStatus,Passed,Passed,MaximumTimestampAccessedByOptimizer < ValidationStartUtc.
+TrainingSample,1,1,ClosedTradeCount,238,30,Training closed trades 238 meets minimum 30.
+ValidationSample,1,1,ClosedTradeCount,139,15,Validation closed trades 139 meets minimum 15.
+TrainingExpectancy,2,1,NetExpectancyR,-0.12,0,"Training NetExpectancyR was -0.12, below the required minimum of 0."
+ValidationExpectancy,2,1,NetExpectancyR,-48.9112,0,"Validation NetExpectancyR was -48.9112, below the required minimum of 0."
+ValidationNetPnl,2,1,NetPnl,-3440.8632,0,"Validation NetPnl was -3440.8632, which is not greater than 0."
+TrainingProfitFactor,3,1,NetProfitFactor,0.54,1.1,Training NetProfitFactor was 0.54 (minimum 1.1).
+ValidationProfitFactor,3,1,NetProfitFactor,0.7613,1.05,Validation NetProfitFactor was 0.7613 (minimum 1.05).
+ValidationDrawdown,1,1,MaximumRealizedDrawdownPercent,0,25,Validation drawdown 0% within limit 25%.
+OpportunityRetention,1,1,OpportunityRatePer1000Candles,135.889,40,Opportunity retention 135.889% meets minimum 40%.
+ParameterStability,4,2,ParameterStabilityApplicability,NotApplicable,NotApplicable,No parameter search was performed. A single frozen configuration cannot be evaluated for neighborhood stability.
+
+# validation-experiment-candidate-reconciliation.csv
+Fingerprint,DifferenceType,Segment,IsExpected,Explanation
+077580D802819209,CrossSegmentOverlapExcludedFromValidation,AddedBySegmentSessionReset,True,"Fingerprint appears in both training and validation segments because FreshSessionWithWarmup resets _seenFingerprints while warmup still observes pre-split structure, allowing late re-confirmation of the same swing/break/retest on the validation side. Holdout exclusivity (EarlierOccurrenceOwnsFingerprint): validation occurrence is audit-only; AffectsMetrics=false; classification=CrossSegmentOverlapExcludedFromValidation. After exclusivity, metric fingerprint intersection is empty."
+B3164119173CD0B2,CrossSegmentOverlapExcludedFromValidation,AddedBySegmentSessionReset,True,"Fingerprint appears in both training and validation segments because FreshSessionWithWarmup resets _seenFingerprints while warmup still observes pre-split structure, allowing late re-confirmation of the same swing/break/retest on the validation side. Holdout exclusivity (EarlierOccurrenceOwnsFingerprint): validation occurrence is audit-only; AffectsMetrics=false; classification=CrossSegmentOverlapExcludedFromValidation. After exclusivity, metric fingerprint intersection is empty."
+D1C21FA248CC98FB,CrossSegmentOverlapExcludedFromValidation,AddedBySegmentSessionReset,True,"Fingerprint appears in both training and validation segments because FreshSessionWithWarmup resets _seenFingerprints while warmup still observes pre-split structure, allowing late re-confirmation of the same swing/break/retest on the validation side. Holdout exclusivity (EarlierOccurrenceOwnsFingerprint): validation occurrence is audit-only; AffectsMetrics=false; classification=CrossSegmentOverlapExcludedFromValidation. After exclusivity, metric fingerprint intersection is empty."
+F764B923DCBCA215,CrossSegmentOverlapExcludedFromValidation,AddedBySegmentSessionReset,True,"Fingerprint appears in both training and validation segments because FreshSessionWithWarmup resets _seenFingerprints while warmup still observes pre-split structure, allowing late re-confirmation of the same swing/break/retest on the validation side. Holdout exclusivity (EarlierOccurrenceOwnsFingerprint): validation occurrence is audit-only; AffectsMetrics=false; classification=CrossSegmentOverlapExcludedFromValidation. After exclusivity, metric fingerprint intersection is empty."
+FBA84CCE6EBF3C74,CrossSegmentOverlapExcludedFromValidation,AddedBySegmentSessionReset,True,"Fingerprint appears in both training and validation segments because FreshSessionWithWarmup resets _seenFingerprints while warmup still observes pre-split structure, allowing late re-confirmation of the same swing/break/retest on the validation side. Holdout exclusivity (EarlierOccurrenceOwnsFingerprint): validation occurrence is audit-only; AffectsMetrics=false; classification=CrossSegmentOverlapExcludedFromValidation. After exclusivity, metric fingerprint intersection is empty."
+
+# validation-experiment-training-trials.csv
+TrialJson
+"{
+  ""id"": 51,
+  ""trialNumber"": 1,
+  ""parameterSnapshotJson"": ""{}"",
+  ""parameterFingerprint"": ""E3B0C44298FC1C14"",
+  ""status"": 4,
+  ""startedAtUtc"": ""2026-07-17T23:57:58.284026"",
+  ""completedAtUtc"": ""2026-07-17T23:58:01.939993"",
+  ""rawCandidateCount"": 238,
+  ""closedTradeCount"": 238,
+  ""winnerCount"": 68,
+  ""loserCount"": 167,
+  ""expiredCount"": 0,
+  ""netExpectancyR"": -0.120000000000,
+  ""grossPnl"": -17005.648300000000,
+  ""netPnl"": -17005.648300000000,
+  ""profitFactor"": 0.540000000000,
+  ""maximumDrawdownPercent"": 17074.160000000000,
+  ""feeImpactPercent"": null,
+  ""trainingScore"": 25.800000000000,
+  ""guardrailDecision"": ""Failed"",
+  ""guardrailFailureReasonsJson"": ""[\u0022ProfitFactor\\u003C1.1\u0022,\u0022NetExpectancyR\\u003C0\u0022,\u0022MaxDD\\u003E25\u0022]"",
+  ""rank"": null,
+  ""strategyLabRunId"": 86
+}"
+
+# overlap-candidates.csv
+OverlapFingerprint,CanonicalOccurrenceCandidateId,DuplicateOccurrenceCandidateId,TrainingSetupDetectedAtUtc,ValidationSetupDetectedAtUtc,MetricOwner,ExcludedOccurrence,MetricClassification,MetricExclusionReason
+F764B923DCBCA215,37356,37382,2026-07-10T01:59:59.999,2026-07-10T19:14:59.999,Training,Validation,CrossSegmentOverlapExcludedFromValidation,Excluded from validation metrics because this structural setup fingerprint was already observed during training.
+FBA84CCE6EBF3C74,37376,37388,2026-07-10T15:59:59.999,2026-07-10T21:29:59.999,Training,Validation,CrossSegmentOverlapExcludedFromValidation,Excluded from validation metrics because this structural setup fingerprint was already observed during training.
+D1C21FA248CC98FB,37378,37389,2026-07-10T17:14:59.999,2026-07-10T21:59:59.999,Training,Validation,CrossSegmentOverlapExcludedFromValidation,Excluded from validation metrics because this structural setup fingerprint was already observed during training.
+B3164119173CD0B2,37337,37478,2026-07-09T11:59:59.999,2026-07-13T03:29:59.999,Training,Validation,CrossSegmentOverlapExcludedFromValidation,Excluded from validation metrics because this structural setup fingerprint was already observed during training.
+077580D802819209,37329,37487,2026-07-08T22:29:59.999,2026-07-13T12:59:59.999,Training,Validation,CrossSegmentOverlapExcludedFromValidation,Excluded from validation metrics because this structural setup fingerprint was already observed during training.
