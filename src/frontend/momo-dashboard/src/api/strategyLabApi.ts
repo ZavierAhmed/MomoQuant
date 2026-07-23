@@ -744,7 +744,7 @@ export const strategyLabApi = {
     apiRequest<StrategyLabRun>('/strategy-lab/runs', { method: 'POST', body: request }),
   getRun: (id: number) => apiRequest<StrategyLabRun>(`/strategy-lab/runs/${id}`),
   getRunDetail: (id: number) => apiRequest<StrategyLabRunDetail>(`/strategy-lab/runs/${id}/detail`),
-  getCandidates: (id: number, query: StrategyLabCandidateQuery = {}) => {
+  getCandidates: (id: number, query: StrategyLabCandidateQuery = {}, signal?: AbortSignal) => {
     const params = new URLSearchParams();
     Object.entries(query).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== '') {
@@ -752,7 +752,7 @@ export const strategyLabApi = {
       }
     });
     const qs = params.toString();
-    return apiRequest<PagedCandidates>(`/strategy-lab/runs/${id}/candidates${qs ? `?${qs}` : ''}`);
+    return apiRequest<PagedCandidates>(`/strategy-lab/runs/${id}/candidates${qs ? `?${qs}` : ''}`, { signal });
   },
   getCandidateDetail: (id: number, candidateId: number) =>
     apiRequest<{

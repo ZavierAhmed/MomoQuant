@@ -167,6 +167,33 @@ public sealed class ValidationExperimentExecutionLeaseRepository : IValidationEx
 
             return false;
         }
+        catch (Exception ex) when (IsUniqueConflict(ex))
+        {
+            foreach (var entry in _db.ChangeTracker.Entries<ValidationExperimentExecutionLease>()
+                         .Where(e => e.Entity.ValidationExperimentId == experimentId)
+                         .ToList())
+            {
+                entry.State = EntityState.Detached;
+            }
+
+            return false;
+        }
+    }
+
+    private static bool IsUniqueConflict(Exception ex)
+    {
+        for (var cur = ex; cur is not null; cur = cur.InnerException!)
+        {
+            var msg = cur.Message ?? string.Empty;
+            if (msg.Contains("Duplicate entry", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("IX_ValExpLeases_ExperimentId", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("UNIQUE constraint", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public async Task<bool> TryHeartbeatOwnedAsync(

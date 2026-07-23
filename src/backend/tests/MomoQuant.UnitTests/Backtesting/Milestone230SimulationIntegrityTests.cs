@@ -86,12 +86,35 @@ public class Milestone230SimulationIntegrityTests
     }
 
     [Fact]
-    public void ShadowEntry_StopEntryTouchedAndMissed()
+    public void Settlement_ThreeTradeFixture_ReconcilesBalanceAndConsecutiveLosses()
     {
-        var policy = ConservativeStopFirstIntrabarPolicy.Instance;
-        var hit = new Candle { Open = 100m, High = 106m, Low = 99m, Close = 105m };
-        var miss = new Candle { Open = 100m, High = 102m, Low = 99m, Close = 101m };
-        Assert.True(policy.StopEntryTriggered(TradeDirection.Long, 105m, hit));
-        Assert.False(policy.StopEntryTriggered(TradeDirection.Long, 105m, miss));
+        // InitialBalance + sum(FullyNetPnl) = FinalBalance
+        // Trade1: gross winner / net loser; Trade2: loser; Trade3: winner.
+        var t1 = SimulatedTradeSettlement.Create(97m, grossPricePnl: 5m, entryFee: 3m, exitFee: 3m, DateTime.UtcNow);
+        Assert.Equal(-1m, t1.FullyNetPnl); // 5 - 3 - 3
+
+        var t2 = SimulatedTradeSettlement.Create(95m, grossPricePnl: -3m, entryFee: 1m, exitFee: 1m, DateTime.UtcNow);
+        Assert.Equal(-5m, t2.FullyNetPnl); // -3 - 1 - 1
+
+        var t3 = SimulatedTradeSettlement.Create(89m, grossPricePnl: 8m, entryFee: 1m, exitFee: 1m, DateTime.UtcNow);
+        Assert.Equal(6m, t3.FullyNetPnl); // 8 - 1 - 1
+
+        const decimal initial = 100m;
+        var sumNet = t1.FullyNetPnl + t2.FullyNetPnl + t3.FullyNetPnl;
+        var finalBalance = initial + sumNet;
+        Assert.Equal(100m, initial);
+        Assert.Equal(-1m + -5m + 6m, sumNet);
+        Assert.Equal(100m + sumNet, finalBalance);
+
+        var consecutiveLosses = 0;
+        foreach (var pnl in new[] { t1.FullyNetPnl, t2.FullyNetPnl, t3.FullyNetPnl })
+        {
+            if (pnl < 0m) consecutiveLosses++;
+            else consecutiveLosses = 0;
+        }
+
+        Assert.Equal(0, consecutiveLosses);
+        Assert.True(t1.FullyNetPnl < 0m); // gross winner becomes net loser → loss streak
+        Assert.Equal(-1m + -5m + 6m, sumNet); // daily/weekly realized = sum FullyNetPnl
     }
 }

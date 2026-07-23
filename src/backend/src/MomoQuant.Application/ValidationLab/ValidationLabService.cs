@@ -1898,14 +1898,8 @@ public sealed partial class ValidationLabService : IValidationLabService
 
     // ---- helpers ----
 
-    public static string ParameterFingerprint(IReadOnlyDictionary<string, string> parameters)
-    {
-        var ordered = parameters.OrderBy(p => p.Key, StringComparer.Ordinal)
-            .Select(p => $"{p.Key}={p.Value}");
-        var raw = string.Join("|", ordered);
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
-        return Convert.ToHexString(hash)[..16];
-    }
+    public static string ParameterFingerprint(IReadOnlyDictionary<string, string> parameters) =>
+        new ValidationParameterFingerprintService().ComputeFingerprint(parameters);
 
     private static void AppendDiagnostic(ValidationExperiment experiment, string code, string message)
     {
@@ -2499,13 +2493,23 @@ public sealed partial class ValidationLabService : IValidationLabService
 
             if (useV13)
             {
+                var draft = ParseDraft(experiment.DraftConfigurationJson);
+                var costModel = new ValidationPathMetricCostModel
+                {
+                    // Raw Strategy Lab outcomes use taker for both legs (RawOutcomeSimulator).
+                    EntryFeeRate = draft.TakerFeeRate,
+                    ExitFeeRate = draft.TakerFeeRate,
+                    SlippagePercent = draft.SlippagePercent,
+                    ContractMultiplier = 1m
+                };
                 var pathTrades = _pathMetricBuilder.Build(
                     experiment.Id,
                     segmentType,
                     layer,
                     metricsCandidates,
                     riskOnly,
-                    fullPipeline);
+                    fullPipeline,
+                    costModel);
                 metrics = ValidationMetricsMapper.FromPathTradesV13(
                     pathTrades,
                     candleCount,

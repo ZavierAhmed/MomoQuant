@@ -1,4 +1,5 @@
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.MarketData;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.ValidationLab;
@@ -31,7 +32,7 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
             throw new InvalidOperationException("Training candle scope requires TrainingStartUtc and ValidationStartUtc.");
         }
 
-        if (!Enum.TryParse<Timeframe>(experiment.Timeframe, true, out var timeframe))
+        if (!TimeframeParser.TryParse(experiment.Timeframe, out var timeframe))
         {
             throw new InvalidOperationException($"Unknown timeframe '{experiment.Timeframe}'.");
         }

@@ -7,14 +7,13 @@ import { ErrorState } from '@/components/common/ErrorState';
 import { KeyValueGrid } from '@/components/common/KeyValueGrid';
 import { Badge } from '@/components/common/Badge';
 import { DataTable } from '@/components/common/DataTable';
-import { formatDate, formatNumber, formatExpectancyR, dedupeFailureReasons } from '@/components/common/utils';
+import { formatDate, formatNumber, dedupeFailureReasons } from '@/components/common/utils';
 import { ApiErrorAlert } from '@/components/common/ApiErrorAlert';
 import { createExport, getExportDownloadUrl } from '@/api/exportsApi';
 import {
   validationLabApi,
-  type StrategyRobustnessDecision,
+  type ValidationCandidateQuery,
   type ValidationExperimentDetail,
-  type ValidationExperimentStatus,
   type ValidationLayerType,
   type ValidationParameterTrial,
   type ValidationSegmentClassification,
@@ -22,6 +21,25 @@ import {
   type ValidationTrainingProgress,
 } from '@/api/validationLabApi';
 import { parseApiClientError } from '@/utils/apiError';
+import { useCandidatePage } from '@/hooks/useCandidatePage';
+import { MetricCard } from '@/pages/validationLab/MetricCard';
+import { SplitTimeline } from '@/pages/validationLab/SplitTimeline';
+import { JsonBlock } from '@/pages/validationLab/JsonBlock';
+import { SupersededBanner } from '@/pages/validationLab/SupersededBanner';
+import { ExportVerificationPanel } from '@/pages/validationLab/ExportVerificationPanel';
+import {
+  ACTIVE_STATUSES,
+  RESUMABLE_STATUSES,
+  asRecord,
+  buildValidationCandidateQuery,
+  computeExperimentActionAvailability,
+  formatExperimentVerdict,
+  isInsufficientSample,
+  isLegacyMetrics,
+  pickLayer,
+  tryParseJson,
+  verdictTone,
+} from '@/pages/validationLab/validationLabDetailHelpers';
 
 type DetailTab =
   | 'overview'
@@ -52,262 +70,6 @@ const TABS: { id: DetailTab; label: string }[] = [
   { id: 'audit', label: 'Audit & Exports' },
 ];
 
-const ACTIVE_STATUSES = new Set<ValidationExperimentStatus>([
-  'DataPreparing',
-  'TrainingRunning',
-  'ValidationRunning',
-  'ResumePreparing',
-  'TrainingResumed',
-]);
-
-const RESUMABLE_STATUSES = new Set<ValidationExperimentStatus>([
-  'Failed',
-  'TrainingInterrupted',
-  'TrainingPaused',
-]);
-
-function isInsufficientSample(decision?: StrategyRobustnessDecision | null) {
-  return (
-    decision === 'FailedInsufficientTrainingSample'
-    || decision === 'FailedInsufficientValidationSample'
-  );
-}
-
-function verdictTone(decision?: StrategyRobustnessDecision | null): 'success' | 'warning' | 'info' | 'neutral' {
-  if (!decision) return 'neutral';
-  if (decision === 'Passed' || decision === 'ConditionallyPassed') return 'success';
-  if (isInsufficientSample(decision)) return 'warning';
-  if (decision.startsWith('Failed') || decision === 'Invalid') return 'warning';
-  return 'info';
-}
-
-function formatExperimentVerdict(decision?: StrategyRobustnessDecision | null) {
-  if (!decision) return 'Pending';
-  if (decision === 'FailedNegativeTrainingExpectancy') return 'Failed: Negative Training Expectancy';
-  if (decision === 'FailedNegativeValidationExpectancy') return 'Failed: Negative Validation Expectancy';
-  if (decision === 'FailedNoTrainingTrialPassedGuardrails') return 'Failed: No Training Trial Passed Guardrails';
-  return decision.replace(/([a-z])([A-Z])/g, '$1 $2');
-}
-
-function tryParseJson(raw?: string | null): unknown {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return raw;
-  }
-}
-
-function JsonBlock({ title, value }: { title: string; value?: string | null }) {
-  const parsed = tryParseJson(value);
-  const text =
-    typeof parsed === 'string'
-      ? parsed
-      : parsed == null
-        ? '—'
-        : JSON.stringify(parsed, null, 2);
-
-  return (
-    <div className="rounded-lg border border-slate-800 p-3">
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</div>
-      <pre className="max-h-80 overflow-auto whitespace-pre-wrap text-xs text-slate-300">{text}</pre>
-    </div>
-  );
-}
-
-function isLegacyMetrics(version?: string | null) {
-  return (
-    version === 'ValidationMetrics/v1'
-    || version === 'ValidationMetrics/v1.2'
-  );
-}
-
-function selectionIntegrityAllowsFreeze(status?: string | null) {
-  return status === 'Passed' || status === 'Valid' || status === 'InfrastructureOnlyFallback';
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function MetricCard({
-  title,
-  closedTrades,
-  expectancy,
-  grossExpectancy,
-  profitFactor,
-  netProfitFactor,
-  grossProfitFactor,
-  netReturn,
-  drawdown,
-  grossProfit,
-  grossLoss,
-  netProfit,
-  netLoss,
-  insufficient,
-  hidden,
-}: {
-  title: string;
-  closedTrades?: number | null;
-  expectancy?: number | null;
-  grossExpectancy?: number | null;
-  profitFactor?: number | null;
-  netProfitFactor?: number | null;
-  grossProfitFactor?: number | null;
-  netReturn?: number | null;
-  drawdown?: number | null;
-  grossProfit?: number | null;
-  grossLoss?: number | null;
-  netProfit?: number | null;
-  netLoss?: number | null;
-  insufficient?: boolean;
-  hidden?: boolean;
-}) {
-  if (hidden) {
-    return (
-      <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4">
-        <div className="mb-2 text-sm font-semibold text-slate-200">{title}</div>
-        <p className="text-sm text-slate-400">
-          Performance metrics are hidden until Validation Reveal Status is Revealed.
-        </p>
-      </div>
-    );
-  }
-
-  const showExactGrossNet =
-    grossProfit != null || grossLoss != null || netProfit != null || netLoss != null;
-
-  return (
-    <div
-      className={`rounded-lg border p-4 ${
-        insufficient
-          ? 'border-amber-700 bg-amber-950/30'
-          : 'border-slate-800 bg-slate-950/40'
-      }`}
-    >
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="text-sm font-semibold text-slate-200">{title}</div>
-        {insufficient ? <Badge tone="warning">Insufficient sample</Badge> : null}
-      </div>
-      <dl className="grid gap-2 text-sm sm:grid-cols-2">
-        <div>
-          <dt className="text-xs text-slate-500">Closed trades (n)</dt>
-          <dd className="text-slate-100">{closedTrades ?? '—'}</dd>
-        </div>
-        <div>
-          <dt className="text-xs text-slate-500">Net expectancy R</dt>
-          <dd className="text-slate-100" title={expectancy == null ? undefined : String(expectancy)}>
-            {expectancy == null ? '—' : formatExpectancyR(expectancy)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs text-slate-500">Gross expectancy R</dt>
-          <dd className="text-slate-100" title={grossExpectancy == null ? undefined : String(grossExpectancy)}>
-            {grossExpectancy == null ? '—' : formatExpectancyR(grossExpectancy)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs text-slate-500">Net profit factor</dt>
-          <dd className="text-slate-100">
-            {(netProfitFactor ?? profitFactor) == null ? '—' : formatNumber(netProfitFactor ?? profitFactor)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs text-slate-500">Gross profit factor</dt>
-          <dd className="text-slate-100">{grossProfitFactor == null ? '—' : formatNumber(grossProfitFactor)}</dd>
-        </div>
-        <div>
-          <dt className="text-xs text-slate-500">Net return %</dt>
-          <dd className="text-slate-100">{netReturn == null ? '—' : `${formatNumber(netReturn)}%`}</dd>
-        </div>
-        <div>
-          <dt className="text-xs text-slate-500">Max drawdown %</dt>
-          <dd className="text-slate-100">{drawdown == null ? '—' : `${formatNumber(drawdown)}%`}</dd>
-        </div>
-        {showExactGrossNet ? (
-          <>
-            <div>
-              <dt className="text-xs text-slate-500">Gross profit</dt>
-              <dd className="text-slate-100">{grossProfit == null ? '—' : formatNumber(grossProfit)}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-slate-500">Gross loss</dt>
-              <dd className="text-slate-100">{grossLoss == null ? '—' : formatNumber(grossLoss)}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-slate-500">Net profit</dt>
-              <dd className="text-slate-100">{netProfit == null ? '—' : formatNumber(netProfit)}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-slate-500">Net loss</dt>
-              <dd className="text-slate-100">{netLoss == null ? '—' : formatNumber(netLoss)}</dd>
-            </div>
-          </>
-        ) : null}
-      </dl>
-    </div>
-  );
-}
-
-function pickLayer(
-  segments: ValidationSegmentResult[] | null | undefined,
-  segmentType: 'Training' | 'Validation',
-  layer: ValidationLayerType = 'RawStrategy',
-) {
-  return (segments ?? []).find((s) => s.segmentType === segmentType && s.layerType === layer);
-}
-
-function SplitTimeline({ detail }: { detail: ValidationExperimentDetail }) {
-  const total = Math.max(detail.totalEligibleCandleCount, 1);
-  const trainPct = Math.round((detail.trainingCandleCount / total) * 100);
-  const valPct = Math.max(0, 100 - trainPct);
-
-  return (
-    <div className="space-y-3">
-      <div className="flex h-8 overflow-hidden rounded-lg border border-slate-800">
-        <div
-          className="flex items-center justify-center bg-sky-900/70 text-xs text-sky-100"
-          style={{ width: `${trainPct}%` }}
-          title="Training"
-        >
-          Training
-        </div>
-        <div
-          className="flex items-center justify-center bg-slate-700/80 text-xs text-slate-100"
-          style={{ width: `${valPct}%` }}
-          title="Validation"
-        >
-          Validation
-        </div>
-      </div>
-      <div className="grid gap-3 md:grid-cols-4 text-sm">
-        <div className="rounded-lg border border-slate-800 px-3 py-2">
-          <div className="text-xs uppercase text-slate-500">Warmup</div>
-          <div>{detail.requiredWarmupCandles} candles</div>
-        </div>
-        <div className="rounded-lg border border-slate-800 px-3 py-2">
-          <div className="text-xs uppercase text-slate-500">Training</div>
-          <div>
-            {detail.trainingCandleCount} candles · used for parameter selection
-          </div>
-        </div>
-        <div className="rounded-lg border border-slate-800 px-3 py-2">
-          <div className="text-xs uppercase text-slate-500">Split boundary</div>
-          <div>{formatDate(detail.splitCandleOpenTimeUtc)}</div>
-        </div>
-        <div className="rounded-lg border border-slate-800 px-3 py-2">
-          <div className="text-xs uppercase text-slate-500">Validation</div>
-          <div>
-            {detail.validationCandleCount} candles · hidden until freeze/reveal
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function ValidationLabExperimentDetailPage() {
   const { experimentId = '' } = useParams();
   const navigate = useNavigate();
@@ -320,7 +82,6 @@ export function ValidationLabExperimentDetailPage() {
   const [confidence, setConfidence] = useState<Record<string, unknown> | null>(null);
   const [risk, setRisk] = useState<Record<string, unknown> | null>(null);
   const [diagnostics, setDiagnostics] = useState<Record<string, unknown> | null>(null);
-  const [candidates, setCandidates] = useState<Record<string, unknown>[]>([]);
   const [candidateSegment, setCandidateSegment] = useState<ValidationSegmentClassification | 'CrossSegmentOverlap'>('Training');
   const [candidateLayer, setCandidateLayer] = useState<ValidationLayerType>('RawStrategy');
   const [loading, setLoading] = useState(true);
@@ -417,27 +178,28 @@ export function ValidationLabExperimentDetailPage() {
       .catch(() => setDiagnostics(tryParseJson(detail.diagnosticsJson) as Record<string, unknown> | null));
   }, [activeTab, detail, id]);
 
-  useEffect(() => {
-    if (!detail || activeTab !== 'candidates') return;
-    if (candidateSegment === 'Validation' && !revealed) {
-      setCandidates([]);
-      return;
-    }
-    const overlapOnly = candidateSegment === 'CrossSegmentOverlap';
-    validationLabApi
-      .getCandidates(id, {
-        segment: overlapOnly ? undefined : candidateSegment,
-        layer: candidateLayer,
-        crossSegmentOverlapOnly: overlapOnly ? true : undefined,
-        metricClassification: overlapOnly
-          ? 'CrossSegmentOverlapExcludedFromValidation'
-          : undefined,
-        page: 1,
-        pageSize: 50,
-      })
-      .then((data) => setCandidates(data?.items ?? []))
-      .catch(() => setCandidates([]));
-  }, [activeTab, candidateLayer, candidateSegment, detail, id, revealed]);
+  const candidateQuery = useMemo<ValidationCandidateQuery | null>(
+    () => buildValidationCandidateQuery(candidateSegment, candidateLayer, revealed),
+    [candidateSegment, candidateLayer, revealed],
+  );
+
+  const candidatesFetcher = useCallback(
+    (signal: AbortSignal) => {
+      if (!detail || activeTab !== 'candidates' || !candidateQuery) {
+        return Promise.resolve<Record<string, unknown>[]>([]);
+      }
+      return validationLabApi.getCandidates(id, candidateQuery, signal).then((res) => res?.items ?? []);
+    },
+    [detail, activeTab, candidateQuery, id],
+  );
+
+  const candidatesResult = useCandidatePage<Record<string, unknown>[]>(candidatesFetcher, [
+    detail,
+    activeTab,
+    candidateQuery,
+    id,
+  ]);
+  const candidates = candidatesResult.error ? [] : candidatesResult.data ?? [];
 
   const runAction = async (action: () => Promise<unknown>, redirectId?: number) => {
     setActionBusy(true);
@@ -507,24 +269,15 @@ export function ValidationLabExperimentDetailPage() {
     || detail.holdoutExclusivityPolicyVersion
     || 'EarlierOccurrenceOwnsFingerprint';
   const exportManifest = asRecord(exportVerification?.manifest);
-  const canPrepare = detail.status === 'Draft' || detail.status === 'DataPreparing' || detail.status === 'Failed';
-  const canTrain = detail.status === 'DataReady';
-  const canResumeTraining = RESUMABLE_STATUSES.has(detail.status);
-  const canFreeze =
-    detail.status === 'TrainingCompleted'
-    && selectionIntegrityAllowsFreeze(detail.selectionIntegrityStatus);
-  const canValidate =
-    detail.status === 'ConfigurationFrozen'
-    && selectionIntegrityAllowsFreeze(detail.selectionIntegrityStatus);
-  const zeroEligibleFailure =
-    detail.strategyRobustnessDecision === 'FailedNoTrainingTrialPassedGuardrails'
-    || detail.selectionIntegrityStatus === 'FailedNoEligibleTrials';
-  const canCloneOrRerun =
-    detail.status === 'Completed'
-    || detail.status === 'Failed'
-    || detail.status === 'Cancelled'
-    || detail.status === 'ConfigurationFrozen'
-    || detail.validationRevealStatus === 'Revealed';
+  const {
+    canPrepare,
+    canTrain,
+    canResumeTraining,
+    canFreeze,
+    canValidate,
+    canCloneOrRerun,
+    zeroEligibleFailure,
+  } = computeExperimentActionAvailability(detail);
 
   const layerResults = (detail.segmentResults ?? []).filter((s) =>
     revealed ? true : s.segmentType === 'Training',
@@ -550,16 +303,11 @@ export function ValidationLabExperimentDetailPage() {
         }
       />
 
-      {detail.supersessionStatus === 'Superseded' && detail.supersededByExperimentId ? (
-        <div className="mb-4 rounded-lg border border-sky-800 bg-sky-950/40 px-4 py-3 text-sm text-sky-100">
-          This experiment was superseded by{' '}
-          <Link to={`/validation-lab/experiments/${detail.supersededByExperimentId}`} className="underline">
-            Experiment {detail.supersededByExperimentId}
-          </Link>{' '}
-          after recovery and durability verification.
-          {detail.supersessionReason ? ` ${detail.supersessionReason}` : null}
-        </div>
-      ) : null}
+      <SupersededBanner
+        supersessionStatus={detail.supersessionStatus}
+        supersededByExperimentId={detail.supersededByExperimentId}
+        supersessionReason={detail.supersessionReason}
+      />
 
       {detail.isCanonical ? (
         <div className="mb-4 rounded-lg border border-emerald-800 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-100">
@@ -1088,7 +836,7 @@ export function ValidationLabExperimentDetailPage() {
                 key: 'exp',
                 header: 'Expectancy R',
                 render: (row: ValidationParameterTrial) =>
-                  row.netExpectancyR == null ? '—' : formatExpectancyR(row.netExpectancyR),
+                  row.netExpectancyR == null ? '—' : formatNumber(row.netExpectancyR),
               },
               {
                 key: 'pf',
@@ -1411,49 +1159,11 @@ export function ValidationLabExperimentDetailPage() {
               <li>Updated: {formatDate(detail.updatedAtUtc)}</li>
             </ul>
           </div>
-          <div className="rounded-lg border border-slate-800 px-4 py-3">
-            <div className="mb-2 flex flex-wrap items-center gap-2 font-medium text-slate-100">
-              <span>Export verification</span>
-              <Badge
-                tone={
-                  detail.exportVerificationStatus === 'Passed'
-                    ? 'success'
-                    : detail.exportVerificationStatus === 'Failed'
-                      ? 'warning'
-                      : 'neutral'
-                }
-              >
-                {detail.exportVerificationStatus || 'NotRun'}
-              </Badge>
-            </div>
-            {exportManifest ? (
-              <KeyValueGrid
-                items={[
-                  { label: 'Manifest version', value: String(exportManifest.manifestVersion ?? '—') },
-                  { label: 'Content SHA-256', value: String(exportManifest.contentSha256 ?? '—') },
-                  { label: 'Segment results', value: String(exportManifest.segmentResultCount ?? '—') },
-                  { label: 'Overlap candidates', value: String(exportManifest.overlapCandidateCount ?? '—') },
-                  { label: 'Has exclusivity report', value: String(exportManifest.hasExclusivityReport ?? '—') },
-                  { label: 'Has population counts', value: String(exportManifest.hasPopulationCounts ?? '—') },
-                  {
-                    label: 'Verified at',
-                    value: formatDate(
-                      typeof exportManifest.verifiedAtUtc === 'string' ? exportManifest.verifiedAtUtc : null,
-                    ),
-                  },
-                ]}
-              />
-            ) : (
-              <p className="text-slate-400">No export verification manifest persisted yet.</p>
-            )}
-            {Array.isArray(exportVerification?.issues) && (exportVerification.issues as unknown[]).length > 0 ? (
-              <ul className="mt-2 list-disc space-y-1 pl-5 text-amber-200">
-                {(exportVerification.issues as unknown[]).map((issue, idx) => (
-                  <li key={idx}>{String(issue)}</li>
-                ))}
-              </ul>
-            ) : null}
-          </div>
+          <ExportVerificationPanel
+            status={detail.exportVerificationStatus}
+            manifest={exportManifest}
+            issues={Array.isArray(exportVerification?.issues) ? (exportVerification.issues as unknown[]) : undefined}
+          />
           <div className="rounded-lg border border-slate-800 px-4 py-3">
             <div className="mb-2 font-medium text-slate-100">Exports</div>
             <p className="mb-3 text-slate-400">

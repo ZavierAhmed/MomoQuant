@@ -287,6 +287,10 @@ appsettings.*.Local.json
 appsettings.local.json
 appsettings.*.local.json
 
+# Integration-test local connection overrides (never commit)
+**/integration.local.env
+integration.local.env
+
 appsettings.Secrets.json
 appsettings.*.Secrets.json
 appsettings.secrets.json

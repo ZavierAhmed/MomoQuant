@@ -478,7 +478,7 @@ export const validationLabApi = {
   getRiskAnalysis: (id: number) =>
     apiRequest<Record<string, unknown>>(`/validation-lab/experiments/${id}/risk-analysis`),
 
-  getCandidates: (id: number, query: ValidationCandidateQuery = {}) => {
+  getCandidates: (id: number, query: ValidationCandidateQuery = {}, signal?: AbortSignal) => {
     const params = new URLSearchParams();
     Object.entries(query).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== '') {
@@ -488,6 +488,7 @@ export const validationLabApi = {
     const qs = params.toString();
     return apiRequest<PagedValidationCandidates>(
       `/validation-lab/experiments/${id}/candidates${qs ? `?${qs}` : ''}`,
+      { signal },
     );
   },
 

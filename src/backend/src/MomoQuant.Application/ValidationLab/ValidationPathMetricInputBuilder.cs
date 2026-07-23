@@ -5,6 +5,15 @@ using MomoQuant.Domain.StrategyLab;
 
 namespace MomoQuant.Application.ValidationLab;
 
+public sealed class ValidationPathMetricCostModel
+{
+    public decimal EntryFeeRate { get; init; } = 0.0004m;
+    public decimal ExitFeeRate { get; init; } = 0.0004m;
+    public decimal SlippagePercent { get; init; }
+    public decimal ContractMultiplier { get; init; } = 1m;
+    public string SourceVersion { get; init; } = "ValidationPathMetricCostModel/v1";
+}
+
 public interface IValidationPathMetricInputBuilder
 {
     IReadOnlyList<ValidationPathTradeMetricInput> Build(
@@ -13,12 +22,14 @@ public interface IValidationPathMetricInputBuilder
         ValidationLayerType layer,
         IReadOnlyList<StrategyResearchCandidate> candidates,
         ShadowPortfolioSummaryDto? riskOnlyShadow,
-        ShadowPortfolioSummaryDto? fullPipelineShadow);
+        ShadowPortfolioSummaryDto? fullPipelineShadow,
+        ValidationPathMetricCostModel? costModel = null);
 }
 
 /// <summary>
 /// Builds path-specific metric inputs. RiskOnly/FullPipeline use ledger + assessment data;
-/// RawStrategy/ConfidenceQualified use normalized one-unit raw candidate economics.
+/// RawStrategy/ConfidenceQualified independently reconstruct normalized one-unit economics
+/// from prices, stop, fees, and slippage (not by dividing existing candidate PnL).
 /// </summary>
 public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInputBuilder
 {
@@ -28,18 +39,25 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
+    /// <summary>Absolute relative tolerance for reconciliation warnings against candidate raw fields.</summary>
+    public const decimal CandidateReconciliationTolerance = 0.0001m;
+
     public IReadOnlyList<ValidationPathTradeMetricInput> Build(
         long experimentId,
         ValidationSegmentType segment,
         ValidationLayerType layer,
         IReadOnlyList<StrategyResearchCandidate> candidates,
         ShadowPortfolioSummaryDto? riskOnlyShadow,
-        ShadowPortfolioSummaryDto? fullPipelineShadow)
+        ShadowPortfolioSummaryDto? fullPipelineShadow,
+        ValidationPathMetricCostModel? costModel = null)
     {
+        var costs = costModel ?? new ValidationPathMetricCostModel();
         return layer switch
         {
-            ValidationLayerType.RawStrategy => BuildNormalized(experimentId, segment, layer, candidates, confidenceOnly: false),
-            ValidationLayerType.ConfidenceQualified => BuildNormalized(experimentId, segment, layer, candidates, confidenceOnly: true),
+            ValidationLayerType.RawStrategy => BuildNormalizedIndependent(
+                experimentId, segment, layer, candidates, confidenceOnly: false, costs),
+            ValidationLayerType.ConfidenceQualified => BuildNormalizedIndependent(
+                experimentId, segment, layer, candidates, confidenceOnly: true, costs),
             ValidationLayerType.RiskOnly => BuildFromShadowPath(
                 experimentId, segment, layer, candidates, riskOnlyShadow, StrategyLabPortfolioPath.RiskOnly),
             ValidationLayerType.FullPipeline => BuildFromShadowPath(
@@ -48,12 +66,13 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
         };
     }
 
-    private static IReadOnlyList<ValidationPathTradeMetricInput> BuildNormalized(
+    private static IReadOnlyList<ValidationPathTradeMetricInput> BuildNormalizedIndependent(
         long experimentId,
         ValidationSegmentType segment,
         ValidationLayerType layer,
         IReadOnlyList<StrategyResearchCandidate> candidates,
-        bool confidenceOnly)
+        bool confidenceOnly,
+        ValidationPathMetricCostModel costModel)
     {
         var list = new List<ValidationPathTradeMetricInput>();
         foreach (var c in candidates)
@@ -69,12 +88,43 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
                 continue;
             }
 
-            var actualQty = c.ProposedPositionSize is > 0m ? c.ProposedPositionSize.Value : 1m;
-            var gross = c.RawGrossPnl ?? c.RawNetPnl ?? 0m;
-            var net = c.RawNetPnl ?? c.RawGrossPnl ?? 0m;
-            var normalizedGross = gross / actualQty;
-            var normalizedNet = net / actualQty;
-            var costs = Math.Max(0m, normalizedGross - normalizedNet);
+            if (c.RawExitPrice is not decimal exitPrice || exitPrice <= 0m)
+            {
+                list.Add(Excluded(
+                    experimentId, segment, layer, c,
+                    "MissingExitPrice",
+                    costModel));
+                continue;
+            }
+
+            if (c.ProposedEntryPrice <= 0m || c.StopLoss <= 0m)
+            {
+                list.Add(Excluded(
+                    experimentId, segment, layer, c,
+                    c.ProposedEntryPrice <= 0m ? "MissingEntry" : "MissingStop",
+                    costModel));
+                continue;
+            }
+
+            const decimal quantity = 1m;
+            var mult = costModel.ContractMultiplier <= 0m ? 1m : costModel.ContractMultiplier;
+            var entry = c.ProposedEntryPrice;
+            var stop = c.StopLoss;
+
+            var grossPnl = c.Direction == TradeDirection.Long
+                ? (exitPrice - entry) * quantity * mult
+                : (entry - exitPrice) * quantity * mult;
+
+            var entryNotional = Math.Abs(entry * quantity * mult);
+            var exitNotional = Math.Abs(exitPrice * quantity * mult);
+            var entryFee = entryNotional * costModel.EntryFeeRate;
+            var exitFee = exitNotional * costModel.ExitFeeRate;
+            var slippageCost = (entryNotional + exitNotional) * (costModel.SlippagePercent / 100m);
+            var totalCosts = entryFee + exitFee + slippageCost;
+            var netPnl = grossPnl - totalCosts;
+            var derivedRisk = Math.Abs(entry - stop) * quantity * mult;
+
+            var reconWarning = BuildReconciliationWarning(c, quantity, grossPnl, netPnl);
 
             list.Add(new ValidationPathTradeMetricInput
             {
@@ -87,26 +137,82 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
                 Direction = c.Direction,
                 EntryTimeUtc = c.ProposedEntryTimeUtc,
                 ExitTimeUtc = c.RawExitTimeUtc,
-                EntryPrice = c.ProposedEntryPrice,
-                ExitPrice = c.RawExitPrice,
-                StopPriceAtEntry = c.StopLoss,
-                Quantity = 1m,
-                ContractMultiplier = 1m,
-                RiskAmountAtEntry = c.RiskAmount.HasValue ? c.RiskAmount.Value / actualQty : null,
-                GrossPnl = normalizedGross,
-                EntryCosts = 0m,
-                ExitCosts = 0m,
-                OtherTransactionCosts = costs,
-                TotalTransactionCosts = costs,
-                NetPnl = normalizedNet,
+                EntryPrice = entry,
+                ExitPrice = exitPrice,
+                StopPriceAtEntry = stop,
+                Quantity = quantity,
+                ContractMultiplier = mult,
+                RiskAmountAtEntry = derivedRisk,
+                GrossPnl = grossPnl,
+                EntryCosts = entryFee,
+                ExitCosts = exitFee,
+                OtherTransactionCosts = slippageCost,
+                TotalTransactionCosts = totalCosts,
+                NetPnl = netPnl,
                 Outcome = c.RawOutcomeStatus.ToString(),
-                MetricInclusionStatus = ValidationPathMetricInclusionStatus.Included,
-                SourceVersion = "ValidationPathTradeMetricInput/v1:NormalizedOneUnit"
+                MetricInclusionStatus = derivedRisk > 0m
+                    ? ValidationPathMetricInclusionStatus.Included
+                    : ValidationPathMetricInclusionStatus.Excluded,
+                MetricExclusionReason = derivedRisk > 0m ? reconWarning : "InvalidDerivedRisk",
+                SourceVersion = "ValidationPathTradeMetricInput/v1:IndependentNormalizedOneUnit"
             });
         }
 
         return list;
     }
+
+    private static string? BuildReconciliationWarning(
+        StrategyResearchCandidate c,
+        decimal normalizedQty,
+        decimal independentGross,
+        decimal independentNet)
+    {
+        if (c.RawGrossPnl is not decimal rawGross || c.ProposedPositionSize is not decimal actualQty || actualQty <= 0m)
+        {
+            return null;
+        }
+
+        var scaledGross = rawGross * (normalizedQty / actualQty);
+        var scaledNet = (c.RawNetPnl ?? rawGross) * (normalizedQty / actualQty);
+        var grossDelta = Math.Abs(scaledGross - independentGross);
+        var netDelta = Math.Abs(scaledNet - independentNet);
+        var scale = Math.Max(1m, Math.Abs(independentGross));
+        if (grossDelta / scale > CandidateReconciliationTolerance
+            || netDelta / Math.Max(1m, Math.Abs(independentNet)) > CandidateReconciliationTolerance)
+        {
+            return "CandidateRawPnlReconciliationMismatch";
+        }
+
+        return null;
+    }
+
+    private static ValidationPathTradeMetricInput Excluded(
+        long experimentId,
+        ValidationSegmentType segment,
+        ValidationLayerType layer,
+        StrategyResearchCandidate c,
+        string reason,
+        ValidationPathMetricCostModel costModel) =>
+        new()
+        {
+            ValidationExperimentId = experimentId,
+            ValidationSegment = segment,
+            ValidationLayer = layer,
+            PortfolioPath = layer.ToString(),
+            CandidateId = c.Id,
+            CandidateFingerprint = c.SetupFingerprint,
+            Direction = c.Direction,
+            EntryTimeUtc = c.ProposedEntryTimeUtc,
+            ExitTimeUtc = c.RawExitTimeUtc,
+            EntryPrice = c.ProposedEntryPrice,
+            ExitPrice = c.RawExitPrice,
+            StopPriceAtEntry = c.StopLoss,
+            Quantity = 1m,
+            ContractMultiplier = costModel.ContractMultiplier <= 0m ? 1m : costModel.ContractMultiplier,
+            MetricInclusionStatus = ValidationPathMetricInclusionStatus.Excluded,
+            MetricExclusionReason = reason,
+            SourceVersion = "ValidationPathTradeMetricInput/v1:IndependentNormalizedOneUnit"
+        };
 
     private static IReadOnlyList<ValidationPathTradeMetricInput> BuildFromShadowPath(
         long experimentId,
@@ -154,12 +260,43 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
             }
 
             var assessment = TryReadAssessment(candidate, path);
+            // Never fall back to the other path or generic ProposedPositionSize.
             var quantity = entry.Quantity > 0m
                 ? entry.Quantity
                 : assessment?.Quantity ?? 0m;
             var stop = candidate?.StopLoss ?? 0m;
             var entryPrice = entry.EntryPrice > 0m ? entry.EntryPrice : candidate?.ProposedEntryPrice ?? 0m;
             var riskAmount = assessment?.RiskAmount;
+            var mult = 1m;
+            var derivedRisk = entryPrice > 0m && stop > 0m && quantity > 0m
+                ? Math.Abs(entryPrice - stop) * quantity * mult
+                : (decimal?)null;
+
+            string? exclusion = null;
+            var inclusion = ValidationPathMetricInclusionStatus.Included;
+            if (quantity <= 0m)
+            {
+                exclusion = "MissingPathQuantity";
+                inclusion = ValidationPathMetricInclusionStatus.Excluded;
+            }
+            else if (stop <= 0m)
+            {
+                exclusion = "MissingStop";
+                inclusion = ValidationPathMetricInclusionStatus.Excluded;
+            }
+            else if (entryPrice <= 0m)
+            {
+                exclusion = "MissingEntry";
+                inclusion = ValidationPathMetricInclusionStatus.Excluded;
+            }
+            else if (riskAmount is decimal persisted
+                     && derivedRisk is decimal derived
+                     && derived > 0m
+                     && Math.Abs(persisted - derived) / derived > CandidateReconciliationTolerance)
+            {
+                exclusion = "RiskAmountMismatch";
+                inclusion = ValidationPathMetricInclusionStatus.Excluded;
+            }
 
             list.Add(new ValidationPathTradeMetricInput
             {
@@ -177,8 +314,8 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
                 ExitPrice = entry.ExitPrice,
                 StopPriceAtEntry = stop,
                 Quantity = quantity,
-                ContractMultiplier = 1m,
-                RiskAmountAtEntry = riskAmount,
+                ContractMultiplier = mult,
+                RiskAmountAtEntry = riskAmount ?? derivedRisk,
                 GrossPnl = entry.GrossPnl,
                 EntryCosts = entry.EntryFee,
                 ExitCosts = entry.ExitFee,
@@ -186,16 +323,8 @@ public sealed class ValidationPathMetricInputBuilder : IValidationPathMetricInpu
                 TotalTransactionCosts = entry.TotalCost,
                 NetPnl = entry.NetPnl,
                 Outcome = entry.ExitOutcome,
-                MetricInclusionStatus = quantity > 0m && stop > 0m && entryPrice > 0m
-                    ? ValidationPathMetricInclusionStatus.Included
-                    : ValidationPathMetricInclusionStatus.Excluded,
-                MetricExclusionReason = quantity <= 0m
-                    ? "MissingQuantity"
-                    : stop <= 0m
-                        ? "MissingStop"
-                        : entryPrice <= 0m
-                            ? "MissingEntry"
-                            : null,
+                MetricInclusionStatus = inclusion,
+                MetricExclusionReason = exclusion,
                 SourceVersion = "ValidationPathTradeMetricInput/v1:ShadowLedger"
             });
         }
