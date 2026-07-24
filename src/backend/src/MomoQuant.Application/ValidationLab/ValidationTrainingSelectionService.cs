@@ -60,10 +60,15 @@ public sealed class ValidationTrainingSelectionService : IValidationTrainingSele
                 or ValidationTrialStatus.GuardrailRejected
                 or ValidationTrialStatus.Failed
                 or ValidationTrialStatus.LeakageFailed
+                or ValidationTrialStatus.AuditPersistenceFailed
                 or ValidationTrialStatus.Interrupted);
+        // v1.3.2 experiments additionally require snapshot rank eligibility (Milestone 23.0D).
+        var useSnapshotEligibility =
+            ValidationMetricsContract.IsPopulationPathMetricsVersion(experiment.ValidationMetricsVersion);
         var eligible = trials.Count(t =>
             string.Equals(t.GuardrailDecision, "Passed", StringComparison.OrdinalIgnoreCase)
-            && t.Status == ValidationTrialStatus.Completed);
+            && t.Status == ValidationTrialStatus.Completed
+            && (!useSnapshotEligibility || ValidationTrialRanker.IsSnapshotRankEligible(t)));
 
         return new TrainingSelectionPopulationSummary
         {
@@ -74,7 +79,9 @@ public sealed class ValidationTrainingSelectionService : IValidationTrainingSele
             GuardrailPassedTrialCount = eligible,
             GuardrailRejectedTrialCount = trials.Count(t => t.Status == ValidationTrialStatus.GuardrailRejected),
             FailedTrialCount = trials.Count(t =>
-                t.Status is ValidationTrialStatus.Failed or ValidationTrialStatus.LeakageFailed),
+                t.Status is ValidationTrialStatus.Failed
+                    or ValidationTrialStatus.LeakageFailed
+                    or ValidationTrialStatus.AuditPersistenceFailed),
             InterruptedTrialCount = trials.Count(t => t.Status == ValidationTrialStatus.Interrupted),
             CancelledTrialCount = 0,
             EligibleTrialCount = eligible,
@@ -101,8 +108,10 @@ public sealed class ValidationTrainingSelectionService : IValidationTrainingSele
         }
 
         var trialList = trials.ToList();
-        ValidationTrialRanker.AssignRanks(trialList);
-        var winner = ValidationTrialRanker.SelectWinner(trialList);
+        var useSnapshotEligibility =
+            ValidationMetricsContract.IsPopulationPathMetricsVersion(experiment.ValidationMetricsVersion);
+        ValidationTrialRanker.AssignRanks(trialList, useSnapshotEligibility);
+        var winner = ValidationTrialRanker.SelectWinner(trialList, useSnapshotEligibility);
 
         if (population.EligibleTrialCount == 0)
         {

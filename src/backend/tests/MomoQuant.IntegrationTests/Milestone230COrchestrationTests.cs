@@ -89,7 +89,8 @@ public sealed class Milestone230COrchestrationTests
                 Assert.Equal(0, denied.ReturnedCandleCount);
                 Assert.Null(denied.MinimumReturnedTimestampUtc);
                 Assert.Null(denied.MaximumReturnedTimestampUtc);
-                Assert.Contains("BoundaryCrossed", denied.DenialReason ?? string.Empty, StringComparison.Ordinal);
+                Assert.Equal("BoundaryCrossed", denied.DenialCode);
+                Assert.False(string.IsNullOrWhiteSpace(denied.DenialReason));
 
                 var trials = await sp.GetRequiredService<IValidationParameterTrialRepository>()
                     .GetByExperimentIdAsync(id);
@@ -191,12 +192,17 @@ public sealed class Milestone230COrchestrationTests
 
                 var audits = await sp.GetRequiredService<IValidationCandleAccessAuditRepository>()
                     .GetByExperimentIdAsync(id);
-                var allowed = Assert.Single(audits.Where(a =>
+                var allowed = audits.Where(a =>
                     !a.WasDenied
-                    && (a.CallerComponent ?? string.Empty).Contains("M230C-Allowed", StringComparison.Ordinal)));
-                Assert.True(allowed.ReturnedCandleCount >= 1);
-                Assert.NotNull(allowed.MaximumReturnedTimestampUtc);
-                Assert.True(allowed.MaximumReturnedTimestampUtc!.Value < validationStart);
+                    && (a.CallerComponent ?? string.Empty).Contains("M230C-Allowed", StringComparison.Ordinal))
+                    .ToList();
+                Assert.NotEmpty(allowed);
+                Assert.Contains(allowed, a => a.ReturnedCandleCount >= 1);
+                Assert.All(allowed, a =>
+                {
+                    Assert.NotNull(a.MaximumReturnedTimestampUtc);
+                    Assert.True(a.MaximumReturnedTimestampUtc!.Value < validationStart);
+                });
 
                 var trials = await sp.GetRequiredService<IValidationParameterTrialRepository>()
                     .GetByExperimentIdAsync(id);
@@ -396,7 +402,8 @@ public sealed class Milestone230COrchestrationTests
                 services.AddScoped<IStrategyLabRunner>(sp =>
                 {
                     var runs = sp.GetRequiredService<IStrategyLabRunRepository>();
-                    return new SeamStrategyLabRunner(runs, _mode);
+                    var candidates = sp.GetRequiredService<IStrategyResearchCandidateRepository>();
+                    return new SeamStrategyLabRunner(runs, candidates, _mode);
                 });
             });
         }
@@ -410,11 +417,16 @@ public sealed class Milestone230COrchestrationTests
     private sealed class SeamStrategyLabRunner : IStrategyLabRunner
     {
         private readonly IStrategyLabRunRepository _runs;
+        private readonly IStrategyResearchCandidateRepository _candidates;
         private readonly TrialSeamMode _mode;
 
-        public SeamStrategyLabRunner(IStrategyLabRunRepository runs, TrialSeamMode mode)
+        public SeamStrategyLabRunner(
+            IStrategyLabRunRepository runs,
+            IStrategyResearchCandidateRepository candidates,
+            TrialSeamMode mode)
         {
             _runs = runs;
+            _candidates = candidates;
             _mode = mode;
         }
 
@@ -445,8 +457,15 @@ public sealed class Milestone230COrchestrationTests
                 return;
             }
 
-            Assert.True(scope.Count > 0, "Prepared experiment must expose training candles.");
-            var candle = scope[scope.Count - 1];
+            Assert.True(scope.Partition.TotalCandleCount > 0, "Prepared experiment must expose training candles.");
+            var range = scope.GetEvaluationRange(
+                scope.SegmentStartUtc,
+                scope.SegmentEndExclusiveUtc,
+                ValidationCandleAccessContext.Create("M230C-AllowedTrial", ValidationCandleAccessPurpose.EvaluationRange));
+            Assert.NotEmpty(range);
+            // Use an early evaluation candle so a short exit stays strictly before ValidationBoundaryUtc
+            // (boundary-crossing exits are censored from training metrics → NotEvaluated guardrails).
+            var candle = range[0];
             Assert.True(candle.OpenTimeUtc < scope.ValidationBoundaryUtc);
             var hit = scope.GetByOpenTimeUtc(candle.OpenTimeUtc, "M230C-AllowedTrial");
             Assert.NotNull(hit);
@@ -458,6 +477,46 @@ public sealed class Milestone230COrchestrationTests
             run.ErrorMessage = null;
             run.ResultSummaryJson = "{}";
             await _runs.UpdateAsync(run, cancellationToken);
+
+            // One closed winning path input so v1.3.2 trial metrics / guardrails can evaluate
+            // (empty candidate sets yield NotEvaluated mandatory guardrails → ineligible).
+            var entry = candle.Close;
+            var stop = entry * 0.99m;
+            var exit = entry * 1.02m;
+            var setupTime = candle.OpenTimeUtc;
+            var exitTime = setupTime.AddMinutes(15);
+            Assert.True(exitTime < scope.ValidationBoundaryUtc, "Seam exit must remain inside training.");
+            await _candidates.AddRangeAsync(
+                [
+                    new StrategyResearchCandidate
+                    {
+                        StrategyLabRunId = run.Id,
+                        StrategyCode = run.StrategyCode,
+                        StrategyVersion = run.StrategyVersion ?? "1.0.0",
+                        ExchangeId = run.ExchangeId,
+                        SymbolId = run.SymbolId,
+                        Symbol = run.Symbol,
+                        Timeframe = run.Timeframe,
+                        Direction = TradeDirection.Long,
+                        SetupDetectedAtUtc = setupTime,
+                        ProposedEntryTimeUtc = setupTime,
+                        ProposedEntryPrice = entry,
+                        StopLoss = stop,
+                        Target1 = exit,
+                        RewardRisk = 2m,
+                        CandidateStatus = StrategyResearchCandidateStatus.Closed,
+                        RawOutcomeStatus = RawOutcomeStatus.Winner,
+                        RawExitTimeUtc = exitTime,
+                        RawExitPrice = exit,
+                        ProposedPositionSize = 1m,
+                        RiskAmount = entry - stop,
+                        SetupFingerprint = $"m230c-allowed-{run.Id}",
+                        StrategyReason = "M230C-AllowedSeam",
+                        ParametersJson = "{}",
+                        StructureJson = "{}"
+                    }
+                ],
+                cancellationToken);
         }
     }
 }

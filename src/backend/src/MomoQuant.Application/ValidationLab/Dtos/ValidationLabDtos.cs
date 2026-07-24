@@ -108,6 +108,8 @@ public class ValidationExperimentDto
     public DateTime? ValidationEndUtc { get; init; }
     public DateTime? SplitCandleOpenTimeUtc { get; init; }
     public int RequiredWarmupCandles { get; init; }
+    public int? AvailableWarmupCandles { get; init; }
+    public ValidationWarmupStatus? WarmupStatus { get; init; }
     public DateTime? TrainingWarmupStartUtc { get; init; }
     public DateTime? ValidationWarmupStartUtc { get; init; }
     public string CandleDataFingerprint { get; init; } = string.Empty;
@@ -160,6 +162,11 @@ public class ValidationExperimentDto
     public bool IsQualificationCapable { get; init; } = true;
     public string? TrialPopulationSummaryJson { get; init; }
     public string? CloseoutAuditJson { get; init; }
+
+    // Milestone 23.0D — snapshot-based selection and trial/segment reconciliation
+    public string? SelectedMetricFingerprint { get; init; }
+    public ValidationTrialSegmentReconciliationStatus TrialSegmentReconciliationStatus { get; init; }
+    public string? TrialSegmentReconciliationJson { get; init; }
 }
 
 public sealed class ValidationExperimentDetailDto : ValidationExperimentDto
@@ -244,6 +251,12 @@ public sealed class ValidationSegmentResultDto
     public ValidationMetricApplicability? NetExpectancyApplicability { get; init; }
     public ValidationRiskBasisValidationStatus? RiskBasisValidationStatus { get; init; }
 
+    /// <summary>Milestone 23.0D — aggregate risk status over included path inputs only.</summary>
+    public ValidationRiskBasisValidationStatus? IncludedPopulationRiskStatus { get; init; }
+
+    /// <summary>Milestone 23.0D — aggregate integrity over all path inputs including excluded.</summary>
+    public ValidationRiskBasisValidationStatus? CompletePathInputIntegrityStatus { get; init; }
+
     public int? CandidatePopulationCount { get; init; }
     public int? BoundaryEligibleCandidateCount { get; init; }
     public int? PathInputPopulationCount { get; init; }
@@ -288,6 +301,25 @@ public sealed class ValidationParameterTrialDto
     public long? StrategyLabRunId { get; init; }
     public string? ErrorMessage { get; init; }
     public ValidationTrialRecoverySource RecoverySource { get; init; }
+
+    // Milestone 23.0D — persisted trial metric snapshot (ValidationMetrics/v1.3.2)
+    public string? TrialMetricSnapshotJson { get; init; }
+    public string? TrialMetricFingerprint { get; init; }
+    public string? TrialMetricsVersion { get; init; }
+    public string? TrainingScoreVersion { get; init; }
+    public string? GuardrailEvaluationJson { get; init; }
+    public int? CandidatePopulationCount { get; init; }
+    public int? BoundaryEligibleCandidateCount { get; init; }
+    public int? IncludedPathInputCount { get; init; }
+    public int? ExcludedPathInputCount { get; init; }
+    public int? ClosedOutcomePopulationCount { get; init; }
+    public int? MonetaryPnlPopulationCount { get; init; }
+    public int? GrossRPopulationCount { get; init; }
+    public int? NetRPopulationCount { get; init; }
+    public ValidationRiskBasisValidationStatus? IncludedPopulationRiskStatus { get; init; }
+    public ValidationRiskBasisValidationStatus? CompletePathInputIntegrityStatus { get; init; }
+    public ValidationTrialRankEligibility TrialRankEligibility { get; init; }
+    public string? RankIneligibleReasonsJson { get; init; }
 }
 
 public sealed class HoldoutReuseWarningDto

@@ -394,6 +394,7 @@ public static class ValidationMetricsContract
         var exclusionByReason = new Dictionary<string, int>(StringComparer.Ordinal);
         var warningByCode = new Dictionary<string, int>(StringComparer.Ordinal);
         var includedStatuses = new List<ValidationRiskBasisValidationStatus>();
+        var allPathInputStatuses = new List<ValidationRiskBasisValidationStatus>();
 
         var included = 0;
         var excluded = 0;
@@ -416,6 +417,7 @@ public static class ValidationMetricsContract
         foreach (var trade in trades)
         {
             var basis = riskBasis.ComputePathTradeBasis(trade);
+            allPathInputStatuses.Add(basis.Status);
 
             if (trade.MetricInclusionStatus == ValidationPathMetricInclusionStatus.Excluded)
             {
@@ -506,7 +508,10 @@ public static class ValidationMetricsContract
             PopulationContractVersion = ValidationMetricPopulationSummary.Version
         };
 
+        // Dual statuses (Milestone 23.0D). Both are order-independent by reducer construction:
+        // included-only risk status vs complete integrity over all path inputs including excluded.
         var aggregateStatus = statusReducer.Reduce(includedStatuses);
+        var completePathInputIntegrityStatus = statusReducer.Reduce(allPathInputStatuses);
 
         var grossPnl = monetaryGross.Sum();
         var netPnl = monetaryNet.Sum();
@@ -589,6 +594,8 @@ public static class ValidationMetricsContract
                 ? ValidationRiskBasisType.NormalizedOneUnit
                 : ValidationRiskBasisType.ShadowPortfolioPosition),
             RiskBasisValidationStatus = aggregateStatus,
+            IncludedPopulationRiskStatus = aggregateStatus,
+            CompletePathInputIntegrityStatus = completePathInputIntegrityStatus,
             NetExpectancyApplicability = netRApplicability,
             NetExpectancyIncludedTradeCount = population.NetRPopulationCount,
             NetExpectancyExcludedTradeCount =
@@ -652,7 +659,10 @@ public static class ValidationMetricsContract
             ["netPnl"] = Dec(metrics.NetPnl),
             ["grossExpectancyR"] = Dec(metrics.GrossExpectancyR),
             ["netExpectancyR"] = Dec(metrics.NetExpectancyR),
-            ["aggregateStatus"] = metrics.RiskBasisValidationStatus?.ToString() ?? string.Empty
+            ["aggregateStatus"] = metrics.RiskBasisValidationStatus?.ToString() ?? string.Empty,
+            ["includedRiskStatus"] = (metrics.IncludedPopulationRiskStatus
+                ?? metrics.RiskBasisValidationStatus)?.ToString() ?? string.Empty,
+            ["completeIntegrityStatus"] = metrics.CompletePathInputIntegrityStatus?.ToString() ?? string.Empty
         };
     }
 

@@ -99,10 +99,30 @@ public static class ValidationLab224AIntegrityOrchestrationFixture
             GuardrailDecision = eligible ? "Passed" : "Failed",
             GuardrailFailureReasonsJson = eligible ? null : "[\"ControlledFixtureRejected\"]",
             TrainingScore = trainingScore,
+            TrainingScoreVersion = eligible ? ValidationTrainingScoreVersions.V2 : null,
+            TrialMetricsVersion = ValidationMetricsContract.VersionV132,
+            TrialMetricFingerprint = eligible
+                ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes($"fixture:{fingerprint}:{trainingScore}"))).ToLowerInvariant()
+                : null,
+            TrialMetricSnapshotJson = eligible
+                ? JsonSerializer.Serialize(new
+                {
+                    metricsVersion = ValidationMetricsContract.VersionV132,
+                    trainingScore,
+                    closedTradeCount = 20,
+                    netExpectancyR = 0.25m,
+                    netProfitFactor = 1.50m
+                })
+                : null,
+            TrialRankEligibility = eligible
+                ? ValidationTrialRankEligibility.Eligible
+                : ValidationTrialRankEligibility.Ineligible,
+            RankIneligibleReasonsJson = eligible ? null : "[\"ControlledFixtureRejected\"]",
             NetExpectancyR = eligible ? 0.25m : -0.50m,
             ProfitFactor = eligible ? 1.50m : 0.80m,
             ClosedTradeCount = eligible ? 20 : 5,
-            StrategyLabRunId = 900000 + trialNumber,
+            StrategyLabRunId = null,
             CompletedAtUtc = DateTime.UtcNow
         };
     }

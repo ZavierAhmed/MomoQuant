@@ -60,6 +60,10 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                 var leakage = await Assert.ThrowsAsync<ValidationDataLeakageException>(() =>
                     execution.ExecuteWithScopeAsync(
                         experiment!,
+                        ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
+                            experiment!,
+                            trainingEvaluationEndExclusiveUtc: DateTime.SpecifyKind(
+                                experiment!.TrainingEndUtc!.Value, DateTimeKind.Utc).AddMinutes(60)),
                         async trainingScope =>
                         {
                             await execution.ExecuteTrialAsync(
@@ -88,7 +92,8 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                 Assert.NotEqual(Guid.Empty, denied.ScopeExecutionId);
                 Assert.Equal(1, denied.TrialNumber);
                 Assert.Equal(0, denied.ReturnedCandleCount);
-                Assert.Contains("BoundaryCrossed", denied.DenialReason ?? string.Empty, StringComparison.Ordinal);
+                Assert.Equal("BoundaryCrossed", denied.DenialCode);
+                Assert.False(string.IsNullOrWhiteSpace(denied.DenialReason));
 
                 // Production failure handler owns leakage status transitions — do not manually set them.
                 experiment = await experiments.GetByIdAsync(id);
@@ -207,6 +212,9 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
             DateTime? allowedOpen = null;
             await execution.ExecuteWithScopeAsync(
                 experiment!,
+                ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
+                    experiment!,
+                    trainingEvaluationEndExclusiveUtc: trainingEnd.AddMinutes(60)),
                 async trainingScope =>
                 {
                     await execution.ExecuteTrialAsync(
@@ -215,8 +223,14 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                         trialId: null,
                         trialBody: () =>
                         {
-                            Assert.True(trainingScope.Count > 0, "Prepared experiment must have training candles.");
-                            var candle = trainingScope[trainingScope.Count - 1];
+                            var range = trainingScope.GetEvaluationRange(
+                                trainingScope.SegmentStartUtc,
+                                trainingScope.SegmentEndExclusiveUtc,
+                                ValidationCandleAccessContext.Create(
+                                    $"AllowedTrainer:{correlationId}",
+                                    ValidationCandleAccessPurpose.EvaluationRange));
+                            Assert.True(range.Count > 0, "Prepared experiment must have training candles.");
+                            var candle = range[^1];
                             Assert.True(candle.OpenTimeUtc < validationStart);
                             allowedOpen = candle.OpenTimeUtc;
                             var hit = trainingScope.GetByOpenTimeUtc(
@@ -230,9 +244,14 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
             Assert.NotNull(allowedOpen);
 
             var persisted = await audits.GetByExperimentIdAsync(id);
-            var allowed = Assert.Single(persisted.Where(a =>
+            var allowedAll = persisted.Where(a =>
                 !a.WasDenied
-                && (a.CallerComponent ?? string.Empty).Contains(correlationId, StringComparison.Ordinal)));
+                && (a.CallerComponent ?? string.Empty).Contains(correlationId, StringComparison.Ordinal))
+                .ToList();
+            Assert.NotEmpty(allowedAll);
+            var allowed = Assert.Single(allowedAll.Where(a =>
+                string.Equals(a.AccessPurpose, "ByOpenTime", StringComparison.OrdinalIgnoreCase)
+                || (a.CallerComponent ?? string.Empty).Contains("ByOpenTime", StringComparison.OrdinalIgnoreCase)));
             Assert.True(allowed.Id > 0);
             Assert.Equal(2, allowed.TrialNumber);
             Assert.True(allowed.ReturnedCandleCount >= 1);

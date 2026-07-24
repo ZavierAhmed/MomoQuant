@@ -172,7 +172,7 @@ public static class ValidationLabExportBuilder
         var sb = new StringBuilder();
         sb.AppendLine("# validation-experiment-segment-results.csv");
         sb.AppendLine("# segment-results.csv");
-        sb.AppendLine("SegmentType,LayerType,ClosedTradeCount,GrossExpectancyR,NetExpectancyR,GrossProfitFactor,NetProfitFactor,GrossPnl,NetPnl,TransactionCosts,PersistedCandidateRowCount,MetricIncludedCandidateCount,MetricExcludedCandidateCount,CrossSegmentOverlapCount,GrossProfit,GrossLoss,NetProfit,NetLoss,ResultCalculationVersion,MetricWarningBearingIncludedTradeCount,MetricWarningCodes,PopulationContractVersion,CandidatePopulationCount,BoundaryEligibleCandidateCount,PathInputPopulationCount,IncludedPathInputCount,ExcludedPathInputCount,ClosedOutcomePopulationCount,MonetaryPnlPopulationCount,GrossRPopulationCount,NetRPopulationCount,WinnerPopulationCount,LoserPopulationCount,NeutralPopulationCount,RiskBasisValidationStatus,MonetaryPnlApplicability,GrossExpectancyApplicability,NetExpectancyApplicability,ExclusionCountsByReason,WarningCountsByCode");
+        sb.AppendLine("SegmentType,LayerType,ClosedTradeCount,GrossExpectancyR,NetExpectancyR,GrossProfitFactor,NetProfitFactor,GrossPnl,NetPnl,TransactionCosts,PersistedCandidateRowCount,MetricIncludedCandidateCount,MetricExcludedCandidateCount,CrossSegmentOverlapCount,GrossProfit,GrossLoss,NetProfit,NetLoss,ResultCalculationVersion,MetricWarningBearingIncludedTradeCount,MetricWarningCodes,PopulationContractVersion,CandidatePopulationCount,BoundaryEligibleCandidateCount,PathInputPopulationCount,IncludedPathInputCount,ExcludedPathInputCount,ClosedOutcomePopulationCount,MonetaryPnlPopulationCount,GrossRPopulationCount,NetRPopulationCount,WinnerPopulationCount,LoserPopulationCount,NeutralPopulationCount,RiskBasisValidationStatus,MonetaryPnlApplicability,GrossExpectancyApplicability,NetExpectancyApplicability,ExclusionCountsByReason,WarningCountsByCode,IncludedPopulationRiskStatus,CompletePathInputIntegrityStatus");
         foreach (var s in detail.SegmentResults ?? [])
         {
             sb.AppendLine(string.Join(',',
@@ -217,7 +217,9 @@ public static class ValidationLabExportBuilder
                 Csv(s.GrossExpectancyApplicability?.ToString()),
                 Csv(s.NetExpectancyApplicability?.ToString()),
                 Csv(FormatCountMap(s.ExclusionCountsByReason)),
-                Csv(FormatCountMap(s.WarningCountsByCode))));
+                Csv(FormatCountMap(s.WarningCountsByCode)),
+                Csv(s.IncludedPopulationRiskStatus?.ToString()),
+                Csv(s.CompletePathInputIntegrityStatus?.ToString())));
         }
 
         sb.AppendLine();
@@ -283,7 +285,7 @@ public static class ValidationLabExportBuilder
             sb.AppendLine();
             sb.AppendLine("# validation-experiment-training-trials.csv");
             sb.AppendLine("# training-trials.csv");
-            sb.AppendLine("TrialNumber,Status,ParameterFingerprint,NetExpectancyR,TrainingScore,GuardrailDecision,Rank,StrategyLabRunId");
+            sb.AppendLine("TrialNumber,Status,ParameterFingerprint,NetExpectancyR,TrainingScore,GuardrailDecision,Rank,StrategyLabRunId,TrialMetricFingerprint,TrialMetricsVersion,TrainingScoreVersion,TrialRankEligibility,RankIneligibleReasons,IncludedPopulationRiskStatus,CompletePathInputIntegrityStatus");
             foreach (var t in trials)
             {
                 if (t is ValidationParameterTrialDto dto)
@@ -296,7 +298,14 @@ public static class ValidationLabExportBuilder
                         Fmt(dto.TrainingScore),
                         Csv(dto.GuardrailDecision),
                         dto.Rank?.ToString() ?? "",
-                        dto.StrategyLabRunId?.ToString() ?? ""));
+                        dto.StrategyLabRunId?.ToString() ?? "",
+                        Csv(dto.TrialMetricFingerprint),
+                        Csv(dto.TrialMetricsVersion),
+                        Csv(dto.TrainingScoreVersion),
+                        Csv(dto.TrialRankEligibility.ToString()),
+                        Csv(dto.RankIneligibleReasonsJson),
+                        Csv(dto.IncludedPopulationRiskStatus?.ToString()),
+                        Csv(dto.CompletePathInputIntegrityStatus?.ToString())));
                 }
                 else
                 {

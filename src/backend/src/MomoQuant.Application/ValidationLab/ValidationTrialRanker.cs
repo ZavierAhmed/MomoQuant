@@ -1,40 +1,69 @@
+using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.ValidationLab;
 
 namespace MomoQuant.Application.ValidationLab;
 
 /// <summary>
 /// Ranks trials using training-only fields. Validation metrics must never affect ranking.
+/// For ValidationMetrics/v1.3.2 experiments (Milestone 23.0D), ranking reads only the fields
+/// persisted from the trial metric snapshot and requires snapshot rank eligibility — trials are
+/// never re-scored from StrategyLab summaries.
+/// Deterministic tie-break: TrainingScore desc → NetExpectancyR desc → ProfitFactor desc →
+/// MaximumDrawdownPercent asc → ClosedTradeCount desc → ParameterFingerprint ordinal asc →
+/// TrialNumber asc. Null metrics always order after evaluated metrics.
 /// </summary>
 public static class ValidationTrialRanker
 {
     public static IReadOnlyList<ValidationParameterTrial> OrderForRanking(
-        IEnumerable<ValidationParameterTrial> trials)
+        IEnumerable<ValidationParameterTrial> trials,
+        bool requireSnapshotEligibility = false)
     {
-        return trials
-            .Where(t => string.Equals(t.GuardrailDecision, "Passed", StringComparison.OrdinalIgnoreCase))
+        var eligible = trials
+            .Where(t => t.Status is not (ValidationTrialStatus.Failed
+                            or ValidationTrialStatus.GuardrailRejected
+                            or ValidationTrialStatus.LeakageFailed
+                            or ValidationTrialStatus.AuditPersistenceFailed)
+                        && string.Equals(t.GuardrailDecision, "Passed", StringComparison.OrdinalIgnoreCase));
+
+        if (requireSnapshotEligibility)
+        {
+            eligible = eligible.Where(IsSnapshotRankEligible);
+        }
+
+        return eligible
             .OrderByDescending(t => t.TrainingScore ?? decimal.MinValue)
             .ThenByDescending(t => t.NetExpectancyR ?? decimal.MinValue)
             .ThenByDescending(t => t.ProfitFactor ?? decimal.MinValue)
             .ThenBy(t => t.MaximumDrawdownPercent ?? decimal.MaxValue)
             .ThenByDescending(t => t.ClosedTradeCount)
             .ThenBy(t => t.ParameterFingerprint, StringComparer.Ordinal)
+            .ThenBy(t => t.TrialNumber)
             .ToList();
     }
 
-    public static void AssignRanks(IList<ValidationParameterTrial> trials)
+    /// <summary>Snapshot-eligible: calculator marked the trial Eligible and persisted a fingerprint.</summary>
+    public static bool IsSnapshotRankEligible(ValidationParameterTrial trial) =>
+        trial.TrialRankEligibility == ValidationTrialRankEligibility.Eligible
+        && !string.IsNullOrWhiteSpace(trial.TrialMetricFingerprint);
+
+    public static void AssignRanks(
+        IList<ValidationParameterTrial> trials,
+        bool requireSnapshotEligibility = false)
     {
         foreach (var trial in trials)
         {
             trial.Rank = null;
         }
 
-        var ordered = OrderForRanking(trials);
+        var ordered = OrderForRanking(trials, requireSnapshotEligibility);
         for (var i = 0; i < ordered.Count; i++)
         {
             ordered[i].Rank = i + 1;
         }
     }
 
-    public static ValidationParameterTrial? SelectWinner(IEnumerable<ValidationParameterTrial> trials) =>
-        OrderForRanking(trials).FirstOrDefault();
+    public static ValidationParameterTrial? SelectWinner(
+        IEnumerable<ValidationParameterTrial> trials,
+        bool requireSnapshotEligibility = false) =>
+        OrderForRanking(trials, requireSnapshotEligibility).FirstOrDefault();
 }

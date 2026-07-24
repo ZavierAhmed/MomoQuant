@@ -81,6 +81,13 @@ internal sealed class ValidationExperimentConfiguration : IEntityTypeConfigurati
         builder.Property(e => e.FallbackSelectionReason).HasMaxLength(512);
         builder.Property(e => e.CloseoutAuditJson).HasColumnType("longtext");
         builder.Property(e => e.TrialPopulationSummaryJson).HasColumnType("longtext");
+
+        // Milestone 23.0D — snapshot-based selection and trial/segment reconciliation
+        builder.Property(e => e.SelectedMetricFingerprint).HasMaxLength(64);
+        builder.Property(e => e.TrialSegmentReconciliationStatus)
+            .HasConversion<string>().HasMaxLength(32).IsRequired();
+        builder.Property(e => e.TrialSegmentReconciliationJson).HasColumnType("longtext");
+
         builder.HasIndex(e => e.CreatedAtUtc);
         builder.HasIndex(e => e.Status);
         builder.HasIndex(e => e.StrategyCode);
@@ -112,6 +119,17 @@ internal sealed class ValidationParameterTrialConfiguration : IEntityTypeConfigu
             .HasDatabaseName("IX_ValTrials_ExpId_Fingerprint");
         builder.Property(t => t.ErrorMessage).HasColumnType("longtext");
         builder.Property(t => t.RecoverySource).HasConversion<string>().HasMaxLength(64).IsRequired();
+
+        // Milestone 23.0D — persisted trial metric snapshot (ValidationMetrics/v1.3.2)
+        builder.Property(t => t.TrialMetricSnapshotJson).HasColumnType("longtext");
+        builder.Property(t => t.TrialMetricFingerprint).HasMaxLength(64);
+        builder.Property(t => t.TrialMetricsVersion).HasMaxLength(64);
+        builder.Property(t => t.TrainingScoreVersion).HasMaxLength(64);
+        builder.Property(t => t.GuardrailEvaluationJson).HasColumnType("longtext");
+        builder.Property(t => t.IncludedPopulationRiskStatus).HasConversion<string>().HasMaxLength(64);
+        builder.Property(t => t.CompletePathInputIntegrityStatus).HasConversion<string>().HasMaxLength(64);
+        builder.Property(t => t.TrialRankEligibility).HasConversion<string>().HasMaxLength(32).IsRequired();
+        builder.Property(t => t.RankIneligibleReasonsJson).HasColumnType("longtext");
     }
 }
 
@@ -169,9 +187,14 @@ internal sealed class ValidationCandleAccessAuditConfiguration : IEntityTypeConf
         builder.Property(a => a.ScopeExecutionId)
             .HasColumnType("char(36)")
             .IsRequired();
+        builder.Property(a => a.ScopeSequenceNumber).IsRequired();
         builder.Property(a => a.CallerComponent).HasMaxLength(128).IsRequired();
+        builder.Property(a => a.AccessPurpose).HasMaxLength(64);
+        builder.Property(a => a.DenialCode).HasMaxLength(64);
         builder.Property(a => a.CandleContentFingerprint).HasMaxLength(64);
         builder.Property(a => a.DenialReason).HasMaxLength(512);
+        builder.Property(a => a.CorrelationId).HasMaxLength(64);
+        builder.Property(a => a.DatasetPartition).HasMaxLength(64);
         builder.Property(a => a.RecorderVersion).HasMaxLength(64).IsRequired();
         builder.HasIndex(a => a.AccessEventId)
             .IsUnique()
@@ -182,6 +205,8 @@ internal sealed class ValidationCandleAccessAuditConfiguration : IEntityTypeConf
             .HasDatabaseName("IX_ValCandleAccess_Experiment_Accessed");
         builder.HasIndex(a => new { a.ValidationExperimentId, a.TrialNumber, a.ScopeExecutionId, a.AccessedAtUtc })
             .HasDatabaseName("IX_ValCandleAccess_Exp_Trial_Scope_Accessed");
+        builder.HasIndex(a => new { a.ScopeExecutionId, a.ScopeSequenceNumber })
+            .HasDatabaseName("IX_ValCandleAccess_Scope_Sequence");
     }
 }
 

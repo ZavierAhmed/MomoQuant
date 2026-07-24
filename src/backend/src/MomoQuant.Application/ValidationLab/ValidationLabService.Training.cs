@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MomoQuant.Application.Common;
+using MomoQuant.Application.Strategies;
 using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.ValidationLab.Dtos;
 using MomoQuant.Domain.Enums;
@@ -117,9 +118,62 @@ public sealed partial class ValidationLabService
 
         try
         {
-            ServiceResult<ValidationExperimentDto>? result = null;
-            await _trainingScopeExecution.ExecuteWithScopeAsync(experiment, async trainingScope =>
+            var requirementsResult = await _executionRequirementsResolver.ResolveAsync(
+                new ResolveStrategyExecutionRequirementsRequest
+                {
+                    StrategyCode = experiment.StrategyCode,
+                    StrategyVersion = experiment.StrategyVersion
+                },
+                cancellationToken);
+            if (!requirementsResult.Succeeded || requirementsResult.Data is null)
             {
+                experiment.Status = ValidationExperimentStatus.Failed;
+                experiment.ErrorMessage = requirementsResult.ErrorMessage ?? "Failed to resolve strategy execution requirements.";
+                experiment.PrimaryFailureReason = "STRATEGY_REQUIREMENTS_UNRESOLVED";
+                experiment.CurrentStage = "Training";
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
+                return ServiceResult<ValidationExperimentDto>.Fail(experiment.ErrorMessage);
+            }
+
+            var requirements = requirementsResult.Data;
+            var trainingEndExclusive = ToExclusiveUtc(experiment.TrainingEndUtc.Value, experiment.Timeframe);
+            var scopeRequest = ValidationTrainingCandleScopeRequest.FromExperiment(
+                experiment,
+                requirements,
+                trainingEndExclusive);
+
+            experiment.WarmupSnapshotJson = JsonSerializer.Serialize(new
+            {
+                requiredWarmupCandleCount = requirements.RequiredWarmupCandleCount,
+                requirementsVersion = requirements.RequirementsVersion,
+                strategyId = requirements.StrategyId,
+                strategyCode = requirements.StrategyCode,
+                strategyVersion = requirements.StrategyVersion
+            }, JsonOptions);
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
+
+            ServiceResult<ValidationExperimentDto>? result = null;
+            try
+            {
+                await _trainingScopeExecution.ExecuteWithScopeAsync(experiment, scopeRequest, async trainingScope =>
+                {
+                experiment.WarmupSnapshotJson = JsonSerializer.Serialize(new
+                {
+                    requiredWarmupCandleCount = trainingScope.Partition.RequiredWarmupCandleCount,
+                    availableWarmupCandleCount = trainingScope.Partition.AvailableWarmupCandleCount,
+                    warmupStatus = trainingScope.Partition.WarmupStatus.ToString(),
+                    requirementsVersion = trainingScope.Partition.RequirementsVersion,
+                    strategyId = requirements.StrategyId,
+                    strategyCode = requirements.StrategyCode,
+                    strategyVersion = requirements.StrategyVersion,
+                    warmupContentFingerprint = trainingScope.Partition.WarmupContentFingerprint
+                }, JsonOptions);
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+
                 var draft = ParseDraft(experiment.DraftConfigurationJson);
                 var profile = ToQualificationProfile(draft.QualificationProfile, experiment.PrimaryQualificationLayer);
                 var combos = BuildTrainingCombinations(experiment, draft);
@@ -215,6 +269,20 @@ public sealed partial class ValidationLabService
                             },
                             cancellationToken);
                     }
+                    catch (ValidationAccessEvidencePersistenceException ex)
+                    {
+                        var handled = await _trainingFailureHandler.HandleAuditPersistenceFailureAsync(
+                            experiment,
+                            trial,
+                            ex,
+                            leaseOwner: leaseOwner,
+                            cancellationToken: cancellationToken);
+                        await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
+                        result = ServiceResult<ValidationExperimentDto>.Fail(
+                            handled.UserSafeErrorMessage,
+                            handled.ErrorCode);
+                        return;
+                    }
                     catch (ValidationTrainingBoundaryException ex)
                     {
                         // Production owns leakage/boundary status transitions (flush, trial, experiment, op-status).
@@ -262,7 +330,33 @@ public sealed partial class ValidationLabService
                 }
 
                 result = await FinalizeTrainingAsync(experiment, draft, combos.Count, cancellationToken, leaseOwner);
-            }, cancellationToken);
+                }, cancellationToken);
+            }
+            catch (ValidationTrainingInsufficientWarmupException ex)
+            {
+                experiment.Status = ValidationExperimentStatus.Failed;
+                experiment.ErrorMessage =
+                    $"Insufficient warm-up candles for training (available={ex.AvailableWarmupCandleCount}, required={ex.RequiredWarmupCandleCount}).";
+                experiment.PrimaryFailureReason = ValidationTrainingFailureCodes.InsufficientWarmup;
+                experiment.FailureReasonsJson = JsonSerializer.Serialize(
+                    new[] { ValidationTrainingFailureCodes.InsufficientWarmup },
+                    JsonOptions);
+                experiment.CurrentStage = "InsufficientWarmup";
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                AppendDiagnostic(experiment, ValidationTrainingFailureCodes.InsufficientWarmup, experiment.ErrorMessage);
+                experiment.WarmupSnapshotJson = JsonSerializer.Serialize(new
+                {
+                    requiredWarmupCandleCount = ex.RequiredWarmupCandleCount,
+                    availableWarmupCandleCount = ex.AvailableWarmupCandleCount,
+                    warmupStatus = ex.WarmupStatus.ToString(),
+                    requirementsVersion = requirements.RequirementsVersion
+                }, JsonOptions);
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
+                return ServiceResult<ValidationExperimentDto>.Fail(
+                    experiment.ErrorMessage,
+                    ValidationTrainingFailureCodes.InsufficientWarmup);
+            }
 
             return result ?? ServiceResult<ValidationExperimentDto>.Fail("Training ended without a result.");
         }
@@ -330,6 +424,11 @@ public sealed partial class ValidationLabService
         }
     }
 
+    /// <summary>
+    /// Milestone 23.0D WP23 — explicit MetricsVersion routing. ValidationMetrics/v1.3.2
+    /// experiments use the trial metrics calculator (path inputs + population contract +
+    /// persisted snapshot); older versions keep the legacy summary/candidate mapping.
+    /// </summary>
     private async Task PopulateTrialMetricsAsync(
         ValidationExperiment experiment,
         ValidationParameterTrial trial,
@@ -339,74 +438,8 @@ public sealed partial class ValidationLabService
         CancellationToken cancellationToken)
     {
         var candidates = await _candidates.GetByRunIdAsync(run.Id, cancellationToken);
-        var boundary = experiment.ValidationStartUtc.HasValue
-            ? ValidationMetricsMapper.CountBoundaryCensored(candidates, experiment.ValidationStartUtc.Value)
-            : 0;
-        var metricsCandidates = experiment.ValidationStartUtc.HasValue
-            ? ValidationMetricsMapper.ExcludeBoundaryFromMetrics(candidates, experiment.ValidationStartUtc.Value)
-            : candidates;
-
-        var (summary, riskOnly, fullPipeline) = ParseResultSummary(run.ResultSummaryJson);
-        var rawMetrics = ValidationMetricsMapper.FromCandidates(
-            metricsCandidates,
-            experiment.TrainingCandleCount,
-            boundary,
-            ValidationLayerType.RawStrategy);
-        if (summary is not null)
-        {
-            rawMetrics = ValidationMetricsMapper.FromStrategyLabSummary(
-                summary,
-                experiment.TrainingCandleCount,
-                metricsCandidates.Count,
-                boundary,
-                riskOnly,
-                fullPipeline,
-                ValidationLayerType.RawStrategy);
-        }
-
-        var feeImpact = rawMetrics.FeeToGrossProfitPercent;
-        var oppRate = rawMetrics.OpportunityRatePer1000Candles;
-        var score = ValidationTrainingScoreCalculator.Calculate(
-            rawMetrics.ClosedTradeCount,
-            rawMetrics.NetExpectancyR,
-            rawMetrics.ProfitFactor,
-            rawMetrics.MaximumRealizedDrawdownPercent,
-            feeImpact,
-            oppRate,
-            profile.MinimumTrainingClosedTrades);
-
-        var guardrailFailures = new List<string>();
-        if (rawMetrics.ClosedTradeCount < profile.MinimumTrainingClosedTrades)
-            guardrailFailures.Add($"ClosedTrades<{profile.MinimumTrainingClosedTrades}");
-        if ((rawMetrics.ProfitFactor ?? 0m) < profile.MinimumTrainingProfitFactor)
-            guardrailFailures.Add($"ProfitFactor<{profile.MinimumTrainingProfitFactor}");
-        if ((rawMetrics.NetExpectancyR ?? 0m) < profile.MinimumTrainingNetExpectancyR)
-            guardrailFailures.Add($"NetExpectancyR<{profile.MinimumTrainingNetExpectancyR}");
-        if ((rawMetrics.MaximumRealizedDrawdownPercent ?? 0m) > profile.MaximumTrainingDrawdownPercent)
-            guardrailFailures.Add($"MaxDD>{profile.MaximumTrainingDrawdownPercent}");
-
-        var passed = guardrailFailures.Count == 0;
         trial.ParameterSnapshotJson = JsonSerializer.Serialize(combo, JsonOptions);
-        trial.Status = passed ? ValidationTrialStatus.Completed : ValidationTrialStatus.GuardrailRejected;
-        trial.CompletedAtUtc = DateTime.UtcNow;
-        trial.RawCandidateCount = metricsCandidates.Count;
-        trial.ClosedTradeCount = rawMetrics.ClosedTradeCount;
-        trial.WinnerCount = rawMetrics.WinnerCount;
-        trial.LoserCount = rawMetrics.LoserCount;
-        trial.ExpiredCount = rawMetrics.ExpiredCount;
-        trial.NetExpectancyR = rawMetrics.NetExpectancyR;
-        trial.GrossPnl = rawMetrics.GrossPnl;
-        trial.NetPnl = rawMetrics.NetPnl;
-        trial.ProfitFactor = rawMetrics.ProfitFactor;
-        trial.MaximumDrawdownPercent = rawMetrics.MaximumRealizedDrawdownPercent;
-        trial.FeeImpactPercent = feeImpact;
-        trial.TrainingScore = score.Total;
-        trial.GuardrailDecision = passed ? "Passed" : "Failed";
-        trial.GuardrailFailureReasonsJson = guardrailFailures.Count == 0
-            ? null
-            : JsonSerializer.Serialize(guardrailFailures, JsonOptions);
-        trial.StrategyLabRunId = run.Id;
-        trial.ErrorMessage = null;
+        _trialMetricsRouter.ApplyTrialMetrics(experiment, trial, run, candidates, profile);
     }
 
     private async Task UpdateExperimentProgressAsync(
@@ -429,7 +462,9 @@ public sealed partial class ValidationLabService
         string leaseOwner)
     {
         var trialEntities = (await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken)).ToList();
-        ValidationTrialRanker.AssignRanks(trialEntities);
+        var useSnapshotSelection =
+            ValidationMetricsContract.IsPopulationPathMetricsVersion(experiment.ValidationMetricsVersion);
+        ValidationTrialRanker.AssignRanks(trialEntities, useSnapshotSelection);
         foreach (var trial in trialEntities)
         {
             await _trials.UpdateAsync(trial, cancellationToken);
@@ -445,6 +480,7 @@ public sealed partial class ValidationLabService
             experiment.SelectedTrialNumber = null;
             experiment.SelectedTrialParameterSnapshotJson = null;
             experiment.SelectedTrialParameterFingerprint = null;
+            experiment.SelectedMetricFingerprint = null;
             experiment.TrainingStrategyLabRunId = null;
             experiment.ValidationStrategyLabRunId = null;
             experiment.FrozenStrategyParameterSnapshotJson = null;
@@ -474,6 +510,7 @@ public sealed partial class ValidationLabService
             experiment.SelectedTrialNumber = winner.TrialNumber;
             experiment.SelectedTrialParameterSnapshotJson = winner.ParameterSnapshotJson;
             experiment.SelectedTrialParameterFingerprint = winner.ParameterFingerprint;
+            experiment.SelectedMetricFingerprint = winner.TrialMetricFingerprint;
             draft.Parameters = DeserializeStringDictionary(winner.ParameterSnapshotJson);
             experiment.DraftConfigurationJson = SerializeDraft(draft);
             experiment.TrainingStrategyLabRunId = winner.StrategyLabRunId;
@@ -487,6 +524,24 @@ public sealed partial class ValidationLabService
                     ValidationSegmentType.Training,
                     experiment.TrainingCandleCount,
                     cancellationToken);
+            }
+
+            if (useSnapshotSelection)
+            {
+                // WP21 — the selected trial's persisted metric snapshot must reproduce the
+                // RawStrategy training segment result; a mismatch blocks freeze.
+                var reconciliation = await _trialSegmentReconciliation.ReconcileAsync(
+                    experiment, winner, cancellationToken);
+                experiment.TrialSegmentReconciliationStatus = reconciliation.Status;
+                experiment.TrialSegmentReconciliationJson =
+                    ValidationTrialSegmentReconciliationService.Serialize(reconciliation);
+                if (reconciliation.Status == ValidationTrialSegmentReconciliationStatus.Mismatched)
+                {
+                    AppendDiagnostic(
+                        experiment,
+                        ValidationTrialSegmentReconciliationReport.MismatchCode,
+                        string.Join("; ", reconciliation.MismatchReasons));
+                }
             }
         }
 

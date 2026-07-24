@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.ValidationLab;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.ValidationLab;
 
@@ -313,54 +314,94 @@ public sealed class ValidationCandleAccessAuditRepository : IValidationCandleAcc
         await _db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<int> AddRangeIdempotentByAccessEventIdAsync(
+    public async Task<ValidationAccessBatchPersistResult> AddRangeIdempotentByAccessEventIdAsync(
         IReadOnlyList<ValidationCandleAccessAudit> audits,
         CancellationToken cancellationToken = default)
     {
         if (audits.Count == 0)
         {
-            return 0;
+            return ValidationAccessBatchPersistResult.EmptyNoWork();
         }
 
-        var eventIds = audits.Select(a => a.AccessEventId).Distinct().ToList();
-        var existing = await _db.ValidationCandleAccessAudits
+        // Preserve first occurrence per AccessEventId within the batch.
+        var distinct = audits
+            .GroupBy(a => a.AccessEventId)
+            .Select(g => g.First())
+            .ToList();
+        var requested = distinct.Select(a => a.AccessEventId).ToList();
+
+        var existingBefore = await _db.ValidationCandleAccessAudits
             .AsNoTracking()
-            .Where(a => eventIds.Contains(a.AccessEventId))
+            .Where(a => requested.Contains(a.AccessEventId))
             .Select(a => a.AccessEventId)
             .ToListAsync(cancellationToken);
-        var existingSet = existing.ToHashSet();
-        var fresh = audits.Where(a => !existingSet.Contains(a.AccessEventId)).ToList();
-        if (fresh.Count == 0)
-        {
-            return 0;
-        }
+        var existingBeforeSet = existingBefore.ToHashSet();
 
         await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
         try
         {
-            _db.ValidationCandleAccessAudits.AddRange(fresh);
-            await _db.SaveChangesAsync(cancellationToken);
-            await tx.CommitAsync(cancellationToken);
-            return fresh.Count;
-        }
-        catch (DbUpdateException ex) when (IsDuplicateAccessEventId(ex))
-        {
-            // Concurrent writer already persisted — treat as idempotent success.
-            foreach (var entry in _db.ChangeTracker.Entries<ValidationCandleAccessAudit>()
-                         .Where(e => fresh.Contains(e.Entity))
-                         .ToList())
+            foreach (var audit in distinct)
             {
-                entry.State = EntityState.Detached;
+                await UpsertAuditRowAsync(audit, cancellationToken).ConfigureAwait(false);
             }
 
-            await tx.RollbackAsync(cancellationToken);
-            return 0;
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (OperationCanceledException)
         {
-            await tx.RollbackAsync(cancellationToken);
+            try
+            {
+                await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // ignore rollback failures; surface cancellation
+            }
+
             throw;
         }
+        catch (Exception ex)
+        {
+            try
+            {
+                await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // ignore rollback failures; surface original
+            }
+
+            var failed = ValidationAccessBatchPersistResult.Create(
+                requested,
+                newlyInserted: Array.Empty<Guid>(),
+                alreadyExisting: existingBefore,
+                confirmed: Array.Empty<Guid>(),
+                ValidationAccessBatchCommitStatus.Failed);
+            throw new ValidationAccessEvidencePersistenceException(failed, ex);
+        }
+
+        var confirmed = await _db.ValidationCandleAccessAudits
+            .AsNoTracking()
+            .Where(a => requested.Contains(a.AccessEventId))
+            .Select(a => a.AccessEventId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        var newlyInserted = requested.Where(id => !existingBeforeSet.Contains(id)).ToList();
+        var alreadyExisting = requested.Where(id => existingBeforeSet.Contains(id)).ToList();
+        var result = ValidationAccessBatchPersistResult.Create(
+            requested,
+            newlyInserted,
+            alreadyExisting,
+            confirmed,
+            ValidationAccessBatchCommitStatus.Committed);
+
+        if (!result.IsFullyConfirmed)
+        {
+            throw new ValidationAccessEvidencePersistenceException(result);
+        }
+
+        return result;
     }
 
     public async Task<IReadOnlyList<ValidationCandleAccessAudit>> GetByExperimentIdAsync(
@@ -372,20 +413,37 @@ public sealed class ValidationCandleAccessAuditRepository : IValidationCandleAcc
             .OrderBy(a => a.AccessedAtUtc)
             .ToListAsync(cancellationToken);
 
-    private static bool IsDuplicateAccessEventId(Exception ex)
+    private async Task UpsertAuditRowAsync(ValidationCandleAccessAudit audit, CancellationToken cancellationToken)
     {
-        for (var cur = ex; cur is not null; cur = cur.InnerException!)
-        {
-            var msg = cur.Message ?? string.Empty;
-            if (msg.Contains("Duplicate entry", StringComparison.OrdinalIgnoreCase)
-                || msg.Contains("IX_ValCandleAccess_AccessEventId", StringComparison.OrdinalIgnoreCase)
-                || msg.Contains("UNIQUE constraint", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        // MySQL-safe idempotent upsert: duplicate AccessEventId is a no-op update, not a lost mixed batch.
+        await _db.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             INSERT INTO ValidationCandleAccessAudits
+             (
+                 AccessEventId, ScopeExecutionId, ScopeSequenceNumber, ValidationExperimentId,
+                 TrialId, TrialNumber, CallerComponent, AccessPurpose,
+                 RequestedStartUtc, RequestedEndUtc, RequestedCandleCount,
+                 ReturnedStartUtc, ReturnedEndUtc, ReturnedCandleCount,
+                 MinimumReturnedTimestampUtc, MaximumReturnedTimestampUtc,
+                 CandleContentFingerprint, AccessedAtUtc, WasDenied, DenialCode, DenialReason,
+                 CorrelationId, DatasetPartition, FlushAttemptCount, PersistedAtUtc,
+                 RecorderVersion, CreatedAtUtc
+             )
+             VALUES
+             (
+                 {audit.AccessEventId}, {audit.ScopeExecutionId}, {audit.ScopeSequenceNumber}, {audit.ValidationExperimentId},
+                 {audit.TrialId}, {audit.TrialNumber}, {audit.CallerComponent}, {audit.AccessPurpose},
+                 {audit.RequestedStartUtc}, {audit.RequestedEndUtc}, {audit.RequestedCandleCount},
+                 {audit.ReturnedStartUtc}, {audit.ReturnedEndUtc}, {audit.ReturnedCandleCount},
+                 {audit.MinimumReturnedTimestampUtc}, {audit.MaximumReturnedTimestampUtc},
+                 {audit.CandleContentFingerprint}, {audit.AccessedAtUtc}, {audit.WasDenied}, {audit.DenialCode}, {audit.DenialReason},
+                 {audit.CorrelationId}, {audit.DatasetPartition}, {audit.FlushAttemptCount}, {audit.PersistedAtUtc},
+                 {audit.RecorderVersion}, {audit.CreatedAtUtc}
+             )
+             ON DUPLICATE KEY UPDATE AccessEventId = AccessEventId
+             """,
+            cancellationToken).ConfigureAwait(false);
     }
 }
+
 

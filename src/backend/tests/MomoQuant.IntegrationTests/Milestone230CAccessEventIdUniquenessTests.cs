@@ -31,10 +31,12 @@ public sealed class Milestone230CAccessEventIdUniquenessTests : IClassFixture<Mo
         try
         {
             var first = NewAudit(experimentId, accessEventId, scopeExecutionId, "First");
-            Assert.Equal(1, await audits.AddRangeIdempotentByAccessEventIdAsync([first]));
+            Assert.Equal(1, (await audits.AddRangeIdempotentByAccessEventIdAsync([first])).NewlyInsertedCount);
 
             var duplicate = NewAudit(experimentId, accessEventId, scopeExecutionId, "Duplicate");
-            Assert.Equal(0, await audits.AddRangeIdempotentByAccessEventIdAsync([duplicate]));
+            var replay = await audits.AddRangeIdempotentByAccessEventIdAsync([duplicate]);
+            Assert.True(replay.IsFullyConfirmed);
+            Assert.Equal(0, replay.NewlyInsertedCount);
 
             var loaded = await audits.GetByExperimentIdAsync(experimentId);
             Assert.Single(loaded.Where(a => a.AccessEventId == accessEventId));
@@ -65,9 +67,12 @@ public sealed class Milestone230CAccessEventIdUniquenessTests : IClassFixture<Mo
         {
             AccessEventId = accessEventId,
             ScopeExecutionId = scopeExecutionId,
+            ScopeSequenceNumber = 1,
             ValidationExperimentId = experimentId,
             TrialNumber = 1,
             CallerComponent = caller,
+            AccessPurpose = "ByOpenTime",
+            DatasetPartition = "Training",
             AccessedAtUtc = DateTime.UtcNow,
             WasDenied = false,
             ReturnedCandleCount = 0,

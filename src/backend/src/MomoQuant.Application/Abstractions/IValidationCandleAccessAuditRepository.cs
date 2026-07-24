@@ -1,3 +1,4 @@
+using MomoQuant.Application.ValidationLab;
 using MomoQuant.Domain.ValidationLab;
 
 namespace MomoQuant.Application.Abstractions;
@@ -9,10 +10,12 @@ public interface IValidationCandleAccessAuditRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Persists audits transactionally. Rows whose <see cref="ValidationCandleAccessAudit.AccessEventId"/>
-    /// already exist are skipped (idempotent). Returns the count of newly inserted rows.
+    /// MySQL-safe upsert by <see cref="ValidationCandleAccessAudit.AccessEventId"/>, then SELECT-confirms
+    /// every requested id. Success requires ConfirmedPersistedEventIds == RequestedEventIds (as sets);
+    /// otherwise throws <see cref="ValidationAccessEvidencePersistenceException"/>.
+    /// Never treats a duplicate-key rollback as successful persistence of a mixed batch.
     /// </summary>
-    Task<int> AddRangeIdempotentByAccessEventIdAsync(
+    Task<ValidationAccessBatchPersistResult> AddRangeIdempotentByAccessEventIdAsync(
         IReadOnlyList<ValidationCandleAccessAudit> audits,
         CancellationToken cancellationToken = default);
 

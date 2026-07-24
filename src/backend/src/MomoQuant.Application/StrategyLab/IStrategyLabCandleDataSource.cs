@@ -26,6 +26,13 @@ public sealed class StrategyLabDataset
     public required IReadOnlyDictionary<long, IndicatorSnapshot> IndicatorSnapshots { get; init; }
     public required IReadOnlyList<int> EvaluationIndices { get; init; }
 
+    /// <summary>Warm-up bars prepended before the evaluation window (0 when none).</summary>
+    public int WarmupCandleCount { get; init; }
+
+    public string? WarmupContentFingerprint { get; init; }
+    public string? EvaluationContentFingerprint { get; init; }
+    public string? CombinedContentFingerprint { get; init; }
+
     public static StrategyLabDataset FromBacktest(BacktestDataset dataset) =>
         new()
         {
@@ -34,7 +41,8 @@ public sealed class StrategyLabDataset
             Timeframe = dataset.Timeframe,
             Candles = dataset.Candles,
             IndicatorSnapshots = dataset.IndicatorSnapshots,
-            EvaluationIndices = dataset.EvaluationIndices
+            EvaluationIndices = dataset.EvaluationIndices,
+            WarmupCandleCount = Math.Max(0, dataset.Candles.Count - dataset.EvaluationIndices.Count)
         };
 
     public BacktestDataset ToBacktest() =>

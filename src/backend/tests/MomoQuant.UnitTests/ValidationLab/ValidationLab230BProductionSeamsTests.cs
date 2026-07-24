@@ -185,14 +185,34 @@ public class ValidationLab230BProductionSeamsTests
             CancellationToken cancellationToken = default) =>
             await AddRangeIdempotentByAccessEventIdAsync(audits, cancellationToken);
 
-        public Task<int> AddRangeIdempotentByAccessEventIdAsync(
+        public Task<ValidationAccessBatchPersistResult> AddRangeIdempotentByAccessEventIdAsync(
             IReadOnlyList<ValidationCandleAccessAudit> audits,
             CancellationToken cancellationToken = default)
         {
             var existing = Items.Select(i => i.AccessEventId).ToHashSet();
-            var fresh = audits.Where(a => !existing.Contains(a.AccessEventId)).ToList();
-            Items.AddRange(fresh);
-            return Task.FromResult(fresh.Count);
+            var distinct = audits.GroupBy(a => a.AccessEventId).Select(g => g.First()).ToList();
+            var requested = distinct.Select(a => a.AccessEventId).ToList();
+            var newly = new List<Guid>();
+            var already = new List<Guid>();
+            foreach (var a in distinct)
+            {
+                if (existing.Contains(a.AccessEventId))
+                {
+                    already.Add(a.AccessEventId);
+                }
+                else
+                {
+                    Items.Add(a);
+                    newly.Add(a.AccessEventId);
+                }
+            }
+
+            return Task.FromResult(ValidationAccessBatchPersistResult.Create(
+                requested,
+                newly,
+                already,
+                requested,
+                ValidationAccessBatchCommitStatus.Committed));
         }
 
         public Task<IReadOnlyList<ValidationCandleAccessAudit>> GetByExperimentIdAsync(
@@ -206,9 +226,16 @@ public class ValidationLab230BProductionSeamsTests
     {
         public ValidationTrainingCandleScope Scope { get; } = CreateScope();
 
+        public Task<IValidationTrainingCandleScope> CreateAsync(
+            ValidationTrainingCandleScopeRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IValidationTrainingCandleScope>(Scope);
+
+#pragma warning disable CS0618
         public Task<IValidationTrainingCandleScope> CreateForExperimentAsync(
             ValidationExperiment experiment,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<IValidationTrainingCandleScope>(Scope);
+#pragma warning restore CS0618
     }
 }

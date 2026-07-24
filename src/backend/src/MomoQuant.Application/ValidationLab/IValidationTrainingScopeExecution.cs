@@ -10,11 +10,12 @@ namespace MomoQuant.Application.ValidationLab;
 public interface IValidationTrainingScopeExecution
 {
     /// <summary>
-    /// Creates the training candle scope, enters ambient context, runs <paramref name="body"/>,
-    /// and flushes access evidence in a finally block.
+    /// Creates the training candle scope from a validated request, enters ambient context,
+    /// runs <paramref name="body"/>, and flushes access evidence in a finally block.
     /// </summary>
     Task ExecuteWithScopeAsync(
         ValidationExperiment experiment,
+        ValidationTrainingCandleScopeRequest scopeRequest,
         Func<IValidationTrainingCandleScope, Task> body,
         CancellationToken cancellationToken = default);
 
@@ -48,10 +49,12 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
 
     public async Task ExecuteWithScopeAsync(
         ValidationExperiment experiment,
+        ValidationTrainingCandleScopeRequest scopeRequest,
         Func<IValidationTrainingCandleScope, Task> body,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(experiment);
+        ArgumentNullException.ThrowIfNull(scopeRequest);
         ArgumentNullException.ThrowIfNull(body);
 
         var boundary = experiment.ValidationStartUtc is null
@@ -69,7 +72,8 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
         };
 
         using var execAmbient = _executionContextAccessor.Enter(bootstrapContext);
-        await using var scope = await _scopeFactory.CreateForExperimentAsync(experiment, cancellationToken);
+        await using var scope = await _scopeFactory.CreateAsync(scopeRequest, cancellationToken);
+        scope.CorrelationId = bootstrapContext.CorrelationId;
         using var ambient = ValidationTrainingCandleScopeAmbient.Enter(scope);
         try
         {

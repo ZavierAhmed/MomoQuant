@@ -42,15 +42,18 @@ public sealed class ValidationTrialRecoveryService : IValidationTrialRecoverySer
     private readonly IStrategyLabRunRepository _labRuns;
     private readonly IStrategyResearchCandidateRepository _candidates;
     private readonly IValidationParameterTrialRepository _trials;
+    private readonly IValidationTrialMetricsRouter _trialMetricsRouter;
 
     public ValidationTrialRecoveryService(
         IStrategyLabRunRepository labRuns,
         IStrategyResearchCandidateRepository candidates,
-        IValidationParameterTrialRepository trials)
+        IValidationParameterTrialRepository trials,
+        IValidationTrialMetricsRouter trialMetricsRouter)
     {
         _labRuns = labRuns;
         _candidates = candidates;
         _trials = trials;
+        _trialMetricsRouter = trialMetricsRouter;
     }
 
     public async Task<ValidationTrialRecoveryReport> RecoverFromStrategyLabRunsAsync(
@@ -140,87 +143,23 @@ public sealed class ValidationTrialRecoveryService : IValidationTrialRecoverySer
         CancellationToken cancellationToken)
     {
         var candidateRows = await _candidates.GetByRunIdAsync(run.Id, cancellationToken);
-        var boundary = experiment.ValidationStartUtc.HasValue
-            ? ValidationMetricsMapper.CountBoundaryCensored(candidateRows, experiment.ValidationStartUtc.Value)
-            : 0;
-        var metricsCandidates = experiment.ValidationStartUtc.HasValue
-            ? ValidationMetricsMapper.ExcludeBoundaryFromMetrics(candidateRows, experiment.ValidationStartUtc.Value)
-            : candidateRows;
-
-        var (summary, riskOnly, fullPipeline) = ParseResultSummary(run.ResultSummaryJson);
-        var rawMetrics = ValidationMetricsMapper.FromCandidates(
-            metricsCandidates,
-            experiment.TrainingCandleCount,
-            boundary,
-            ValidationLayerType.RawStrategy);
-        if (summary is not null)
-        {
-            rawMetrics = ValidationMetricsMapper.FromStrategyLabSummary(
-                summary,
-                experiment.TrainingCandleCount,
-                metricsCandidates.Count,
-                boundary,
-                riskOnly,
-                fullPipeline,
-                ValidationLayerType.RawStrategy);
-        }
-
-        var feeImpact = rawMetrics.FeeToGrossProfitPercent;
-        var oppRate = rawMetrics.OpportunityRatePer1000Candles;
-        var score = ValidationTrainingScoreCalculator.Calculate(
-            rawMetrics.ClosedTradeCount,
-            rawMetrics.NetExpectancyR,
-            rawMetrics.ProfitFactor,
-            rawMetrics.MaximumRealizedDrawdownPercent,
-            feeImpact,
-            oppRate,
-            profile.MinimumTrainingClosedTrades);
-
-        var guardrailFailures = EvaluateGuardrails(rawMetrics, profile);
-        var passed = guardrailFailures.Count == 0;
-
-        return new ValidationParameterTrial
+        var trial = new ValidationParameterTrial
         {
             ValidationExperimentId = experiment.Id,
             TrialNumber = trialNumber,
             ParameterSnapshotJson = JsonSerializer.Serialize(combo, JsonOptions),
-            ParameterFingerprint = fingerprint,
-            Status = passed ? ValidationTrialStatus.Completed : ValidationTrialStatus.GuardrailRejected,
-            StartedAtUtc = run.StartedAtUtc ?? run.CreatedAtUtc,
-            CompletedAtUtc = run.CompletedAtUtc ?? DateTime.UtcNow,
-            RawCandidateCount = metricsCandidates.Count,
-            ClosedTradeCount = rawMetrics.ClosedTradeCount,
-            WinnerCount = rawMetrics.WinnerCount,
-            LoserCount = rawMetrics.LoserCount,
-            ExpiredCount = rawMetrics.ExpiredCount,
-            NetExpectancyR = rawMetrics.NetExpectancyR,
-            GrossPnl = rawMetrics.GrossPnl,
-            NetPnl = rawMetrics.NetPnl,
-            ProfitFactor = rawMetrics.ProfitFactor,
-            MaximumDrawdownPercent = rawMetrics.MaximumRealizedDrawdownPercent,
-            FeeImpactPercent = feeImpact,
-            TrainingScore = score.Total,
-            GuardrailDecision = passed ? "Passed" : "Failed",
-            GuardrailFailureReasonsJson = guardrailFailures.Count == 0
-                ? null
-                : JsonSerializer.Serialize(guardrailFailures, JsonOptions),
-            StrategyLabRunId = run.Id,
-            RecoverySource = ValidationTrialRecoverySource.ExistingStrategyLabRun
+            ParameterFingerprint = fingerprint
         };
-    }
 
-    private static List<string> EvaluateGuardrails(LayerSegmentMetrics rawMetrics, ValidationQualificationProfile profile)
-    {
-        var guardrailFailures = new List<string>();
-        if (rawMetrics.ClosedTradeCount < profile.MinimumTrainingClosedTrades)
-            guardrailFailures.Add($"ClosedTrades<{profile.MinimumTrainingClosedTrades}");
-        if ((rawMetrics.ProfitFactor ?? 0m) < profile.MinimumTrainingProfitFactor)
-            guardrailFailures.Add($"ProfitFactor<{profile.MinimumTrainingProfitFactor}");
-        if ((rawMetrics.NetExpectancyR ?? 0m) < profile.MinimumTrainingNetExpectancyR)
-            guardrailFailures.Add($"NetExpectancyR<{profile.MinimumTrainingNetExpectancyR}");
-        if ((rawMetrics.MaximumRealizedDrawdownPercent ?? 0m) > profile.MaximumTrainingDrawdownPercent)
-            guardrailFailures.Add($"MaxDD>{profile.MaximumTrainingDrawdownPercent}");
-        return guardrailFailures;
+        // Explicit MetricsVersion routing (WP23): v1.3.2 uses the trial metrics calculator
+        // (persisted snapshot, applicability-aware guardrails); older versions keep the
+        // legacy summary/candidate mapping.
+        _trialMetricsRouter.ApplyTrialMetrics(experiment, trial, run, candidateRows, profile);
+
+        trial.StartedAtUtc = run.StartedAtUtc ?? run.CreatedAtUtc;
+        trial.CompletedAtUtc = run.CompletedAtUtc ?? DateTime.UtcNow;
+        trial.RecoverySource = ValidationTrialRecoverySource.ExistingStrategyLabRun;
+        return trial;
     }
 
     private static bool ParametersMatch(string parametersJson, IReadOnlyDictionary<string, string> expected)
@@ -247,41 +186,4 @@ public sealed class ValidationTrialRecoveryService : IValidationTrialRecoverySer
         }
     }
 
-    private static (StrategyLabPerformanceSummaryDto? summary, ShadowPortfolioSummaryDto? riskOnly, ShadowPortfolioSummaryDto? fullPipeline)
-        ParseResultSummary(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return (null, null, null);
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            StrategyLabPerformanceSummaryDto? summary = null;
-            ShadowPortfolioSummaryDto? riskOnly = null;
-            ShadowPortfolioSummaryDto? fullPipeline = null;
-            if (root.TryGetProperty("summary", out var s) && s.ValueKind != JsonValueKind.Null)
-            {
-                summary = JsonSerializer.Deserialize<StrategyLabPerformanceSummaryDto>(s.GetRawText(), JsonOptions);
-            }
-
-            if (root.TryGetProperty("riskOnlyShadowPortfolio", out var ro) && ro.ValueKind != JsonValueKind.Null)
-            {
-                riskOnly = JsonSerializer.Deserialize<ShadowPortfolioSummaryDto>(ro.GetRawText(), JsonOptions);
-            }
-
-            if (root.TryGetProperty("fullPipelineShadowPortfolio", out var fp) && fp.ValueKind != JsonValueKind.Null)
-            {
-                fullPipeline = JsonSerializer.Deserialize<ShadowPortfolioSummaryDto>(fp.GetRawText(), JsonOptions);
-            }
-
-            return (summary, riskOnly, fullPipeline);
-        }
-        catch
-        {
-            return (null, null, null);
-        }
-    }
 }

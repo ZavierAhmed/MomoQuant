@@ -90,6 +90,86 @@ public sealed class ValidationTrainingFailureHandlerTests
         Assert.Equal("LeakageDetected", ops.Last.Stage);
     }
 
+    [Fact]
+    public async Task HandleAuditPersistenceFailure_FailClosed_BlocksSelectionAndLeakagePassed()
+    {
+        var audits = new FakeCandleAccessAuditRepository();
+        var recorder = new ValidationCandleAccessRecorder(audits);
+        var trials = new FakeTrialRepository();
+        var experiments = new FakeExperimentRepository();
+        var ops = new FakeOperationStatusService();
+        var handler = new ValidationTrainingFailureHandler(
+            recorder,
+            audits,
+            trials,
+            experiments,
+            new ValidationLeakageAuditor(),
+            ops);
+
+        var experiment = new ValidationExperiment
+        {
+            Id = 11,
+            Status = ValidationExperimentStatus.TrainingRunning,
+            SelectedTrialId = 77,
+            SelectedTrialNumber = 2,
+            SelectedTrialParameterFingerprint = "fp",
+            FrozenParameterFingerprint = "frozen",
+            FrozenAtUtc = DateTime.UtcNow,
+            LeakageAuditStatus = ValidationLeakageAuditStatus.Passed,
+            MaximumTrials = 3,
+            DiagnosticsJson = "[]"
+        };
+        experiments.Items.Add(experiment);
+
+        var trial = new ValidationParameterTrial
+        {
+            Id = 77,
+            ValidationExperimentId = 11,
+            TrialNumber = 2,
+            Status = ValidationTrialStatus.Running,
+            ParameterFingerprint = "fp",
+            GuardrailDecision = "Passed",
+            Rank = 1
+        };
+        trials.Items.Add(trial);
+
+        var persistResult = ValidationAccessBatchPersistResult.Create(
+            requested: [Guid.NewGuid()],
+            newlyInserted: Array.Empty<Guid>(),
+            alreadyExisting: Array.Empty<Guid>(),
+            confirmed: Array.Empty<Guid>(),
+            ValidationAccessBatchCommitStatus.Failed);
+        var ex = new ValidationAccessEvidencePersistenceException(persistResult);
+
+        var result = await handler.HandleAuditPersistenceFailureAsync(
+            experiment,
+            trial,
+            ex,
+            leaseOwner: "test-owner");
+
+        Assert.Equal(ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed, result.ErrorCode);
+        Assert.Equal(ValidationTrainingFailureHandler.UserSafeAuditPersistenceMessage, result.UserSafeErrorMessage);
+
+        Assert.Equal(ValidationTrialStatus.AuditPersistenceFailed, trial.Status);
+        Assert.Equal(ValidationExperimentStatus.Failed, experiment.Status);
+        Assert.Equal(ValidationLeakageAuditStatus.Failed, experiment.LeakageAuditStatus);
+        Assert.NotEqual(ValidationLeakageAuditStatus.Passed, experiment.LeakageAuditStatus);
+        Assert.Equal("AuditPersistenceFailed", experiment.CurrentStage);
+        Assert.Null(experiment.SelectedTrialId);
+        Assert.Null(experiment.FrozenParameterFingerprint);
+        Assert.Null(experiment.FrozenAtUtc);
+        Assert.Equal(ValidationSelectionIntegrityStatus.NoEligibleTrial, experiment.SelectionIntegrityStatus);
+        Assert.False(experiment.IsQualificationCapable);
+
+        // AuditPersistenceFailed trials are not rankable.
+        var ranked = ValidationTrialRanker.OrderForRanking([trial]);
+        Assert.Empty(ranked);
+
+        Assert.NotNull(ops.Last);
+        Assert.Equal(ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed, ops.Last!.ErrorCode);
+        Assert.Equal("AuditPersistenceFailed", ops.Last.Stage);
+    }
+
     private static ValidationTrainingCandleScope CreateScope(long experimentId, DateTime start, DateTime boundary)
     {
         var candles = new List<Candle>
@@ -113,14 +193,34 @@ public sealed class ValidationTrainingFailureHandlerTests
             CancellationToken cancellationToken = default) =>
             await AddRangeIdempotentByAccessEventIdAsync(audits, cancellationToken);
 
-        public Task<int> AddRangeIdempotentByAccessEventIdAsync(
+        public Task<ValidationAccessBatchPersistResult> AddRangeIdempotentByAccessEventIdAsync(
             IReadOnlyList<ValidationCandleAccessAudit> audits,
             CancellationToken cancellationToken = default)
         {
             var existing = Items.Select(i => i.AccessEventId).ToHashSet();
-            var fresh = audits.Where(a => !existing.Contains(a.AccessEventId)).ToList();
-            Items.AddRange(fresh);
-            return Task.FromResult(fresh.Count);
+            var distinct = audits.GroupBy(a => a.AccessEventId).Select(g => g.First()).ToList();
+            var requested = distinct.Select(a => a.AccessEventId).ToList();
+            var newly = new List<Guid>();
+            var already = new List<Guid>();
+            foreach (var a in distinct)
+            {
+                if (existing.Contains(a.AccessEventId))
+                {
+                    already.Add(a.AccessEventId);
+                }
+                else
+                {
+                    Items.Add(a);
+                    newly.Add(a.AccessEventId);
+                }
+            }
+
+            return Task.FromResult(ValidationAccessBatchPersistResult.Create(
+                requested,
+                newly,
+                already,
+                requested,
+                ValidationAccessBatchCommitStatus.Committed));
         }
 
         public Task<IReadOnlyList<ValidationCandleAccessAudit>> GetByExperimentIdAsync(

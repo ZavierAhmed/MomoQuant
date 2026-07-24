@@ -160,6 +160,36 @@ public sealed class CandleRepository : ICandleRepository
             .ToListAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Latest <paramref name="count"/> closed candles with OpenTimeUtc &lt; <paramref name="beforeOpenTimeUtc"/>,
+    /// ordered ascending.
+    /// </summary>
+    public async Task<IReadOnlyList<Candle>> GetClosedCandlesBeforeAsync(
+        long symbolId,
+        Timeframe timeframe,
+        DateTime beforeOpenTimeUtc,
+        int count,
+        CancellationToken cancellationToken = default)
+    {
+        if (count <= 0)
+        {
+            return [];
+        }
+
+        var before = DateTime.SpecifyKind(beforeOpenTimeUtc, DateTimeKind.Utc);
+        var desc = await _dbContext.Candles.AsNoTracking()
+            .Where(candle =>
+                candle.SymbolId == symbolId &&
+                candle.Timeframe == timeframe &&
+                candle.IsClosed &&
+                candle.OpenTimeUtc < before)
+            .OrderByDescending(candle => candle.OpenTimeUtc)
+            .Take(count)
+            .ToListAsync(cancellationToken);
+
+        return desc.OrderBy(c => c.OpenTimeUtc).ToList();
+    }
+
     public async Task<IReadOnlyList<DateTime>> GetOpenTimesInRangeAsync(
         long exchangeId,
         long symbolId,

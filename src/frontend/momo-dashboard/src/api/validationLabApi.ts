@@ -112,6 +112,15 @@ export type ValidationTrialStatus =
   | 'GuardrailRejected'
   | 'Interrupted';
 
+export type ValidationWarmupStatus = 'NotRequired' | 'Complete' | 'Insufficient';
+
+export type ValidationTrialRankEligibility = 'NotEvaluated' | 'Eligible' | 'Ineligible';
+
+export type ValidationTrialSegmentReconciliationStatus =
+  | 'NotEvaluated'
+  | 'Matched'
+  | 'Mismatched';
+
 export interface ValidationTrainingProgress {
   requestedTrialCount: number;
   generatedTrialCount: number;
@@ -228,6 +237,8 @@ export interface ValidationExperiment {
   validationEndUtc?: string | null;
   splitCandleOpenTimeUtc?: string | null;
   requiredWarmupCandles: number;
+  availableWarmupCandles?: number | null;
+  warmupStatus?: ValidationWarmupStatus | null;
   trainingWarmupStartUtc?: string | null;
   validationWarmupStartUtc?: string | null;
   candleDataFingerprint: string;
@@ -280,6 +291,9 @@ export interface ValidationExperiment {
   isQualificationCapable?: boolean;
   trialPopulationSummaryJson?: string | null;
   closeoutAuditJson?: string | null;
+  selectedMetricFingerprint?: string | null;
+  trialSegmentReconciliationStatus?: ValidationTrialSegmentReconciliationStatus;
+  trialSegmentReconciliationJson?: string | null;
 }
 
 export interface ValidationSegmentResult {
@@ -330,6 +344,8 @@ export interface ValidationSegmentResult {
   loserPopulationCount?: number | null;
   neutralPopulationCount?: number | null;
   riskBasisValidationStatus?: string | null;
+  includedPopulationRiskStatus?: string | null;
+  completePathInputIntegrityStatus?: string | null;
   monetaryPnlApplicability?: string | null;
   grossExpectancyApplicability?: string | null;
   netExpectancyApplicability?: string | null;
@@ -398,6 +414,23 @@ export interface ValidationParameterTrial {
   strategyLabRunId?: number | null;
   errorMessage?: string | null;
   recoverySource?: string | null;
+  trialMetricSnapshotJson?: string | null;
+  trialMetricFingerprint?: string | null;
+  trialMetricsVersion?: string | null;
+  trainingScoreVersion?: string | null;
+  guardrailEvaluationJson?: string | null;
+  candidatePopulationCount?: number | null;
+  boundaryEligibleCandidateCount?: number | null;
+  includedPathInputCount?: number | null;
+  excludedPathInputCount?: number | null;
+  closedOutcomePopulationCount?: number | null;
+  monetaryPnlPopulationCount?: number | null;
+  grossRPopulationCount?: number | null;
+  netRPopulationCount?: number | null;
+  includedPopulationRiskStatus?: string | null;
+  completePathInputIntegrityStatus?: string | null;
+  trialRankEligibility?: ValidationTrialRankEligibility;
+  rankIneligibleReasonsJson?: string | null;
 }
 
 export interface ValidationCandidateQuery {

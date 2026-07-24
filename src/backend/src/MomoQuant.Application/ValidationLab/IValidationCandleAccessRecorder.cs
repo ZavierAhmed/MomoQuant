@@ -7,18 +7,16 @@ namespace MomoQuant.Application.ValidationLab;
 /// <summary>
 /// Automatically maps in-memory <see cref="ValidationCandleAccessRecord"/> entries collected by an
 /// <see cref="IValidationTrainingCandleScope"/> into persisted <see cref="ValidationCandleAccessAudit"/> rows.
-/// Tracks a per-scope committed cursor that advances only after a successful durable persist.
+/// Advances <c>LastConfirmedSequence</c> only after contiguous confirmed durable persist.
 /// </summary>
 public interface IValidationCandleAccessRecorder
 {
     /// <summary>
-    /// Persists any access-log entries appended to <paramref name="scope"/> since the last successful commit.
-    /// Safe to call multiple times (including concurrently) for the same scope instance.
-    /// Duplicate <see cref="ValidationCandleAccessRecord.AccessEventId"/> values are treated as already persisted.
-    /// On persist failure the committed cursor is left unchanged and the exception propagates.
+    /// Persists access-log entries with <see cref="ValidationCandleAccessRecord.ScopeSequenceNumber"/>
+    /// greater than the last confirmed sequence. Requires full confirmation of the snapshotted batch.
+    /// On persist failure the confirmed sequence is left unchanged and the exception propagates.
     /// </summary>
-    /// <returns>The number of newly persisted audit rows (duplicates count as already persisted / zero new).</returns>
-    Task<int> FlushAsync(
+    Task<ValidationAccessBatchPersistResult> FlushAsync(
         IValidationTrainingCandleScope scope,
         CancellationToken cancellationToken = default);
 }
@@ -33,7 +31,7 @@ public sealed class ValidationCandleAccessRecorder : IValidationCandleAccessReco
 
     public ValidationCandleAccessRecorder(IValidationCandleAccessAuditRepository audits) => _audits = audits;
 
-    public async Task<int> FlushAsync(
+    public async Task<ValidationAccessBatchPersistResult> FlushAsync(
         IValidationTrainingCandleScope scope,
         CancellationToken cancellationToken = default)
     {
@@ -45,38 +43,66 @@ public sealed class ValidationCandleAccessRecorder : IValidationCandleAccessReco
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Snapshot after the committed cursor — appends during persist stay uncommitted.
             var log = scope.AccessLog;
-            if (log.Count <= state.CommittedCount)
+            var pending = log
+                .Where(r => r.ScopeSequenceNumber > state.LastConfirmedSequence)
+                .OrderBy(r => r.ScopeSequenceNumber)
+                .ToList();
+
+            if (pending.Count == 0)
             {
-                return 0;
+                return ValidationAccessBatchPersistResult.EmptyNoWork();
             }
 
-            var fresh = log.Skip(state.CommittedCount).ToList();
             state.FlushAttemptCount++;
             var attempt = state.FlushAttemptCount;
             var persistedAt = DateTime.UtcNow;
 
-            foreach (var record in fresh)
+            foreach (var record in pending)
             {
                 record.FlushAttemptCount = attempt;
             }
 
-            var entities = fresh.Select(r => Map(r, attempt, persistedAt)).ToList();
+            var entities = pending.Select(r => Map(r, attempt, persistedAt)).ToList();
 
-            // Persist transactionally / idempotently. On failure: cursor unchanged, exception propagates.
-            var written = await _audits.AddRangeIdempotentByAccessEventIdAsync(entities, cancellationToken)
+            // Persist + confirm. On failure: LastConfirmedSequence unchanged, exception propagates.
+            var result = await _audits.AddRangeIdempotentByAccessEventIdAsync(entities, cancellationToken)
                 .ConfigureAwait(false);
 
-            // ONLY after successful commit — advance by the snapshotted slice length.
-            state.CommittedCount += fresh.Count;
-
-            foreach (var record in fresh)
+            if (!result.IsFullyConfirmed)
             {
+                throw new ValidationAccessEvidencePersistenceException(result);
+            }
+
+            // Advance only through contiguous confirmed sequences starting at LastConfirmedSequence + 1.
+            var confirmedIds = result.ConfirmedPersistedEventIds.ToHashSet();
+            var nextExpected = state.LastConfirmedSequence + 1;
+            var advancedTo = state.LastConfirmedSequence;
+            foreach (var record in pending)
+            {
+                if (record.ScopeSequenceNumber != nextExpected)
+                {
+                    break;
+                }
+
+                if (!confirmedIds.Contains(record.AccessEventId))
+                {
+                    break;
+                }
+
+                advancedTo = record.ScopeSequenceNumber;
+                nextExpected++;
                 record.PersistedAtUtc = persistedAt;
             }
 
-            return written;
+            if (advancedTo < pending[^1].ScopeSequenceNumber)
+            {
+                // Contiguous prefix incomplete despite set-equality — treat as persistence failure.
+                throw new ValidationAccessEvidencePersistenceException(result);
+            }
+
+            state.LastConfirmedSequence = advancedTo;
+            return result;
         }
         finally
         {
@@ -91,12 +117,15 @@ public sealed class ValidationCandleAccessRecorder : IValidationCandleAccessReco
     {
         AccessEventId = a.AccessEventId,
         ScopeExecutionId = a.ScopeExecutionId,
+        ScopeSequenceNumber = a.ScopeSequenceNumber,
         ValidationExperimentId = a.ValidationExperimentId,
         TrialId = a.TrialId,
         TrialNumber = a.TrialNumber,
         CallerComponent = a.CallerComponent,
+        AccessPurpose = Truncate(a.AccessPurpose.ToString(), 64),
         RequestedStartUtc = a.RequestedStartUtc,
         RequestedEndUtc = a.RequestedEndUtc,
+        RequestedCandleCount = a.RequestedCandleCount,
         ReturnedStartUtc = a.ReturnedStartUtc,
         ReturnedEndUtc = a.ReturnedEndUtc,
         ReturnedCandleCount = a.ReturnedCandleCount,
@@ -107,7 +136,10 @@ public sealed class ValidationCandleAccessRecorder : IValidationCandleAccessReco
             : a.CandleContentFingerprint,
         AccessedAtUtc = a.AccessedAtUtc,
         WasDenied = a.WasDenied,
-        DenialReason = a.DenialReason is { Length: > 512 } ? a.DenialReason[..512] : a.DenialReason,
+        DenialCode = Truncate(a.DenialCode, 64),
+        DenialReason = Truncate(a.DenialReason, 512),
+        CorrelationId = Truncate(a.CorrelationId, 64),
+        DatasetPartition = Truncate(a.DatasetPartition, 64),
         FlushAttemptCount = flushAttemptCount,
         PersistedAtUtc = persistedAtUtc,
         RecorderVersion = string.IsNullOrWhiteSpace(a.RecorderVersion)
@@ -118,10 +150,13 @@ public sealed class ValidationCandleAccessRecorder : IValidationCandleAccessReco
         CreatedAtUtc = DateTime.UtcNow
     };
 
+    private static string? Truncate(string? value, int max) =>
+        value is null ? null : value.Length <= max ? value : value[..max];
+
     private sealed class FlushState
     {
         public readonly SemaphoreSlim Gate = new(1, 1);
-        public int CommittedCount;
+        public long LastConfirmedSequence;
         public int FlushAttemptCount;
     }
 }

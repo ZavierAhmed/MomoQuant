@@ -5,6 +5,11 @@ import { PopulationMetricsLegend } from '@/pages/validationLab/PopulationMetrics
 import {
   POPULATION_COLUMN_LABELS,
   POPULATION_METRICS_EXPLANATION,
+  COMPLETE_PATH_INTEGRITY_LABEL,
+  formatRankEligibility,
+  getWarmupDisplay,
+  GUARDRAIL_NOT_EVALUATED_EXPLANATION,
+  INCLUDED_POPULATION_RISK_LABEL,
   candidateCountDistinctFromNetR,
   exclusionReasonsDistinctFromWarnings,
   formatNetExpectancyDisplay,
@@ -113,5 +118,57 @@ describe('population display helpers', () => {
     expect(formatPopulationCount(sparse.includedPathInputCount, sparse.metricIncludedCandidateCount)).toBe('—')
     expect(formatPopulationCount(sparse.netRPopulationCount)).toBe('—')
     expect(formatNetExpectancyDisplay(sparse)).toBe('—')
+  })
+})
+
+describe('Milestone 23.0D detail display', () => {
+  it('shows warm-up required, available, and complete status from new DTO fields', () => {
+    expect(getWarmupDisplay({
+      requiredWarmupCandles: 100,
+      availableWarmupCandles: 100,
+      warmupStatus: 'Complete',
+    })).toEqual({ required: 100, available: 100, status: 'Complete' })
+  })
+
+  it('falls back to the historical warm-up snapshot shape', () => {
+    expect(getWarmupDisplay({
+      requiredWarmupCandles: 20,
+      warmupSnapshotJson: JSON.stringify({
+        requiredWarmupCandleCount: 30,
+        availableWarmupCandleCount: 12,
+        warmupStatus: 'Insufficient',
+      }),
+    })).toEqual({ required: 30, available: 12, status: 'Insufficient' })
+  })
+
+  it('keeps missing optional warm-up fields backward compatible', () => {
+    expect(getWarmupDisplay({ requiredWarmupCandles: 20 })).toEqual({
+      required: 20,
+      available: undefined,
+      status: undefined,
+    })
+  })
+
+  it('uses distinct beginner labels for included risk and complete path integrity', () => {
+    expect(INCLUDED_POPULATION_RISK_LABEL).toContain('trades used by the metrics')
+    expect(COMPLETE_PATH_INTEGRITY_LABEL).toContain('including excluded')
+    expect(INCLUDED_POPULATION_RISK_LABEL).not.toBe(COMPLETE_PATH_INTEGRITY_LABEL)
+  })
+
+  it('explains that NotEvaluated is not numeric zero', () => {
+    expect(GUARDRAIL_NOT_EVALUATED_EXPLANATION).toContain('not the numeric value 0')
+    expect(GUARDRAIL_NOT_EVALUATED_EXPLANATION).toContain('rank-ineligible')
+  })
+
+  it('renders an ineligible trial with persisted reasons', () => {
+    expect(formatRankEligibility(
+      'Ineligible',
+      '["GUARDRAIL_NET_EXPECTANCY_NOT_EVALUATED"]',
+    )).toBe('Ineligible — GUARDRAIL_NET_EXPECTANCY_NOT_EVALUATED')
+  })
+
+  it('renders eligible and historical missing eligibility without inventing a status', () => {
+    expect(formatRankEligibility('Eligible')).toBe('Eligible')
+    expect(formatRankEligibility(undefined)).toBe('—')
   })
 })

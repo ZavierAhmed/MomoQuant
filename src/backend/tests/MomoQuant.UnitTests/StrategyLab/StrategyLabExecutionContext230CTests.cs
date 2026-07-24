@@ -197,7 +197,8 @@ public class StrategyLabExecutionContext230CTests
         var dataset = await source.LoadAsync(run, warmupCandles: 0);
         Assert.NotEmpty(dataset.Candles);
         Assert.All(dataset.Candles, c => Assert.True(c.OpenTimeUtc < scope.ValidationBoundaryUtc));
-        Assert.Contains(scope.AccessLog, a => !a.WasDenied && a.CallerComponent == "UnitTest");
+        Assert.Contains(scope.AccessLog, a =>
+            !a.WasDenied && a.CallerComponent.StartsWith("UnitTest", StringComparison.Ordinal));
     }
 
     [Fact]

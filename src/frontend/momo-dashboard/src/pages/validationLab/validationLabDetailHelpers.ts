@@ -7,6 +7,7 @@ import type {
   ValidationSegmentClassification,
   ValidationSegmentResult,
   ValidationSelectionIntegrityStatus,
+  ValidationWarmupStatus,
 } from '@/api/validationLabApi';
 import { formatVerdictLabel } from '@/components/common/utils';
 
@@ -45,6 +46,57 @@ export const POPULATION_COLUMN_LABELS = {
   tradesUsedForNetR: 'Trades used for Net R',
   includedWithWarnings: 'Included trades with warnings',
 } as const;
+
+export const INCLUDED_POPULATION_RISK_LABEL =
+  'Included Population Risk Status (trades used by the metrics)';
+export const COMPLETE_PATH_INTEGRITY_LABEL =
+  'Complete Path Integrity Status (all path inputs, including excluded)';
+export const GUARDRAIL_NOT_EVALUATED_EXPLANATION =
+  'NotEvaluated means the metric was unavailable. It is not the numeric value 0 and a mandatory NotEvaluated guardrail is rank-ineligible.';
+
+export interface WarmupDisplay {
+  required: number;
+  available?: number;
+  status?: ValidationWarmupStatus;
+}
+
+/** Reads new DTO fields first, then the persisted snapshot used by older API responses. */
+export function getWarmupDisplay(input: {
+  requiredWarmupCandles: number;
+  availableWarmupCandles?: number | null;
+  warmupStatus?: ValidationWarmupStatus | null;
+  warmupSnapshotJson?: string | null;
+}): WarmupDisplay {
+  const snapshot = asRecord(tryParseJson(input.warmupSnapshotJson));
+  const snapshotRequired = snapshot?.requiredWarmupCandleCount ?? snapshot?.requiredWarmupCandles;
+  const snapshotAvailable = snapshot?.availableWarmupCandleCount ?? snapshot?.availableWarmupCandles;
+  const snapshotStatus = snapshot?.warmupStatus;
+  return {
+    required:
+      typeof snapshotRequired === 'number' ? snapshotRequired : input.requiredWarmupCandles,
+    available:
+      input.availableWarmupCandles
+      ?? (typeof snapshotAvailable === 'number' ? snapshotAvailable : undefined),
+    status:
+      input.warmupStatus
+      ?? (typeof snapshotStatus === 'string'
+        ? snapshotStatus as ValidationWarmupStatus
+        : undefined),
+  };
+}
+
+export function formatRankEligibility(
+  eligibility?: string | null,
+  reasonsJson?: string | null,
+): string {
+  if (!eligibility) return '—';
+  if (eligibility !== 'Ineligible') return eligibility;
+  const parsed = tryParseJson(reasonsJson);
+  const reasons = Array.isArray(parsed)
+    ? parsed.filter((value): value is string => typeof value === 'string')
+    : [];
+  return reasons.length > 0 ? `Ineligible — ${reasons.join(', ')}` : 'Ineligible';
+}
 
 /**
  * Displays a population count, preferring v1.3.2 fields and falling back to legacy aliases.

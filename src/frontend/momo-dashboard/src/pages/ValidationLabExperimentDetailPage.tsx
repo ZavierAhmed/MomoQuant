@@ -34,9 +34,14 @@ import {
   asRecord,
   buildValidationCandidateQuery,
   computeExperimentActionAvailability,
+  COMPLETE_PATH_INTEGRITY_LABEL,
+  formatRankEligibility,
   formatExperimentVerdict,
   formatNetExpectancyDisplay,
   formatPopulationCount,
+  getWarmupDisplay,
+  GUARDRAIL_NOT_EVALUATED_EXPLANATION,
+  INCLUDED_POPULATION_RISK_LABEL,
   isInsufficientSample,
   isLegacyMetrics,
   pickLayer,
@@ -254,6 +259,11 @@ export function ValidationLabExperimentDetailPage() {
     const parsed = tryParseJson(detail?.trialPopulationSummaryJson);
     return asRecord(parsed);
   }, [detail?.trialPopulationSummaryJson]);
+
+  const warmup = useMemo(
+    () => detail ? getWarmupDisplay(detail) : null,
+    [detail],
+  );
 
   const exclusivityOverlaps = useMemo(() => {
     const fromExclusivity = exclusivityReport?.overlaps;
@@ -590,6 +600,9 @@ export function ValidationLabExperimentDetailPage() {
               { label: 'Frozen At', value: formatDate(detail.frozenAtUtc) },
               { label: 'Revealed At', value: formatDate(detail.validationRevealedAtUtc) },
               { label: 'Boundary Censored', value: String(detail.boundaryCensoredCount) },
+              { label: 'Warm-up Required', value: String(warmup?.required ?? detail.requiredWarmupCandles) },
+              { label: 'Warm-up Available', value: warmup?.available == null ? '—' : String(warmup.available) },
+              { label: 'Warm-up Status', value: warmup?.status ?? '—' },
               {
                 label: 'Cross-segment Overlaps',
                 value: String(detail.crossSegmentOverlapCount ?? exclusivityOverlaps.length ?? 0),
@@ -784,6 +797,9 @@ export function ValidationLabExperimentDetailPage() {
               { label: 'Validation End', value: formatDate(detail.validationEndUtc) },
               { label: 'Training Warmup Start', value: formatDate(detail.trainingWarmupStartUtc) },
               { label: 'Validation Warmup Start', value: formatDate(detail.validationWarmupStartUtc) },
+              { label: 'Warm-up Required', value: String(warmup?.required ?? detail.requiredWarmupCandles) },
+              { label: 'Warm-up Available', value: warmup?.available == null ? '—' : String(warmup.available) },
+              { label: 'Warm-up Status', value: warmup?.status ?? '—' },
               { label: 'Candle Fingerprint', value: detail.candleDataFingerprint || '—' },
             ]}
           />
@@ -822,6 +838,11 @@ export function ValidationLabExperimentDetailPage() {
                 value: detail.selectedTrialId ? `#${detail.selectedTrialNumber ?? detail.selectedTrialId}` : '—',
               },
               { label: 'Selection Integrity', value: detail.selectionIntegrityStatus || 'NotEvaluated' },
+              { label: 'Selected Metric Fingerprint', value: detail.selectedMetricFingerprint || '—' },
+              {
+                label: 'Trial / Segment Reconciliation',
+                value: detail.trialSegmentReconciliationStatus || '—',
+              },
               {
                 label: 'Failed / Interrupted',
                 value: `${trialPopulation?.failedTrialCount ?? trialPopulation?.failedCount ?? '—'} / ${trialPopulation?.interruptedTrialCount ?? trialPopulation?.interruptedCount ?? '—'}`,
@@ -830,6 +851,10 @@ export function ValidationLabExperimentDetailPage() {
               { label: 'Recovered from Strategy Lab', value: trialPopulation?.recoveredFromStrategyLabRunCount != null ? String(trialPopulation.recoveredFromStrategyLabRunCount) : '—' },
             ]}
           />
+          <div className="rounded-lg border border-slate-800 bg-slate-950/40 px-4 py-3 text-sm text-slate-300">
+            <span className="font-medium text-slate-100">Guardrail applicability: </span>
+            {GUARDRAIL_NOT_EVALUATED_EXPLANATION}
+          </div>
           <DataTable
             columns={[
               { key: 'trial', header: 'Trial', render: (row: ValidationParameterTrial) => row.trialNumber },
@@ -855,6 +880,17 @@ export function ValidationLabExperimentDetailPage() {
                   row.trainingScore == null ? '—' : formatNumber(row.trainingScore),
               },
               { key: 'guard', header: 'Guardrail', render: (row: ValidationParameterTrial) => row.guardrailDecision },
+              {
+                key: 'eligible',
+                header: 'Rank eligibility',
+                render: (row: ValidationParameterTrial) =>
+                  formatRankEligibility(row.trialRankEligibility, row.rankIneligibleReasonsJson),
+              },
+              {
+                key: 'metricFp',
+                header: 'Metric fingerprint',
+                render: (row: ValidationParameterTrial) => row.trialMetricFingerprint || '—',
+              },
               {
                 key: 'fp',
                 header: 'Fingerprint',
@@ -995,6 +1031,16 @@ export function ValidationLabExperimentDetailPage() {
                 header: POPULATION_COLUMN_LABELS.includedWithWarnings,
                 render: (row: ValidationSegmentResult) =>
                   formatPopulationCount(row.metricWarningBearingIncludedTradeCount),
+              },
+              {
+                key: 'includedRisk',
+                header: INCLUDED_POPULATION_RISK_LABEL,
+                render: (row: ValidationSegmentResult) => row.includedPopulationRiskStatus ?? '—',
+              },
+              {
+                key: 'completeIntegrity',
+                header: COMPLETE_PATH_INTEGRITY_LABEL,
+                render: (row: ValidationSegmentResult) => row.completePathInputIntegrityStatus ?? '—',
               },
               {
                 key: 'exp',

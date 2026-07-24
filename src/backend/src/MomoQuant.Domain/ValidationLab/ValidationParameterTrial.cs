@@ -31,4 +31,33 @@ public class ValidationParameterTrial : Entity
     public long? StrategyLabRunId { get; set; }
     public string? ErrorMessage { get; set; }
     public ValidationTrialRecoverySource RecoverySource { get; set; } = ValidationTrialRecoverySource.None;
+
+    // Milestone 23.0D — persisted trial metric snapshot (ValidationMetrics/v1.3.2)
+    public string? TrialMetricSnapshotJson { get; set; }
+
+    /// <summary>SHA-256 (lowercase hex) of <see cref="TrialMetricSnapshotJson"/>.</summary>
+    public string? TrialMetricFingerprint { get; set; }
+
+    public string? TrialMetricsVersion { get; set; }
+    public string? TrainingScoreVersion { get; set; }
+    public string? GuardrailEvaluationJson { get; set; }
+    public int? CandidatePopulationCount { get; set; }
+    public int? BoundaryEligibleCandidateCount { get; set; }
+    public int? IncludedPathInputCount { get; set; }
+    public int? ExcludedPathInputCount { get; set; }
+    public int? ClosedOutcomePopulationCount { get; set; }
+    public int? MonetaryPnlPopulationCount { get; set; }
+    public int? GrossRPopulationCount { get; set; }
+    public int? NetRPopulationCount { get; set; }
+
+    /// <summary>Aggregate risk-basis status over included path inputs only.</summary>
+    public ValidationRiskBasisValidationStatus? IncludedPopulationRiskStatus { get; set; }
+
+    /// <summary>Aggregate integrity status over all path inputs including excluded ones.</summary>
+    public ValidationRiskBasisValidationStatus? CompletePathInputIntegrityStatus { get; set; }
+
+    public ValidationTrialRankEligibility TrialRankEligibility { get; set; } =
+        ValidationTrialRankEligibility.NotEvaluated;
+
+    public string? RankIneligibleReasonsJson { get; set; }
 }

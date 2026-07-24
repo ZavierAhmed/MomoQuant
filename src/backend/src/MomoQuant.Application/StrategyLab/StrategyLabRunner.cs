@@ -51,6 +51,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
     private readonly IStrategyRepository _strategyRepository;
     private readonly IStrategyRegistry _strategyRegistry;
     private readonly IStrategyDataRequirementService _requirementService;
+    private readonly IStrategyExecutionRequirementsResolver _executionRequirementsResolver;
     private readonly IHistoricalCandleCoverageService _coverageService;
     private readonly IRiskRuleRepository _riskRuleRepository;
     private readonly IRiskProfileRepository _riskProfileRepository;
@@ -75,7 +76,8 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         IStrategyLabCandleWindowFactory? candleWindowFactory = null,
         ILogger<StrategyLabRunner>? logger = null,
         StandardStrategyLabCandleDataSource? standardCandleDataSource = null,
-        IResearchExecutionContextAccessor? executionContextAccessor = null)
+        IResearchExecutionContextAccessor? executionContextAccessor = null,
+        IStrategyExecutionRequirementsResolver? executionRequirementsResolver = null)
     {
         _ = positionSizingService; // retained for DI compatibility; futures sizing is internal to risk observer
         _runRepository = runRepository;
@@ -84,6 +86,8 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         _strategyRepository = strategyRepository;
         _strategyRegistry = strategyRegistry;
         _requirementService = requirementService;
+        _executionRequirementsResolver = executionRequirementsResolver
+            ?? new StrategyExecutionRequirementsResolver(requirementService, strategyRepository);
         _coverageService = coverageService;
         _riskRuleRepository = riskRuleRepository;
         _riskProfileRepository = riskProfileRepository;
@@ -1466,8 +1470,18 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
     {
         try
         {
-            var requirements = await _requirementService.GetByStrategyIdAsync(strategyId, cancellationToken);
-            return requirements.Succeeded ? requirements.Data?.WarmupCandles ?? DefaultWarmup : DefaultWarmup;
+            var requirements = await _executionRequirementsResolver.ResolveByStrategyIdAsync(
+                strategyId,
+                strategyVersion: null,
+                cancellationToken);
+            if (requirements.Succeeded && requirements.Data is not null)
+            {
+                return requirements.Data.RequiredWarmupCandleCount;
+            }
+
+            // Fallback keeps historical DefaultWarmup behavior if resolver cannot resolve.
+            var legacy = await _requirementService.GetByStrategyIdAsync(strategyId, cancellationToken);
+            return legacy.Succeeded ? legacy.Data?.WarmupCandles ?? DefaultWarmup : DefaultWarmup;
         }
         catch
         {

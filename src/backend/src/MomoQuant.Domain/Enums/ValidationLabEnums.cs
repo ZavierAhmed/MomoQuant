@@ -168,7 +168,8 @@ public enum ValidationTrialStatus
     Failed = 3,
     GuardrailRejected = 4,
     Interrupted = 5,
-    LeakageFailed = 6
+    LeakageFailed = 6,
+    AuditPersistenceFailed = 7
 }
 
 public enum ValidationTrialRecoverySource
@@ -259,6 +260,29 @@ public enum ValidationMetricApplicability
     InvalidRiskBasis = 4,
     MissingCostModel = 5,
     LegacyOnly = 6
+}
+
+/// <summary>
+/// Milestone 23.0D — whether a trial may participate in ranking/selection.
+/// Only trials with a persisted ValidationMetrics/v1.3.2 snapshot that passed all
+/// mandatory guardrails are eligible.
+/// </summary>
+public enum ValidationTrialRankEligibility
+{
+    NotEvaluated = 0,
+    Eligible = 1,
+    Ineligible = 2
+}
+
+/// <summary>
+/// Milestone 23.0D — result of reconciling the selected trial's persisted metric snapshot
+/// against the RawStrategy training segment result. Mismatched blocks freeze.
+/// </summary>
+public enum ValidationTrialSegmentReconciliationStatus
+{
+    NotEvaluated = 0,
+    Matched = 1,
+    Mismatched = 2
 }
 
 public enum ValidationRiskBasisValidationStatus

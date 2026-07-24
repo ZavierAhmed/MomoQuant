@@ -5,6 +5,7 @@ using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Common;
 using MomoQuant.Application.MarketData;
 using MomoQuant.Application.Risk.Models;
+using MomoQuant.Application.Strategies;
 using MomoQuant.Application.Strategies.Optimization;
 using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.StrategyLab.Dtos;
@@ -177,6 +178,9 @@ public sealed partial class ValidationLabService : IValidationLabService
     private readonly IValidationTrainingScopeExecution _trainingScopeExecution;
     private readonly IValidationTrainingFailureHandler _trainingFailureHandler;
     private readonly IValidationSegmentResultWriter _segmentResultWriter;
+    private readonly IStrategyExecutionRequirementsResolver _executionRequirementsResolver;
+    private readonly IValidationTrialMetricsRouter _trialMetricsRouter;
+    private readonly IValidationTrialSegmentReconciliationService _trialSegmentReconciliation;
 
     public ValidationLabService(
         IValidationExperimentRepository experiments,
@@ -207,7 +211,10 @@ public sealed partial class ValidationLabService : IValidationLabService
         IValidationCandleAccessRecorder candleAccessRecorder,
         IValidationTrainingScopeExecution trainingScopeExecution,
         IValidationTrainingFailureHandler trainingFailureHandler,
-        IValidationSegmentResultWriter segmentResultWriter)
+        IValidationSegmentResultWriter segmentResultWriter,
+        IStrategyExecutionRequirementsResolver executionRequirementsResolver,
+        IValidationTrialMetricsRouter trialMetricsRouter,
+        IValidationTrialSegmentReconciliationService trialSegmentReconciliation)
     {
         _experiments = experiments;
         _trials = trials;
@@ -238,6 +245,9 @@ public sealed partial class ValidationLabService : IValidationLabService
         _trainingScopeExecution = trainingScopeExecution;
         _trainingFailureHandler = trainingFailureHandler;
         _segmentResultWriter = segmentResultWriter;
+        _executionRequirementsResolver = executionRequirementsResolver;
+        _trialMetricsRouter = trialMetricsRouter;
+        _trialSegmentReconciliation = trialSegmentReconciliation;
     }
 
     public async Task<ServiceResult<ValidationExperimentDto>> CreateExperimentAsync(
@@ -547,6 +557,23 @@ public sealed partial class ValidationLabService : IValidationLabService
             }
 
             var draft = ParseDraft(experiment.DraftConfigurationJson);
+
+            // Align prepare warm-up with the same authoritative strategy requirement used at training.
+            var requirementsResult = await _executionRequirementsResolver.ResolveAsync(
+                new ResolveStrategyExecutionRequirementsRequest
+                {
+                    StrategyCode = experiment.StrategyCode,
+                    StrategyVersion = experiment.StrategyVersion
+                },
+                cancellationToken);
+            var requiredWarmup = requirementsResult.Succeeded && requirementsResult.Data is not null
+                ? Math.Max(experiment.RequiredWarmupCandles, requirementsResult.Data.RequiredWarmupCandleCount)
+                : experiment.RequiredWarmupCandles;
+            if (requiredWarmup != experiment.RequiredWarmupCandles)
+            {
+                experiment.RequiredWarmupCandles = requiredWarmup;
+            }
+
             if (draft.AutoImportMissingCandles)
             {
                 var coverage = await _coverage.EnsureCoverageAsync(
@@ -555,7 +582,7 @@ public sealed partial class ValidationLabService : IValidationLabService
                     experiment.Timeframe,
                     experiment.RequestedStartUtc,
                     experiment.RequestedEndUtc,
-                    experiment.RequiredWarmupCandles,
+                    requiredWarmup,
                     allowAutoImport: true,
                     cancellationToken: cancellationToken);
                 if (!coverage.Succeeded)
@@ -577,7 +604,7 @@ public sealed partial class ValidationLabService : IValidationLabService
             var split = ChronologicalHoldoutSplit.Split(
                 openTimes,
                 experiment.SplitRatio,
-                experiment.RequiredWarmupCandles,
+                requiredWarmup,
                 timeframeMinutes: tfMinutes);
 
             if (!split.IsValid)
@@ -591,7 +618,7 @@ public sealed partial class ValidationLabService : IValidationLabService
             DateTime trainingWarmupStart;
             if (trainingStartIndex >= 0)
             {
-                var warmupIndex = Math.Max(0, trainingStartIndex - experiment.RequiredWarmupCandles);
+                var warmupIndex = Math.Max(0, trainingStartIndex - requiredWarmup);
                 trainingWarmupStart = ordered[warmupIndex].OpenTimeUtc;
             }
             else
@@ -696,6 +723,16 @@ public sealed partial class ValidationLabService : IValidationLabService
         {
             return ServiceResult<ValidationExperimentDto>.Fail(
                 "Freeze blocked: ValidationDataLeakageDetected. Training optimizer accessed validation-range data.");
+        }
+
+        // Milestone 23.0D WP21 — v1.3.2 selection must reconcile against the persisted
+        // RawStrategy training segment before configuration can be frozen.
+        if (ValidationMetricsContract.IsPopulationPathMetricsVersion(experiment.ValidationMetricsVersion)
+            && experiment.TrialSegmentReconciliationStatus == ValidationTrialSegmentReconciliationStatus.Mismatched)
+        {
+            return ServiceResult<ValidationExperimentDto>.Fail(
+                $"Freeze blocked: {ValidationTrialSegmentReconciliationReport.MismatchCode} — selected trial "
+                + "metric snapshot does not match the persisted RawStrategy training segment result.");
         }
 
         var trialEntities = (await _trials.GetByExperimentIdAsync(id, cancellationToken)).ToList();
@@ -1933,6 +1970,48 @@ public sealed partial class ValidationLabService : IValidationLabService
         experiment.DiagnosticsJson = JsonSerializer.Serialize(list, JsonOptions);
     }
 
+    private static int? ReadWarmupCount(string? snapshotJson, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(snapshotJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(snapshotJson);
+            return document.RootElement.TryGetProperty(propertyName, out var value)
+                   && value.TryGetInt32(out var count)
+                ? count
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static ValidationWarmupStatus? ReadWarmupStatus(string? snapshotJson)
+    {
+        if (string.IsNullOrWhiteSpace(snapshotJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(snapshotJson);
+            return document.RootElement.TryGetProperty("warmupStatus", out var value)
+                   && Enum.TryParse<ValidationWarmupStatus>(value.GetString(), ignoreCase: true, out var status)
+                ? status
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private static ValidationExperimentDto MapDto(ValidationExperiment e) => new()
     {
         Id = e.Id,
@@ -1961,6 +2040,8 @@ public sealed partial class ValidationLabService : IValidationLabService
         ValidationEndUtc = e.ValidationEndUtc,
         SplitCandleOpenTimeUtc = e.SplitCandleOpenTimeUtc,
         RequiredWarmupCandles = e.RequiredWarmupCandles,
+        AvailableWarmupCandles = ReadWarmupCount(e.WarmupSnapshotJson, "availableWarmupCandleCount"),
+        WarmupStatus = ReadWarmupStatus(e.WarmupSnapshotJson),
         TrainingWarmupStartUtc = e.TrainingWarmupStartUtc,
         ValidationWarmupStartUtc = e.ValidationWarmupStartUtc,
         CandleDataFingerprint = e.CandleDataFingerprint,
@@ -2014,7 +2095,10 @@ public sealed partial class ValidationLabService : IValidationLabService
         FreezeSource = e.FreezeSource,
         IsQualificationCapable = e.IsQualificationCapable,
         TrialPopulationSummaryJson = e.TrialPopulationSummaryJson,
-        CloseoutAuditJson = e.CloseoutAuditJson
+        CloseoutAuditJson = e.CloseoutAuditJson,
+        SelectedMetricFingerprint = e.SelectedMetricFingerprint,
+        TrialSegmentReconciliationStatus = e.TrialSegmentReconciliationStatus,
+        TrialSegmentReconciliationJson = e.TrialSegmentReconciliationJson
     };
 
     private static ValidationExperimentDetailDto MapDetail(
@@ -2056,6 +2140,8 @@ public sealed partial class ValidationLabService : IValidationLabService
             ValidationEndUtc = baseDto.ValidationEndUtc,
             SplitCandleOpenTimeUtc = baseDto.SplitCandleOpenTimeUtc,
             RequiredWarmupCandles = baseDto.RequiredWarmupCandles,
+            AvailableWarmupCandles = baseDto.AvailableWarmupCandles,
+            WarmupStatus = baseDto.WarmupStatus,
             TrainingWarmupStartUtc = baseDto.TrainingWarmupStartUtc,
             ValidationWarmupStartUtc = baseDto.ValidationWarmupStartUtc,
             CandleDataFingerprint = baseDto.CandleDataFingerprint,
@@ -2108,6 +2194,9 @@ public sealed partial class ValidationLabService : IValidationLabService
             IsQualificationCapable = baseDto.IsQualificationCapable,
             TrialPopulationSummaryJson = baseDto.TrialPopulationSummaryJson,
             CloseoutAuditJson = baseDto.CloseoutAuditJson,
+            SelectedMetricFingerprint = baseDto.SelectedMetricFingerprint,
+            TrialSegmentReconciliationStatus = baseDto.TrialSegmentReconciliationStatus,
+            TrialSegmentReconciliationJson = baseDto.TrialSegmentReconciliationJson,
             CandleDataSnapshotJson = e.CandleDataSnapshotJson,
             WarmupSnapshotJson = e.WarmupSnapshotJson,
             ParameterSearchSpaceSnapshotJson = e.ParameterSearchSpaceSnapshotJson,
@@ -2181,6 +2270,8 @@ public sealed partial class ValidationLabService : IValidationLabService
             GrossExpectancyApplicability = metrics?.GrossExpectancyApplicability,
             NetExpectancyApplicability = metrics?.NetExpectancyApplicability,
             RiskBasisValidationStatus = metrics?.RiskBasisValidationStatus,
+            IncludedPopulationRiskStatus = metrics?.IncludedPopulationRiskStatus,
+            CompletePathInputIntegrityStatus = metrics?.CompletePathInputIntegrityStatus,
             CandidatePopulationCount = metrics?.CandidatePopulationCount,
             BoundaryEligibleCandidateCount = metrics?.BoundaryEligibleCandidateCount,
             PathInputPopulationCount = metrics?.PathInputPopulationCount,
@@ -2225,7 +2316,24 @@ public sealed partial class ValidationLabService : IValidationLabService
         Rank = t.Rank,
         StrategyLabRunId = t.StrategyLabRunId,
         ErrorMessage = t.ErrorMessage,
-        RecoverySource = t.RecoverySource
+        RecoverySource = t.RecoverySource,
+        TrialMetricSnapshotJson = t.TrialMetricSnapshotJson,
+        TrialMetricFingerprint = t.TrialMetricFingerprint,
+        TrialMetricsVersion = t.TrialMetricsVersion,
+        TrainingScoreVersion = t.TrainingScoreVersion,
+        GuardrailEvaluationJson = t.GuardrailEvaluationJson,
+        CandidatePopulationCount = t.CandidatePopulationCount,
+        BoundaryEligibleCandidateCount = t.BoundaryEligibleCandidateCount,
+        IncludedPathInputCount = t.IncludedPathInputCount,
+        ExcludedPathInputCount = t.ExcludedPathInputCount,
+        ClosedOutcomePopulationCount = t.ClosedOutcomePopulationCount,
+        MonetaryPnlPopulationCount = t.MonetaryPnlPopulationCount,
+        GrossRPopulationCount = t.GrossRPopulationCount,
+        NetRPopulationCount = t.NetRPopulationCount,
+        IncludedPopulationRiskStatus = t.IncludedPopulationRiskStatus,
+        CompletePathInputIntegrityStatus = t.CompletePathInputIntegrityStatus,
+        TrialRankEligibility = t.TrialRankEligibility,
+        RankIneligibleReasonsJson = t.RankIneligibleReasonsJson
     };
 
     internal static DraftConfiguration ParseDraft(string json)

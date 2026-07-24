@@ -141,3 +141,32 @@ public sealed class ValidationTrainingCoverageImportForbiddenException : Validat
     {
     }
 }
+
+/// <summary>
+/// Fail-closed when available closed warm-up candles are fewer than required.
+/// Strategy execution must not run.
+/// </summary>
+public sealed class ValidationTrainingInsufficientWarmupException : Exception
+{
+    public const string Code = ValidationTrainingFailureCodes.InsufficientWarmup;
+
+    public long ValidationExperimentId { get; }
+    public int RequiredWarmupCandleCount { get; }
+    public int AvailableWarmupCandleCount { get; }
+    public ValidationWarmupStatus WarmupStatus { get; }
+    public string ErrorCode => Code;
+
+    public ValidationTrainingInsufficientWarmupException(
+        long validationExperimentId,
+        int requiredWarmupCandleCount,
+        int availableWarmupCandleCount,
+        string? message = null)
+        : base(message ??
+               $"Insufficient warm-up candles for validation training: available={availableWarmupCandleCount}, required={requiredWarmupCandleCount}.")
+    {
+        ValidationExperimentId = validationExperimentId;
+        RequiredWarmupCandleCount = requiredWarmupCandleCount;
+        AvailableWarmupCandleCount = availableWarmupCandleCount;
+        WarmupStatus = ValidationWarmupStatus.Insufficient;
+    }
+}

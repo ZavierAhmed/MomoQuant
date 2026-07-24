@@ -108,6 +108,19 @@ public sealed class LayerSegmentMetrics
     public ValidationMetricApplicability? NetProfitFactorApplicability { get; set; }
     public ValidationMetricApplicability? GrossExpectancyApplicability { get; set; }
 
+    /// <summary>
+    /// Milestone 23.0D — aggregate risk-basis status reduced over included path inputs only.
+    /// Mirrors <see cref="RiskBasisValidationStatus"/> under ValidationMetrics/v1.3.2.
+    /// </summary>
+    public ValidationRiskBasisValidationStatus? IncludedPopulationRiskStatus { get; set; }
+
+    /// <summary>
+    /// Milestone 23.0D — aggregate integrity status reduced over ALL path inputs including
+    /// excluded ones. Precedence (worst-first, order-independent):
+    /// InvalidRiskBasis &gt; PersistedRiskMismatch &gt; InsufficientSample &gt; Valid.
+    /// </summary>
+    public ValidationRiskBasisValidationStatus? CompletePathInputIntegrityStatus { get; set; }
+
     // Flattened population fields for DTO/export convenience (optional on historical rows).
     public int? CandidatePopulationCount { get; set; }
     public int? BoundaryEligibleCandidateCount { get; set; }

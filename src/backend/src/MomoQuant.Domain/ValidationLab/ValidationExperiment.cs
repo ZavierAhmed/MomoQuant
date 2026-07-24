@@ -119,4 +119,13 @@ public class ValidationExperiment : Entity
     public bool IsQualificationCapable { get; set; } = true;
     public string? CloseoutAuditJson { get; set; }
     public string? TrialPopulationSummaryJson { get; set; }
+
+    // Milestone 23.0D — snapshot-based selection and trial/segment reconciliation
+    /// <summary>SHA-256 metric-snapshot fingerprint of the selected trial (ValidationMetrics/v1.3.2).</summary>
+    public string? SelectedMetricFingerprint { get; set; }
+
+    public ValidationTrialSegmentReconciliationStatus TrialSegmentReconciliationStatus { get; set; } =
+        ValidationTrialSegmentReconciliationStatus.NotEvaluated;
+
+    public string? TrialSegmentReconciliationJson { get; set; }
 }

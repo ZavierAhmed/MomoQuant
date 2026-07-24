@@ -66,6 +66,7 @@ public static class DependencyInjection
         services.AddScoped<IIndicatorCalculationService, IndicatorCalculationService>();
         services.AddScoped<IStrategyService, StrategyService>();
         services.AddScoped<IStrategyDataRequirementService, StrategyDataRequirementService>();
+        services.AddScoped<IStrategyExecutionRequirementsResolver, StrategyExecutionRequirementsResolver>();
         services.AddScoped<IStrategyEngine, StrategyEngine>();
         services.AddScoped<IStrategyParameterProvider, StrategyParameterProvider>();
         services.AddSingleton<IFourHourRangeService, FourHourRangeService>();
@@ -223,6 +224,10 @@ public static class DependencyInjection
         services.AddScoped<IValidationTrainingFailureHandler, ValidationTrainingFailureHandler>();
         services.AddScoped<IValidationTrainingScopeExecution, ValidationTrainingScopeExecution>();
         services.AddScoped<IValidationSegmentResultWriter, ValidationSegmentResultWriter>();
+        services.AddScoped<IValidationTrialMetricsCalculator, ValidationTrialMetricsCalculator>();
+        services.AddScoped<IValidationLegacyTrialMetricsMapper, ValidationLegacyTrialMetricsMapper>();
+        services.AddScoped<IValidationTrialMetricsRouter, ValidationTrialMetricsRouter>();
+        services.AddScoped<IValidationTrialSegmentReconciliationService, ValidationTrialSegmentReconciliationService>();
         services.AddScoped<IValidationTrialRecoveryService, ValidationTrialRecoveryService>();
         services.AddScoped<IValidationLabService, ValidationLabService>();
         services.AddSingleton(TimeProvider.System);
