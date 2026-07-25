@@ -36,11 +36,18 @@ public sealed class ValidationTrainingStrategyLabCandleDataSource : IStrategyLab
             throw new InvalidOperationException(TimeframeNormalizer.UnsupportedTimeframeMessage(run.Timeframe));
         }
 
-        var context = ValidationCandleAccessContext.Create(
-            _callerComponent,
-            ValidationCandleAccessPurpose.StrategyLabDataset);
+        var request = new ValidationDatasetMaterializationRequest
+        {
+            SymbolId = run.SymbolId,
+            SymbolName = string.IsNullOrWhiteSpace(run.Symbol) ? _scope.Partition.SymbolName : run.Symbol,
+            Timeframe = run.Timeframe,
+            EvaluationFromUtc = DateTime.SpecifyKind(run.FromUtc, DateTimeKind.Utc),
+            EvaluationToExclusiveUtc = DateTime.SpecifyKind(run.ToUtc, DateTimeKind.Utc),
+            WarmupCandleCount = warmupCandles,
+            CallerComponent = _callerComponent
+        };
 
-        var dataset = _scope.CreateStrategyLabDataset(run, warmupCandles, context);
+        var dataset = _scope.CreateStrategyLabDataset(request);
         return Task.FromResult(dataset);
     }
 }

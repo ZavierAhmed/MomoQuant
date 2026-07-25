@@ -102,9 +102,31 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
 
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
+            var from = fromUtc is null ? scope.SegmentStartUtc : DateTime.SpecifyKind(fromUtc.Value, DateTimeKind.Utc);
+            var to = toUtc is null ? scope.SegmentEndExclusiveUtc : DateTime.SpecifyKind(toUtc.Value, DateTimeKind.Utc);
+
+            bool spansWarmup = from < scope.SegmentStartUtc;
+            bool spansEvaluation = to > scope.SegmentStartUtc;
+
+            if (spansWarmup && spansEvaluation)
+            {
+                throw new ValidationCandlePartitionViolationException(
+                    scope.ValidationExperimentId,
+                    scope.ScopeExecutionId,
+                    scope.ValidationBoundaryUtc,
+                    from,
+                    to,
+                    null,
+                    scope.SegmentStartUtc,
+                    scope.SegmentEndExclusiveUtc,
+                    ValidationCandlePartitionDenialCodes.CrossPartitionCompatibilityReadForbidden,
+                    $"GetCandlesChronologicalAsync range [{from:O}, {to:O}) spans both warmup and evaluation partitions.",
+                    nameof(GetCandlesChronologicalAsync));
+            }
+
             var eval = scope.GetEvaluationRange(
-                fromUtc,
-                toUtc,
+                from,
+                to,
                 ValidationCandleAccessContext.Create(
                     nameof(GetCandlesChronologicalAsync),
                     ValidationCandleAccessPurpose.RepositoryRange));
@@ -252,6 +274,7 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
             var ts = DateTime.SpecifyKind(beforeOrAtOpenTimeUtc, DateTimeKind.Utc);
+            
             if (ts >= scope.ValidationBoundaryUtc)
             {
                 _ = scope.GetByOpenTimeUtc(
@@ -261,19 +284,29 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
                         ValidationCandleAccessPurpose.ByOpenTime));
             }
 
-            // Include bars at ts by asking warm-up before ts+epsilon via evaluation+warmup slices.
-            var before = ts.AddTicks(1);
-            if (before > scope.ValidationBoundaryUtc)
+            if (ts >= scope.SegmentStartUtc && ts < scope.SegmentEndExclusiveUtc)
             {
-                before = scope.ValidationBoundaryUtc;
+                var evalRange = scope.GetEvaluationRange(
+                    scope.SegmentStartUtc,
+                    scope.SegmentEndExclusiveUtc,
+                    ValidationCandleAccessContext.Create(
+                        nameof(GetRecentCandlesAsync),
+                        ValidationCandleAccessPurpose.RepositoryRecent));
+                return evalRange.Where(c => c.OpenTimeUtc <= ts).TakeLast(count).ToList();
             }
 
-            return scope.GetWarmupBefore(
-                before,
-                count,
-                ValidationCandleAccessContext.Create(
-                    nameof(GetRecentCandlesAsync),
-                    ValidationCandleAccessPurpose.RepositoryRecent));
+            if (ts < scope.SegmentStartUtc)
+            {
+                var warmupRange = scope.GetWarmupBefore(
+                    scope.SegmentStartUtc,
+                    scope.Partition.RequiredWarmupCandleCount,
+                    ValidationCandleAccessContext.Create(
+                        nameof(GetRecentCandlesAsync),
+                        ValidationCandleAccessPurpose.RepositoryRecent));
+                return warmupRange.Where(c => c.OpenTimeUtc <= ts).TakeLast(count).ToList();
+            }
+
+            return Array.Empty<Candle>();
         }
 
         return await _inner.GetRecentCandlesAsync(symbolId, timeframe, beforeOrAtOpenTimeUtc, count, cancellationToken);

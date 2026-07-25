@@ -24,6 +24,8 @@ public sealed class StandardStrategyLabCandleDataSource : IStrategyLabCandleData
             throw new InvalidOperationException(TimeframeNormalizer.UnsupportedTimeframeMessage(run.Timeframe));
         }
 
+        var contractVersion = run.CandleLoadContractVersion ?? StrategyLabCandleLoadContractVersions.LegacyV1;
+
         var dataset = await _dataLoader.LoadSymbolTimeframeAsync(
             run.ExchangeId,
             run.SymbolId,
@@ -31,6 +33,7 @@ public sealed class StandardStrategyLabCandleDataSource : IStrategyLabCandleData
             run.FromUtc,
             run.ToUtc,
             warmupCandles,
+            contractVersion,
             cancellationToken);
 
         if (dataset is null || dataset.Candles.Count == 0)

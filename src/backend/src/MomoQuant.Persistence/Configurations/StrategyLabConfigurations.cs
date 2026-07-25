@@ -31,6 +31,7 @@ internal sealed class StrategyLabRunConfiguration : IEntityTypeConfiguration<Str
         builder.Property(run => run.CurrentStage).HasMaxLength(200);
         builder.Property(run => run.ErrorMessage).HasColumnType("longtext");
         builder.Property(run => run.RiskProfileSnapshotJson).HasColumnType("longtext");
+        builder.Property(run => run.CandleLoadContractVersion).HasMaxLength(100);
         builder.HasIndex(run => run.StrategyCode);
         builder.HasIndex(run => run.CreatedAtUtc);
         builder.HasIndex(run => run.Status);

@@ -28,10 +28,14 @@ public interface IValidationSegmentCandleSource
         int count,
         ValidationCandleAccessContext context);
 
+    IReadOnlyList<Candle> GetWarmupBefore(ValidationWarmupAccessRequest request);
+
     IReadOnlyList<Candle> GetEvaluationRange(
         DateTime? fromUtc,
         DateTime? toUtcExclusive,
         ValidationCandleAccessContext context);
+
+    IReadOnlyList<Candle> GetEvaluationRange(ValidationEvaluationAccessRequest request);
 
     Candle? GetByOpenTimeUtc(DateTime openTimeUtc, ValidationCandleAccessContext context);
 
@@ -45,6 +49,8 @@ public interface IValidationSegmentCandleSource
         StrategyLabRun run,
         int warmupCandles,
         ValidationCandleAccessContext context);
+
+    StrategyLabDataset CreateStrategyLabDataset(ValidationDatasetMaterializationRequest request);
 }
 
 public interface IValidationTrainingCandleScope : IValidationSegmentCandleSource, IAsyncDisposable
@@ -140,6 +146,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
     private readonly List<ValidationCandleAccessRecord> _accessLog = new();
     private readonly object _gate = new();
     private long _nextScopeSequence;
+    private readonly int _evaluationStartIndex;
 
     /// <summary>
     /// Legacy constructor used by existing unit tests: all candles strictly before the boundary,
@@ -171,12 +178,15 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         ValidationBoundaryUtc = boundary;
         SegmentEndExclusiveUtc = boundary;
         _all = allowed.ToImmutableArray();
+        _evaluationStartIndex = warmup.Count;
 
         Partition = BuildPartition(
             validationExperimentId,
             symbolId: allowed.FirstOrDefault()?.SymbolId ?? 0,
             symbolName: string.Empty,
-            timeframe: allowed.FirstOrDefault()?.Timeframe.ToString() ?? string.Empty,
+            timeframe: allowed.FirstOrDefault() is { } firstCandle
+                ? TimeframeParser.ToApiString(firstCandle.Timeframe)
+                : string.Empty,
             requiredWarmup: 0,
             availableWarmup: warmup.Count,
             evaluationCount: evaluation.Count,
@@ -232,6 +242,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
             .ToList();
 
         _all = warmup.Concat(evaluation).ToImmutableArray();
+        _evaluationStartIndex = warmup.Count;
     }
 
     public Guid ScopeExecutionId { get; }
@@ -254,6 +265,102 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
     /// <summary>Internal total for repository CountCandlesAsync — not part of the public production interface.</summary>
     internal int InternalCandleCount => _all.Length;
 
+    public IReadOnlyList<Candle> GetWarmupBefore(ValidationWarmupAccessRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var before = Normalize(request.BeforeOpenTimeUtc)!.Value;
+        var context = ValidationCandleAccessContext.Create(request.CallerComponent, request.Purpose);
+
+        if (before > SegmentStartUtc)
+        {
+            var denial = $"Warmup access 'before' {before:O} is after EvaluationStart {SegmentStartUtc:O}.";
+            RecordDenied(before, before, request.Count, context, ValidationCandlePartitionDenialCodes.WarmupRequestAfterEvaluationStart, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                before,
+                before,
+                request.Count,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.WarmupRequestAfterEvaluationStart,
+                denial,
+                request.CallerComponent);
+        }
+
+        if (before < SegmentStartUtc)
+        {
+            var denial = $"Warmup access 'before' {before:O} is before EvaluationStart {SegmentStartUtc:O}.";
+            RecordDenied(before, before, request.Count, context, ValidationCandlePartitionDenialCodes.PartitionRangeInvalid, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                before,
+                before,
+                request.Count,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.PartitionRangeInvalid,
+                denial,
+                request.CallerComponent);
+        }
+
+        if (Partition.RequiredWarmupCandleCount > 0 && request.Count != Partition.RequiredWarmupCandleCount)
+        {
+            var denial = $"Warmup count must be {Partition.RequiredWarmupCandleCount} exactly, got {request.Count}.";
+            RecordDenied(before, before, request.Count, context, ValidationCandlePartitionDenialCodes.WarmupCountMismatch, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                before,
+                before,
+                request.Count,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.WarmupCountMismatch,
+                denial,
+                request.CallerComponent);
+        }
+
+        if (Partition.RequiredWarmupCandleCount == 0 && request.Count != 0)
+        {
+            var denial = $"Warmup not required (count=0), but request count={request.Count}.";
+            RecordDenied(before, before, request.Count, context, ValidationCandlePartitionDenialCodes.WarmupCountMismatch, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                before,
+                before,
+                request.Count,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.WarmupCountMismatch,
+                denial,
+                request.CallerComponent);
+        }
+
+        if (request.Count == 0)
+        {
+            RecordAllowed(before, before, request.Count, Array.Empty<Candle>(), context, "Warmup");
+            return Array.Empty<Candle>();
+        }
+
+        var slice = _all.Take(_evaluationStartIndex).ToArray();
+        RecordAllowed(
+            slice.Length > 0 ? slice[0].OpenTimeUtc : before,
+            before,
+            request.Count,
+            slice,
+            context,
+            "Warmup");
+        return slice;
+    }
+
     public IReadOnlyList<Candle> GetWarmupBefore(
         DateTime beforeOpenTimeUtc,
         int count,
@@ -261,31 +368,111 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
     {
         ArgumentNullException.ThrowIfNull(context);
         var before = Normalize(beforeOpenTimeUtc)!.Value;
-        if (before > ValidationBoundaryUtc)
+        
+        if (before != SegmentStartUtc)
         {
-            RecordDenied(before, before, context, "BoundaryCrossed",
-                $"Warm-up before {before:O} crosses ValidationStartUtc {ValidationBoundaryUtc:O}.");
-            throw new ValidationDataLeakageException(
+            var denial = $"Compatibility warmup access 'before' must equal EvaluationStart {SegmentStartUtc:O}, got {before:O}.";
+            RecordDenied(before, before, count, context, ValidationCandlePartitionDenialCodes.PartitionRangeInvalid, denial);
+            throw new ValidationCandlePartitionViolationException(
                 ValidationExperimentId,
+                ScopeExecutionId,
                 ValidationBoundaryUtc,
-                context.ToCallerAuditLabel(),
                 before,
                 before,
-                $"ValidationDataLeakageDetected: warm-up request crosses ValidationStartUtc {ValidationBoundaryUtc:O}.");
+                count,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.PartitionRangeInvalid,
+                denial,
+                context.CallerComponent);
         }
 
-        if (count <= 0)
+        var request = new ValidationWarmupAccessRequest
         {
-            RecordAllowed(before, before, Array.Empty<Candle>(), context);
+            BeforeOpenTimeUtc = before,
+            Count = count == 0 ? 0 : Partition.RequiredWarmupCandleCount,
+            Purpose = context.AccessPurpose,
+            CallerComponent = context.CallerComponent
+        };
+
+        return GetWarmupBefore(request);
+    }
+
+    public IReadOnlyList<Candle> GetEvaluationRange(ValidationEvaluationAccessRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var from = Normalize(request.FromUtc)!.Value;
+        var to = Normalize(request.ToExclusiveUtc)!.Value;
+        var context = ValidationCandleAccessContext.Create(request.CallerComponent, request.Purpose);
+
+        if (from < SegmentStartUtc)
+        {
+            var denial = $"Evaluation range start {from:O} is before EvaluationStart {SegmentStartUtc:O}.";
+            RecordDenied(from, to, null, context, ValidationCandlePartitionDenialCodes.EvaluationRequestBeforeEvaluationStart, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                from,
+                to,
+                null,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.EvaluationRequestBeforeEvaluationStart,
+                denial,
+                request.CallerComponent);
+        }
+
+        if (to > SegmentEndExclusiveUtc)
+        {
+            var denial = $"Evaluation range end {to:O} exceeds EvaluationEndExclusive {SegmentEndExclusiveUtc:O}.";
+            RecordDenied(from, to, null, context, ValidationCandlePartitionDenialCodes.EvaluationRequestAfterEvaluationEnd, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                from,
+                to,
+                null,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.EvaluationRequestAfterEvaluationEnd,
+                denial,
+                request.CallerComponent);
+        }
+
+        bool isFullRange = from == SegmentStartUtc && to == SegmentEndExclusiveUtc;
+        bool isValidPartial = from >= SegmentStartUtc && to <= SegmentEndExclusiveUtc;
+
+        if (!isFullRange && !request.AllowPartial)
+        {
+            var denial = $"Partial evaluation [{from:O}, {to:O}) not allowed; expected full range [{SegmentStartUtc:O}, {SegmentEndExclusiveUtc:O}).";
+            RecordDenied(from, to, null, context, ValidationCandlePartitionDenialCodes.PartitionRangeInvalid, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                from,
+                to,
+                null,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.PartitionRangeInvalid,
+                denial,
+                request.CallerComponent);
+        }
+
+        if (to <= from)
+        {
+            RecordAllowed(from, to, null, Array.Empty<Candle>(), context, "Evaluation");
             return Array.Empty<Candle>();
         }
 
-        var slice = SliceWarmupBefore(before, count);
-        RecordAllowed(
-            slice.Count > 0 ? slice[0].OpenTimeUtc : before,
-            before,
-            slice,
-            context);
+        var slice = _all.Skip(_evaluationStartIndex)
+            .Where(c => c.OpenTimeUtc >= from && c.OpenTimeUtc < to)
+            .ToArray();
+        RecordAllowed(from, to, null, slice, context, isValidPartial && !isFullRange ? "EvaluationPartial" : "Evaluation");
         return slice;
     }
 
@@ -298,37 +485,32 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         var from = Normalize(fromUtc) ?? SegmentStartUtc;
         var to = Normalize(toUtcExclusive) ?? SegmentEndExclusiveUtc;
 
-        if (from >= ValidationBoundaryUtc || to > ValidationBoundaryUtc)
-        {
-            RecordDenied(from, to, context, "BoundaryCrossed",
-                $"Requested range [{from:O}, {to:O}) crosses ValidationStartUtc {ValidationBoundaryUtc:O}.");
-            throw new ValidationDataLeakageException(
-                ValidationExperimentId,
-                ValidationBoundaryUtc,
-                context.ToCallerAuditLabel(),
-                from,
-                to,
-                $"ValidationDataLeakageDetected: requested candle range crosses ValidationStartUtc {ValidationBoundaryUtc:O}.");
-        }
+        bool allowPartial = context.AccessPurpose == ValidationCandleAccessPurpose.RepositoryRange
+            || context.AccessPurpose == ValidationCandleAccessPurpose.EvaluationPartial
+            || context.AccessPurpose == ValidationCandleAccessPurpose.RepositoryLookup
+            || context.AccessPurpose == ValidationCandleAccessPurpose.RepositoryCount
+            || context.AccessPurpose == ValidationCandleAccessPurpose.RepositoryRecent;
 
-        if (to <= from)
+        var request = new ValidationEvaluationAccessRequest
         {
-            RecordAllowed(from, to, Array.Empty<Candle>(), context);
-            return Array.Empty<Candle>();
-        }
+            FromUtc = from,
+            ToExclusiveUtc = to,
+            AllowPartial = allowPartial,
+            Purpose = context.AccessPurpose,
+            CallerComponent = context.CallerComponent
+        };
 
-        var slice = SliceEvaluation(from, to);
-        RecordAllowed(from, to, slice, context);
-        return slice;
+        return GetEvaluationRange(request);
     }
 
     public Candle? GetByOpenTimeUtc(DateTime openTimeUtc, ValidationCandleAccessContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
         var ts = Normalize(openTimeUtc)!.Value;
+        
         if (ts >= ValidationBoundaryUtc)
         {
-            RecordDenied(ts, ts, context, "BoundaryCrossed",
+            RecordDenied(ts, ts, null, context, "BoundaryCrossed",
                 $"Direct access to {ts:O} is at or beyond ValidationStartUtc {ValidationBoundaryUtc:O}.");
             throw new ValidationDataLeakageException(
                 ValidationExperimentId,
@@ -342,11 +524,13 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         var match = _all.FirstOrDefault(c => c.OpenTimeUtc == ts);
         if (match is null)
         {
-            RecordAllowed(ts, ts, Array.Empty<Candle>(), context);
+            var partition = ts < SegmentStartUtc ? "DirectWarmup" : "DirectEvaluation";
+            RecordAllowed(ts, ts, null, Array.Empty<Candle>(), context, partition);
             return null;
         }
 
-        RecordAllowed(ts, ts.AddTicks(1), [match], context);
+        var dataPartition = ts < SegmentStartUtc ? "DirectWarmup" : "DirectEvaluation";
+        RecordAllowed(ts, ts.AddTicks(1), null, [match], context, dataPartition);
         return match;
     }
 
@@ -357,11 +541,212 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
             ValidationCandleAccessContext.Create(callerComponent, ValidationCandleAccessPurpose.ByOpenTime));
 
     /// <summary>Compatibility overload for repository decorator range reads.</summary>
-    public IReadOnlyList<Candle> GetRange(DateTime? fromUtc, DateTime? toUtcExclusive, string callerComponent) =>
-        GetEvaluationRange(
-            fromUtc,
-            toUtcExclusive,
-            ValidationCandleAccessContext.Create(callerComponent, ValidationCandleAccessPurpose.RepositoryRange));
+    public IReadOnlyList<Candle> GetRange(DateTime? fromUtc, DateTime? toUtcExclusive, string callerComponent)
+    {
+        var from = Normalize(fromUtc) ?? SegmentStartUtc;
+        var to = Normalize(toUtcExclusive) ?? SegmentEndExclusiveUtc;
+        var context = ValidationCandleAccessContext.Create(callerComponent, ValidationCandleAccessPurpose.RepositoryRange);
+
+        bool spansWarmup = from < SegmentStartUtc;
+        bool spansEvaluation = to > SegmentStartUtc;
+
+        if (spansWarmup && spansEvaluation)
+        {
+            var denial = $"Cross-partition range [{from:O}, {to:O}) spans both warmup and evaluation.";
+            RecordDenied(from, to, null, context, ValidationCandlePartitionDenialCodes.CrossPartitionCompatibilityReadForbidden, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                from,
+                to,
+                null,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.CrossPartitionCompatibilityReadForbidden,
+                denial,
+                callerComponent);
+        }
+
+        if (spansWarmup && !spansEvaluation)
+        {
+            return GetWarmupBefore(
+                SegmentStartUtc,
+                Partition.RequiredWarmupCandleCount,
+                context);
+        }
+
+        return GetEvaluationRange(from, to, context);
+    }
+
+    public StrategyLabDataset CreateStrategyLabDataset(ValidationDatasetMaterializationRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.SymbolId != Partition.SymbolId && Partition.SymbolId > 0)
+        {
+            var denial = $"Dataset symbol {request.SymbolId} does not match scope symbol {Partition.SymbolId}.";
+            var ctx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.DatasetMaterialization);
+            RecordDenied(request.EvaluationFromUtc, request.EvaluationToExclusiveUtc, request.WarmupCandleCount, ctx, 
+                ValidationCandlePartitionDenialCodes.SymbolMismatch, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                request.EvaluationFromUtc,
+                request.EvaluationToExclusiveUtc,
+                request.WarmupCandleCount,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.SymbolMismatch,
+                denial,
+                request.CallerComponent);
+        }
+
+        if (!TimeframeParser.TryParse(request.Timeframe, out var parsedTimeframe))
+        {
+            throw new InvalidOperationException(TimeframeNormalizer.UnsupportedTimeframeMessage(request.Timeframe));
+        }
+
+        if (!TimeframeParser.TryParse(Partition.Timeframe, out var partitionTimeframe) || parsedTimeframe != partitionTimeframe)
+        {
+            var denial = $"Dataset timeframe {request.Timeframe} does not match partition timeframe {Partition.Timeframe}.";
+            var ctx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.DatasetMaterialization);
+            RecordDenied(request.EvaluationFromUtc, request.EvaluationToExclusiveUtc, request.WarmupCandleCount, ctx,
+                ValidationCandlePartitionDenialCodes.TimeframeMismatch, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                request.EvaluationFromUtc,
+                request.EvaluationToExclusiveUtc,
+                request.WarmupCandleCount,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.TimeframeMismatch,
+                denial,
+                request.CallerComponent);
+        }
+
+        var evalFrom = DateTime.SpecifyKind(request.EvaluationFromUtc, DateTimeKind.Utc);
+        var evalTo = DateTime.SpecifyKind(request.EvaluationToExclusiveUtc, DateTimeKind.Utc);
+
+        if (evalFrom != SegmentStartUtc)
+        {
+            var denial = $"Dataset evaluation start {evalFrom:O} does not match partition start {SegmentStartUtc:O}.";
+            var ctx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.DatasetMaterialization);
+            RecordDenied(evalFrom, evalTo, request.WarmupCandleCount, ctx, 
+                ValidationCandlePartitionDenialCodes.RunStartMismatch, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                evalFrom,
+                evalTo,
+                request.WarmupCandleCount,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.RunStartMismatch,
+                denial,
+                request.CallerComponent);
+        }
+
+        if (evalTo != SegmentEndExclusiveUtc)
+        {
+            var denial = $"Dataset evaluation end {evalTo:O} does not match partition end {SegmentEndExclusiveUtc:O}.";
+            var ctx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.DatasetMaterialization);
+            RecordDenied(evalFrom, evalTo, request.WarmupCandleCount, ctx, 
+                ValidationCandlePartitionDenialCodes.RunEndMismatch, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                evalFrom,
+                evalTo,
+                request.WarmupCandleCount,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.RunEndMismatch,
+                denial,
+                request.CallerComponent);
+        }
+
+        if (request.WarmupCandleCount != Partition.RequiredWarmupCandleCount && 
+            !(request.WarmupCandleCount == 0 && Partition.RequiredWarmupCandleCount == 0))
+        {
+            var denial = $"Dataset warmup count {request.WarmupCandleCount} does not match required {Partition.RequiredWarmupCandleCount}.";
+            var ctx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.DatasetMaterialization);
+            RecordDenied(evalFrom, evalTo, request.WarmupCandleCount, ctx, 
+                ValidationCandlePartitionDenialCodes.WarmupCountMismatch, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                evalFrom,
+                evalTo,
+                request.WarmupCandleCount,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.WarmupCountMismatch,
+                denial,
+                request.CallerComponent);
+        }
+
+        IReadOnlyList<Candle> warmup = Array.Empty<Candle>();
+        if (request.WarmupCandleCount > 0)
+        {
+            var warmupCtx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.WarmupLoad);
+            warmup = _all.Take(_evaluationStartIndex).ToArray();
+            RecordAllowed(
+                warmup.Count > 0 ? warmup[0].OpenTimeUtc : SegmentStartUtc,
+                SegmentStartUtc,
+                request.WarmupCandleCount,
+                warmup,
+                warmupCtx,
+                "Warmup");
+        }
+        else if (request.WarmupCandleCount == 0)
+        {
+            var warmupCtx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.WarmupLoad);
+            RecordAllowed(SegmentStartUtc, SegmentStartUtc, 0, Array.Empty<Candle>(), warmupCtx, "Warmup");
+        }
+
+        var evalCtx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.EvaluationLoad);
+        var evaluation = _all.Skip(_evaluationStartIndex).ToArray();
+        RecordAllowed(
+            SegmentStartUtc,
+            SegmentEndExclusiveUtc,
+            null,
+            evaluation,
+            evalCtx,
+            "Evaluation");
+
+        var candles = warmup.Count == 0 ? evaluation.ToList() : warmup.Concat(evaluation).ToList();
+        var evaluationIndices = Enumerable.Range(warmup.Count, evaluation.Length).ToList();
+
+        var datasetCtx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.DatasetMaterialization);
+        RecordAllowed(
+            warmup.Count > 0 ? warmup[0].OpenTimeUtc : SegmentStartUtc,
+            SegmentEndExclusiveUtc,
+            request.WarmupCandleCount,
+            candles,
+            datasetCtx,
+            "Combined");
+
+        return new StrategyLabDataset
+        {
+            SymbolId = request.SymbolId,
+            SymbolName = request.SymbolName,
+            Timeframe = parsedTimeframe,
+            Candles = candles,
+            IndicatorSnapshots = new Dictionary<long, IndicatorSnapshot>(),
+            EvaluationIndices = evaluationIndices,
+            WarmupCandleCount = warmup.Count,
+            WarmupContentFingerprint = warmup.Count > 0 ? ComputeContentFingerprint(warmup) : null,
+            EvaluationContentFingerprint = evaluation.Length > 0 ? ComputeContentFingerprint(evaluation) : null,
+            CombinedContentFingerprint = candles.Count > 0 ? ComputeContentFingerprint(candles) : null
+        };
+    }
 
     public StrategyLabDataset CreateStrategyLabDataset(
         StrategyLabRun run,
@@ -373,7 +758,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
 
         if (run.SymbolId != Partition.SymbolId && Partition.SymbolId > 0)
         {
-            RecordDenied(run.FromUtc, run.ToUtc, context, "SymbolMismatch",
+            RecordDenied(run.FromUtc, run.ToUtc, warmupCandles, context, "SymbolMismatch",
                 $"Run symbol {run.SymbolId} does not match scope symbol {Partition.SymbolId}.");
             throw new InvalidOperationException(
                 $"Validation training scope symbol mismatch: run={run.SymbolId}, scope={Partition.SymbolId}.");
@@ -390,7 +775,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
 
         if (fromUtc >= boundary || toUtc > boundary)
         {
-            RecordDenied(fromUtc, toUtc, context, "BoundaryCrossed",
+            RecordDenied(fromUtc, toUtc, warmupCandles, context, "BoundaryCrossed",
                 $"Requested training range [{fromUtc:O}, {toUtc:O}) crosses ValidationStartUtc {boundary:O}.");
             throw new ValidationTrainingBoundaryViolationException(
                 ValidationExperimentId,
@@ -412,7 +797,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
             var open = DateTime.SpecifyKind(candle.OpenTimeUtc, DateTimeKind.Utc);
             if (open >= boundary)
             {
-                RecordDenied(fromUtc, toUtc, context, "BoundaryCrossed",
+                RecordDenied(fromUtc, toUtc, warmupCandles, context, "BoundaryCrossed",
                     $"Returned candle at {open:O} is at or beyond ValidationStartUtc {boundary:O}.");
                 throw new ValidationTrainingBoundaryViolationException(
                     ValidationExperimentId,
@@ -433,7 +818,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
             .Select(item => item.index)
             .ToList();
 
-        RecordAllowed(fromUtc, toUtc, candles, context);
+        RecordAllowed(fromUtc, toUtc, warmupCandles, candles, context, "Training");
 
         return new StrategyLabDataset
         {
@@ -481,8 +866,10 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
     private void RecordAllowed(
         DateTime? requestedStart,
         DateTime? requestedEnd,
+        int? requestedCount,
         IReadOnlyList<Candle> returned,
-        ValidationCandleAccessContext context)
+        ValidationCandleAccessContext context,
+        string datasetPartition)
     {
         lock (_gate)
         {
@@ -498,7 +885,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                 AccessPurpose = context.AccessPurpose,
                 RequestedStartUtc = requestedStart,
                 RequestedEndUtc = requestedEnd,
-                RequestedCandleCount = null,
+                RequestedCandleCount = requestedCount,
                 ReturnedStartUtc = returned.Count > 0 ? returned[0].OpenTimeUtc : null,
                 ReturnedEndUtc = returned.Count > 0 ? returned[^1].OpenTimeUtc : null,
                 ReturnedCandleCount = returned.Count,
@@ -510,7 +897,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                 DenialCode = null,
                 DenialReason = null,
                 CorrelationId = CorrelationId,
-                DatasetPartition = ResolveDatasetPartition(context.AccessPurpose),
+                DatasetPartition = datasetPartition,
                 RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion
             });
         }
@@ -519,6 +906,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
     private void RecordDenied(
         DateTime? requestedStart,
         DateTime? requestedEnd,
+        int? requestedCount,
         ValidationCandleAccessContext context,
         string denialCode,
         string reason)
@@ -537,7 +925,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                 AccessPurpose = context.AccessPurpose,
                 RequestedStartUtc = requestedStart,
                 RequestedEndUtc = requestedEnd,
-                RequestedCandleCount = null,
+                RequestedCandleCount = requestedCount,
                 ReturnedStartUtc = null,
                 ReturnedEndUtc = null,
                 ReturnedCandleCount = 0,
@@ -589,11 +977,11 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         {
             sb.Append(DateTime.SpecifyKind(c.OpenTimeUtc, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture))
                 .Append('|')
-                .Append(c.Open.ToString(CultureInfo.InvariantCulture)).Append('|')
-                .Append(c.High.ToString(CultureInfo.InvariantCulture)).Append('|')
-                .Append(c.Low.ToString(CultureInfo.InvariantCulture)).Append('|')
-                .Append(c.Close.ToString(CultureInfo.InvariantCulture)).Append('|')
-                .Append(c.Volume.ToString(CultureInfo.InvariantCulture))
+                .Append(c.Open.ToString("G29", CultureInfo.InvariantCulture)).Append('|')
+                .Append(c.High.ToString("G29", CultureInfo.InvariantCulture)).Append('|')
+                .Append(c.Low.ToString("G29", CultureInfo.InvariantCulture)).Append('|')
+                .Append(c.Close.ToString("G29", CultureInfo.InvariantCulture)).Append('|')
+                .Append(c.Volume.ToString("G29", CultureInfo.InvariantCulture))
                 .Append('\n');
         }
 
@@ -635,6 +1023,14 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
             EvaluationStartIndex = warmup.Count,
             WarmupContentFingerprint = warmup.Count > 0 ? ComputeContentFingerprint(warmup) : null,
             EvaluationContentFingerprint = evaluation.Count > 0 ? ComputeContentFingerprint(evaluation) : null,
-            CombinedContentFingerprint = combined.Count > 0 ? ComputeContentFingerprint(combined) : null
+            CombinedContentFingerprint = combined.Count > 0 ? ComputeContentFingerprint(combined) : null,
+            // v2 fields
+            WarmupStartUtc = warmup.Count > 0 ? DateTime.SpecifyKind(warmup[0].OpenTimeUtc, DateTimeKind.Utc) : null,
+            WarmupEndExclusiveUtc = DateTime.SpecifyKind(evalStart, DateTimeKind.Utc),
+            WarmupStartIndex = 0,
+            WarmupEndExclusiveIndex = warmup.Count,
+            EvaluationEndExclusiveIndex = warmup.Count + evaluation.Count,
+            WarmupCandleCount = availableWarmup,
+            PartitionContractVersion = "ValidationCandlePartition/v2"
         };
 }

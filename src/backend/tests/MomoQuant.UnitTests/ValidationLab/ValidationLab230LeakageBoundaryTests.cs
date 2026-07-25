@@ -35,7 +35,7 @@ public class ValidationLab230LeakageBoundaryTests
     public void TrainingScope_DeniesRangeCrossingBoundary()
     {
         var scope = CreateScope();
-        Assert.Throws<ValidationDataLeakageException>(() =>
+        Assert.Throws<ValidationCandlePartitionViolationException>(() =>
             scope.GetRange(TrainingStart, ValidationStart.AddHours(1), "Optimizer"));
         Assert.Contains(scope.AccessLog, a => a.WasDenied);
     }

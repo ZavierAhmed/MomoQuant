@@ -652,7 +652,8 @@ public sealed partial class ValidationLabService
             AppVersion = "1.0.0",
             StrategyCodeFingerprint = fingerprint,
             RiskProfileId = draft.ObservationSettings?.RiskProfileId,
-            CreatedAtUtc = DateTime.UtcNow
+            CreatedAtUtc = DateTime.UtcNow,
+            CandleLoadContractVersion = StrategyLabCandleLoadContractVersions.Current
         };
 
         await _labRuns.AddAsync(run, cancellationToken);

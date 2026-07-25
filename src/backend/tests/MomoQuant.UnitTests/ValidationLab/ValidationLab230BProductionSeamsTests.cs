@@ -16,7 +16,7 @@ public class ValidationLab230BProductionSeamsTests
         var recorder = new ValidationCandleAccessRecorder(audits);
         var scope = CreateScope();
 
-        await Assert.ThrowsAsync<ValidationDataLeakageException>(() =>
+        await Assert.ThrowsAsync<ValidationCandlePartitionViolationException>(() =>
         {
             _ = scope.GetRange(
                 scope.ValidationBoundaryUtc,

@@ -38,4 +38,5 @@ public class StrategyLabRun : Entity
     public int RawCandidateCount { get; set; }
     public string? CurrentStage { get; set; }
     public decimal PercentComplete { get; set; }
+    public string? CandleLoadContractVersion { get; set; }
 }

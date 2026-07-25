@@ -167,7 +167,8 @@ public sealed class StrategyLabService : IStrategyLabService
             AppVersion = "1.0.0",
             StrategyCodeFingerprint = fingerprint,
             RiskProfileId = observationSettings.RiskProfileId ?? request.RiskProfileId,
-            CreatedAtUtc = DateTime.UtcNow
+            CreatedAtUtc = DateTime.UtcNow,
+            CandleLoadContractVersion = StrategyLabCandleLoadContractVersions.Current
         };
 
         await _runRepository.AddAsync(run, cancellationToken);

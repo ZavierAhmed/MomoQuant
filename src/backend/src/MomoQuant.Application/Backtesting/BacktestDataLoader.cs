@@ -20,6 +20,16 @@ public interface IBacktestDataLoader
         DateTime toUtc,
         int warmUpCount,
         CancellationToken cancellationToken = default);
+
+    Task<BacktestDataset?> LoadSymbolTimeframeAsync(
+        long exchangeId,
+        long symbolId,
+        Timeframe timeframe,
+        DateTime fromUtc,
+        DateTime toUtc,
+        int warmUpCount,
+        string? contractVersion,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class BacktestDataset
@@ -60,6 +70,25 @@ public sealed class BacktestDataLoader : IBacktestDataLoader
         DateTime fromUtc,
         DateTime toUtc,
         int warmUpCount,
+        CancellationToken cancellationToken = default) =>
+        await LoadSymbolTimeframeAsync(
+            exchangeId,
+            symbolId,
+            timeframe,
+            fromUtc,
+            toUtc,
+            warmUpCount,
+            StrategyLabCandleLoadContractVersions.LegacyV1,
+            cancellationToken);
+
+    public async Task<BacktestDataset?> LoadSymbolTimeframeAsync(
+        long exchangeId,
+        long symbolId,
+        Timeframe timeframe,
+        DateTime fromUtc,
+        DateTime toUtc,
+        int warmUpCount,
+        string? contractVersion,
         CancellationToken cancellationToken = default)
     {
         GuardAgainstUnscopedValidationTraining();
@@ -70,7 +99,19 @@ public sealed class BacktestDataLoader : IBacktestDataLoader
             return null;
         }
 
-        var warmUp = Math.Max(warmUpCount, DefaultWarmUpCount);
+        if (contractVersion is not null &&
+            contractVersion != StrategyLabCandleLoadContractVersions.LegacyV1 &&
+            contractVersion != StrategyLabCandleLoadContractVersions.ExactExclusiveV2)
+        {
+            throw new InvalidOperationException(
+                $"Unknown CandleLoadContractVersion '{contractVersion}'. Expected null, '{StrategyLabCandleLoadContractVersions.LegacyV1}', or '{StrategyLabCandleLoadContractVersions.ExactExclusiveV2}'.");
+        }
+
+        var version = contractVersion ?? StrategyLabCandleLoadContractVersions.LegacyV1;
+        var warmUp = version == StrategyLabCandleLoadContractVersions.ExactExclusiveV2
+            ? warmUpCount
+            : Math.Max(warmUpCount, DefaultWarmUpCount);
+
         var candles = await _candleRepository.GetCandlesChronologicalAsync(
             symbolId,
             timeframe,
@@ -84,11 +125,17 @@ public sealed class BacktestDataLoader : IBacktestDataLoader
             return null;
         }
 
-        var evaluationIndices = candles
-            .Select((candle, index) => (candle, index))
-            .Where(item => item.candle.OpenTimeUtc >= fromUtc && item.candle.OpenTimeUtc <= toUtc)
-            .Select(item => item.index)
-            .ToList();
+        var evaluationIndices = version == StrategyLabCandleLoadContractVersions.ExactExclusiveV2
+            ? candles
+                .Select((candle, index) => (candle, index))
+                .Where(item => item.candle.OpenTimeUtc >= fromUtc && item.candle.OpenTimeUtc < toUtc)
+                .Select(item => item.index)
+                .ToList()
+            : candles
+                .Select((candle, index) => (candle, index))
+                .Where(item => item.candle.OpenTimeUtc >= fromUtc && item.candle.OpenTimeUtc <= toUtc)
+                .Select(item => item.index)
+                .ToList();
 
         if (evaluationIndices.Count == 0)
         {

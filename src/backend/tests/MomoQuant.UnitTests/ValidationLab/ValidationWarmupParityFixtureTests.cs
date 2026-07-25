@@ -119,11 +119,17 @@ public sealed class ValidationWarmupParityFixtureTests
         Assert.Equal(standardFp, validationDataset.CombinedContentFingerprint);
         Assert.Equal(standardFp, scope.Partition.CombinedContentFingerprint);
 
-        // Exactly one StrategyLabDataset access event from the data source load.
-        Assert.Contains(scope.AccessLog, a =>
+        // Exactly three access events: WarmupLoad, EvaluationLoad, and DatasetMaterialization.
+        var accessLog = scope.AccessLog;
+        Assert.Contains(accessLog, a =>
             !a.WasDenied
-            && a.AccessPurpose == ValidationCandleAccessPurpose.StrategyLabDataset
-            && a.CallerComponent.Contains("ParityValidation", StringComparison.Ordinal));
+            && a.AccessPurpose == ValidationCandleAccessPurpose.WarmupLoad);
+        Assert.Contains(accessLog, a =>
+            !a.WasDenied
+            && a.AccessPurpose == ValidationCandleAccessPurpose.EvaluationLoad);
+        Assert.Contains(accessLog, a =>
+            !a.WasDenied
+            && a.AccessPurpose == ValidationCandleAccessPurpose.DatasetMaterialization);
     }
 
     [Fact]

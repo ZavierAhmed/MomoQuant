@@ -21,7 +21,14 @@ public enum ValidationCandleAccessPurpose
     RepositoryRecent = 6,
     RepositoryCount = 7,
     RepositoryLookup = 8,
-    Indexer = 9
+    Indexer = 9,
+    WarmupLoad = 10,
+    EvaluationLoad = 11,
+    DatasetMaterialization = 12,
+    EvaluationPartial = 13,
+    WarmupDiagnostic = 14,
+    DirectWarmup = 15,
+    DirectEvaluation = 16
 }
 
 /// <summary>Caller identity + access purpose for audited candle reads.</summary>
@@ -159,6 +166,37 @@ public sealed class ValidationTrainingCandleScopeRequest
     }
 }
 
+/// <summary>Warmup access request for strict partition enforcement.</summary>
+public sealed class ValidationWarmupAccessRequest
+{
+    public required DateTime BeforeOpenTimeUtc { get; init; }
+    public required int Count { get; init; }
+    public required ValidationCandleAccessPurpose Purpose { get; init; }
+    public required string CallerComponent { get; init; }
+}
+
+/// <summary>Evaluation access request for strict partition enforcement.</summary>
+public sealed class ValidationEvaluationAccessRequest
+{
+    public required DateTime FromUtc { get; init; }
+    public required DateTime ToExclusiveUtc { get; init; }
+    public required bool AllowPartial { get; init; }
+    public required ValidationCandleAccessPurpose Purpose { get; init; }
+    public required string CallerComponent { get; init; }
+}
+
+/// <summary>Dataset materialization request matching run exactly.</summary>
+public sealed class ValidationDatasetMaterializationRequest
+{
+    public required long SymbolId { get; init; }
+    public required string SymbolName { get; init; }
+    public required string Timeframe { get; init; }
+    public required DateTime EvaluationFromUtc { get; init; }
+    public required DateTime EvaluationToExclusiveUtc { get; init; }
+    public required int WarmupCandleCount { get; init; }
+    public required string CallerComponent { get; init; }
+}
+
 /// <summary>Immutable partition metadata exposed by the training candle scope.</summary>
 public sealed class ValidationCandlePartitionMetadata
 {
@@ -179,4 +217,13 @@ public sealed class ValidationCandlePartitionMetadata
     public string? WarmupContentFingerprint { get; init; }
     public string? EvaluationContentFingerprint { get; init; }
     public string? CombinedContentFingerprint { get; init; }
+    
+    // v2 fields
+    public DateTime? WarmupStartUtc { get; init; }
+    public DateTime? WarmupEndExclusiveUtc { get; init; }
+    public int? WarmupStartIndex { get; init; }
+    public int? WarmupEndExclusiveIndex { get; init; }
+    public int? EvaluationEndExclusiveIndex { get; init; }
+    public int? WarmupCandleCount { get; init; }
+    public string PartitionContractVersion { get; init; } = "ValidationCandlePartition/v2";
 }

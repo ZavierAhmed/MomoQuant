@@ -239,6 +239,11 @@ public sealed class StrategyLabRunnerEquivalenceAndPerformanceTests
         var dataLoader = new Mock<IBacktestDataLoader>();
         dataLoader.Setup(d => d.LoadSymbolTimeframeAsync(
                 It.IsAny<long>(), It.IsAny<long>(), It.IsAny<Timeframe>(),
+                It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<int>(),
+                It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(dataset);
+        dataLoader.Setup(d => d.LoadSymbolTimeframeAsync(
+                It.IsAny<long>(), It.IsAny<long>(), It.IsAny<Timeframe>(),
                 It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(dataset);
 
