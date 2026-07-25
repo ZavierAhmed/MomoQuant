@@ -125,17 +125,15 @@ public sealed class BacktestDataLoader : IBacktestDataLoader
             return null;
         }
 
-        var evaluationIndices = version == StrategyLabCandleLoadContractVersions.ExactExclusiveV2
-            ? candles
-                .Select((candle, index) => (candle, index))
-                .Where(item => item.candle.OpenTimeUtc >= fromUtc && item.candle.OpenTimeUtc < toUtc)
-                .Select(item => item.index)
-                .ToList()
-            : candles
-                .Select((candle, index) => (candle, index))
-                .Where(item => item.candle.OpenTimeUtc >= fromUtc && item.candle.OpenTimeUtc <= toUtc)
-                .Select(item => item.index)
-                .ToList();
+        var evaluationIndices = candles
+            .Select((candle, index) => (candle, index))
+            .Where(item => StrategyLabCandleLoadContract.ContainsEvaluationOpenTime(
+                version,
+                item.candle.OpenTimeUtc,
+                fromUtc,
+                toUtc))
+            .Select(item => item.index)
+            .ToList();
 
         if (evaluationIndices.Count == 0)
         {

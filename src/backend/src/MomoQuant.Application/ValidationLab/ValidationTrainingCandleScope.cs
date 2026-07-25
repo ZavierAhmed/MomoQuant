@@ -5,6 +5,7 @@ using System.Text;
 using MomoQuant.Application.MarketData;
 using MomoQuant.Application.Strategies;
 using MomoQuant.Application.StrategyLab;
+using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.Indicators;
 using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.StrategyLab;
@@ -45,11 +46,11 @@ public interface IValidationSegmentCandleSource
     /// <summary>Compatibility range read — defaults purpose to <see cref="ValidationCandleAccessPurpose.RepositoryRange"/>.</summary>
     IReadOnlyList<Candle> GetRange(DateTime? fromUtc, DateTime? toUtcExclusive, string callerComponent);
 
-    StrategyLabDataset CreateStrategyLabDataset(
-        StrategyLabRun run,
-        int warmupCandles,
-        ValidationCandleAccessContext context);
-
+    /// <summary>
+    /// v2 typed materialization request - the ONLY public dataset materialization interface.
+    /// Legacy overload CreateStrategyLabDataset(StrategyLabRun, int, ValidationCandleAccessContext) 
+    /// has been removed as of Milestone 23.0E1B.
+    /// </summary>
     StrategyLabDataset CreateStrategyLabDataset(ValidationDatasetMaterializationRequest request);
 }
 
@@ -219,30 +220,295 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
             DateTime.SpecifyKind(partition.TrainingEvaluationEndExclusiveUtc, DateTimeKind.Utc),
             ValidationBoundaryUtc);
 
-        var warmup = warmupCandles
-            .Where(c =>
-            {
-                var open = DateTime.SpecifyKind(c.OpenTimeUtc, DateTimeKind.Utc);
-                return open < SegmentStartUtc && open < ValidationBoundaryUtc;
-            })
-            .OrderBy(c => c.OpenTimeUtc)
-            .Select(CloneCandle)
-            .ToList();
+        // STRICT VALIDATION: NO filtering, NO sorting, NO reclassification — reject invalid input.
+        if (!string.Equals(
+                partition.PartitionContractVersion,
+                ValidationCandlePartitionConstructionException.SupportedPartitionContractVersion,
+                StringComparison.Ordinal))
+        {
+            throw new ValidationCandlePartitionConstructionException(
+                partition.ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationCandlePartitionConstructionFailureReasons.UnsupportedPartitionContractVersion,
+                $"Unsupported partition contract version '{partition.PartitionContractVersion}'.",
+                expectedValue: ValidationCandlePartitionConstructionException.SupportedPartitionContractVersion,
+                actualValue: partition.PartitionContractVersion,
+                partitionContractVersion: partition.PartitionContractVersion);
+        }
 
-        var evaluation = evaluationCandles
-            .Where(c =>
-            {
-                var open = DateTime.SpecifyKind(c.OpenTimeUtc, DateTimeKind.Utc);
-                return open >= SegmentStartUtc
-                       && open < SegmentEndExclusiveUtc
-                       && open < ValidationBoundaryUtc;
-            })
-            .OrderBy(c => c.OpenTimeUtc)
-            .Select(CloneCandle)
-            .ToList();
+        ValidateCandlePartition(
+            warmupCandles,
+            evaluationCandles,
+            partition,
+            SegmentStartUtc,
+            SegmentEndExclusiveUtc,
+            ValidationBoundaryUtc,
+            ScopeExecutionId);
+
+        var warmup = warmupCandles.Select(CloneCandle).ToList();
+        var evaluation = evaluationCandles.Select(CloneCandle).ToList();
 
         _all = warmup.Concat(evaluation).ToImmutableArray();
         _evaluationStartIndex = warmup.Count;
+    }
+
+    private static void ValidateCandlePartition(
+        IReadOnlyList<Candle> warmupCandles,
+        IReadOnlyList<Candle> evaluationCandles,
+        ValidationCandlePartitionMetadata partition,
+        DateTime segmentStartUtc,
+        DateTime segmentEndExclusiveUtc,
+        DateTime validationBoundaryUtc,
+        Guid scopeExecutionId)
+    {
+        Timeframe? expectedTimeframe = null;
+        if (!string.IsNullOrWhiteSpace(partition.Timeframe)
+            && TimeframeParser.TryParse(partition.Timeframe, out var parsedTf))
+        {
+            expectedTimeframe = parsedTf;
+        }
+
+        var seenOpenTimes = new HashSet<DateTime>();
+        ValidateCandleList(
+            warmupCandles,
+            partition,
+            scopeExecutionId,
+            expectedTimeframe,
+            seenOpenTimes,
+            partitionName: "warmup",
+            openMustBeStrictlyBefore: segmentStartUtc,
+            openMustBeOnOrAfter: null,
+            openMustBeStrictlyBeforeEnd: null,
+            validationBoundaryUtc);
+
+        ValidateCandleList(
+            evaluationCandles,
+            partition,
+            scopeExecutionId,
+            expectedTimeframe,
+            seenOpenTimes,
+            partitionName: "evaluation",
+            openMustBeStrictlyBefore: null,
+            openMustBeOnOrAfter: segmentStartUtc,
+            openMustBeStrictlyBeforeEnd: segmentEndExclusiveUtc,
+            validationBoundaryUtc);
+
+        if (warmupCandles.Count != partition.RequiredWarmupCandleCount
+            && !(warmupCandles.Count == 0 && partition.RequiredWarmupCandleCount == 0))
+        {
+            throw new ValidationCandlePartitionConstructionException(
+                partition.ValidationExperimentId,
+                scopeExecutionId,
+                ValidationCandlePartitionConstructionFailureReasons.WarmupCountMetadataMismatch,
+                $"Warmup candle count mismatch: metadata={partition.RequiredWarmupCandleCount}, provided={warmupCandles.Count}",
+                expectedValue: partition.RequiredWarmupCandleCount.ToString(CultureInfo.InvariantCulture),
+                actualValue: warmupCandles.Count.ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (evaluationCandles.Count != partition.EvaluationCandleCount)
+        {
+            throw new ValidationCandlePartitionConstructionException(
+                partition.ValidationExperimentId,
+                scopeExecutionId,
+                ValidationCandlePartitionConstructionFailureReasons.EvaluationCountMetadataMismatch,
+                $"Evaluation candle count mismatch: metadata={partition.EvaluationCandleCount}, provided={evaluationCandles.Count}",
+                expectedValue: partition.EvaluationCandleCount.ToString(CultureInfo.InvariantCulture),
+                actualValue: evaluationCandles.Count.ToString(CultureInfo.InvariantCulture));
+        }
+
+        var total = warmupCandles.Count + evaluationCandles.Count;
+        if (total != partition.TotalCandleCount)
+        {
+            throw new ValidationCandlePartitionConstructionException(
+                partition.ValidationExperimentId,
+                scopeExecutionId,
+                ValidationCandlePartitionConstructionFailureReasons.TotalCountMetadataMismatch,
+                $"Total candle count mismatch: metadata={partition.TotalCandleCount}, provided={total}",
+                expectedValue: partition.TotalCandleCount.ToString(CultureInfo.InvariantCulture),
+                actualValue: total.ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (partition.EvaluationStartIndex != warmupCandles.Count
+            || partition.EvaluationEndExclusiveIndex != total
+            || partition.WarmupEndExclusiveIndex != warmupCandles.Count)
+        {
+            throw new ValidationCandlePartitionConstructionException(
+                partition.ValidationExperimentId,
+                scopeExecutionId,
+                ValidationCandlePartitionConstructionFailureReasons.PartitionIndexMismatch,
+                $"Partition index metadata mismatch: EvaluationStartIndex={partition.EvaluationStartIndex}, " +
+                $"WarmupEndExclusiveIndex={partition.WarmupEndExclusiveIndex}, " +
+                $"EvaluationEndExclusiveIndex={partition.EvaluationEndExclusiveIndex}, warmup={warmupCandles.Count}, total={total}",
+                expectedValue: $"{warmupCandles.Count}/{total}",
+                actualValue: $"{partition.EvaluationStartIndex}/{partition.EvaluationEndExclusiveIndex}");
+        }
+
+        if (warmupCandles.Count > 0 && !string.IsNullOrEmpty(partition.WarmupContentFingerprint))
+        {
+            var computed = ComputeContentFingerprint(warmupCandles);
+            if (!string.Equals(computed, partition.WarmupContentFingerprint, StringComparison.Ordinal))
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.WarmupFingerprintMismatch,
+                    "Warmup fingerprint mismatch.",
+                    expectedValue: partition.WarmupContentFingerprint,
+                    actualValue: computed);
+            }
+        }
+
+        if (evaluationCandles.Count > 0 && !string.IsNullOrEmpty(partition.EvaluationContentFingerprint))
+        {
+            var computed = ComputeContentFingerprint(evaluationCandles);
+            if (!string.Equals(computed, partition.EvaluationContentFingerprint, StringComparison.Ordinal))
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.EvaluationFingerprintMismatch,
+                    "Evaluation fingerprint mismatch.",
+                    expectedValue: partition.EvaluationContentFingerprint,
+                    actualValue: computed);
+            }
+        }
+
+        if (total > 0 && !string.IsNullOrEmpty(partition.CombinedContentFingerprint))
+        {
+            var combined = warmupCandles.Concat(evaluationCandles).ToList();
+            var computed = ComputeContentFingerprint(combined);
+            if (!string.Equals(computed, partition.CombinedContentFingerprint, StringComparison.Ordinal))
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.CombinedFingerprintMismatch,
+                    "Combined fingerprint mismatch.",
+                    expectedValue: partition.CombinedContentFingerprint,
+                    actualValue: computed);
+            }
+        }
+    }
+
+    private static void ValidateCandleList(
+        IReadOnlyList<Candle> candles,
+        ValidationCandlePartitionMetadata partition,
+        Guid scopeExecutionId,
+        Timeframe? expectedTimeframe,
+        HashSet<DateTime> seenOpenTimes,
+        string partitionName,
+        DateTime? openMustBeStrictlyBefore,
+        DateTime? openMustBeOnOrAfter,
+        DateTime? openMustBeStrictlyBeforeEnd,
+        DateTime validationBoundaryUtc)
+    {
+        DateTime? previousOpen = null;
+
+        for (var i = 0; i < candles.Count; i++)
+        {
+            var candle = candles[i];
+            var open = DateTime.SpecifyKind(candle.OpenTimeUtc, DateTimeKind.Utc);
+
+            if (!seenOpenTimes.Add(open))
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.DuplicateOpenTime,
+                    $"Duplicate OpenTimeUtc in {partitionName} at index {i}: {open:O}",
+                    actualValue: open.ToString("O", CultureInfo.InvariantCulture));
+            }
+
+            if (previousOpen.HasValue && open <= previousOpen.Value)
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.NonMonotonicOpenTime,
+                    $"{partitionName} candles are not strictly ascending at index {i}.",
+                    expectedValue: $"> {previousOpen.Value:O}",
+                    actualValue: open.ToString("O", CultureInfo.InvariantCulture));
+            }
+
+            if (open >= validationBoundaryUtc)
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.ValidationBoundaryCandlePresent,
+                    $"{partitionName} candle at index {i} is at or after ValidationBoundaryUtc.",
+                    expectedValue: $"< {validationBoundaryUtc:O}",
+                    actualValue: open.ToString("O", CultureInfo.InvariantCulture));
+            }
+
+            if (openMustBeStrictlyBefore.HasValue && open >= openMustBeStrictlyBefore.Value)
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.WarmupCandleOutsidePartition,
+                    $"Warmup candle at index {i} is at or after EvaluationStartUtc.",
+                    expectedValue: $"< {openMustBeStrictlyBefore.Value:O}",
+                    actualValue: open.ToString("O", CultureInfo.InvariantCulture));
+            }
+
+            if (openMustBeOnOrAfter.HasValue && open < openMustBeOnOrAfter.Value)
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.EvaluationCandleOutsidePartition,
+                    $"Evaluation candle at index {i} is before EvaluationStartUtc.",
+                    expectedValue: $">= {openMustBeOnOrAfter.Value:O}",
+                    actualValue: open.ToString("O", CultureInfo.InvariantCulture));
+            }
+
+            if (openMustBeStrictlyBeforeEnd.HasValue && open >= openMustBeStrictlyBeforeEnd.Value)
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.EvaluationCandleOutsidePartition,
+                    $"Evaluation candle at index {i} is at or after EvaluationEndExclusiveUtc.",
+                    expectedValue: $"< {openMustBeStrictlyBeforeEnd.Value:O}",
+                    actualValue: open.ToString("O", CultureInfo.InvariantCulture));
+            }
+
+            if (partition.SymbolId > 0 && candle.SymbolId != partition.SymbolId)
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.SymbolMismatch,
+                    $"{partitionName} candle at index {i} has wrong SymbolId.",
+                    expectedValue: partition.SymbolId.ToString(CultureInfo.InvariantCulture),
+                    actualValue: candle.SymbolId.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (expectedTimeframe.HasValue && candle.Timeframe != expectedTimeframe.Value)
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.TimeframeMismatch,
+                    $"{partitionName} candle at index {i} has wrong Timeframe.",
+                    expectedValue: expectedTimeframe.Value.ToString(),
+                    actualValue: candle.Timeframe.ToString());
+            }
+
+            if (!candle.IsClosed)
+            {
+                throw new ValidationCandlePartitionConstructionException(
+                    partition.ValidationExperimentId,
+                    scopeExecutionId,
+                    ValidationCandlePartitionConstructionFailureReasons.OpenCandleNotAllowed,
+                    $"{partitionName} candle at index {i} is not closed.",
+                    expectedValue: "IsClosed=true",
+                    actualValue: "IsClosed=false");
+            }
+
+            previousOpen = open;
+        }
     }
 
     public Guid ScopeExecutionId { get; }
@@ -692,31 +958,40 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                 request.CallerComponent);
         }
 
+        // WarmupLoad - always emit, even when count is 0
         IReadOnlyList<Candle> warmup = Array.Empty<Candle>();
+        var warmupCtx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.WarmupLoad);
+        
         if (request.WarmupCandleCount > 0)
         {
-            var warmupCtx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.WarmupLoad);
             warmup = _all.Take(_evaluationStartIndex).ToArray();
             RecordAllowed(
                 warmup.Count > 0 ? warmup[0].OpenTimeUtc : SegmentStartUtc,
                 SegmentStartUtc,
-                request.WarmupCandleCount,
+                Partition.RequiredWarmupCandleCount,
                 warmup,
                 warmupCtx,
                 "Warmup");
         }
-        else if (request.WarmupCandleCount == 0)
+        else
         {
-            var warmupCtx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.WarmupLoad);
-            RecordAllowed(SegmentStartUtc, SegmentStartUtc, 0, Array.Empty<Candle>(), warmupCtx, "Warmup");
+            // Always emit WarmupLoad even when count is 0
+            RecordAllowed(
+                SegmentStartUtc, 
+                SegmentStartUtc, 
+                Partition.RequiredWarmupCandleCount,
+                Array.Empty<Candle>(), 
+                warmupCtx, 
+                "Warmup");
         }
 
+        // EvaluationLoad - RequestedCandleCount should be evaluation count
         var evalCtx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.EvaluationLoad);
         var evaluation = _all.Skip(_evaluationStartIndex).ToArray();
         RecordAllowed(
             SegmentStartUtc,
             SegmentEndExclusiveUtc,
-            null,
+            Partition.EvaluationCandleCount, // RequestedCandleCount = evaluation count
             evaluation,
             evalCtx,
             "Evaluation");
@@ -724,11 +999,12 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         var candles = warmup.Count == 0 ? evaluation.ToList() : warmup.Concat(evaluation).ToList();
         var evaluationIndices = Enumerable.Range(warmup.Count, evaluation.Length).ToList();
 
+        // DatasetMaterialization - RequestedCandleCount should be total count
         var datasetCtx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.DatasetMaterialization);
         RecordAllowed(
             warmup.Count > 0 ? warmup[0].OpenTimeUtc : SegmentStartUtc,
             SegmentEndExclusiveUtc,
-            request.WarmupCandleCount,
+            Partition.TotalCandleCount, // RequestedCandleCount = total count (warmup + evaluation)
             candles,
             datasetCtx,
             "Combined");
@@ -748,92 +1024,8 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         };
     }
 
-    public StrategyLabDataset CreateStrategyLabDataset(
-        StrategyLabRun run,
-        int warmupCandles,
-        ValidationCandleAccessContext context)
-    {
-        ArgumentNullException.ThrowIfNull(run);
-        ArgumentNullException.ThrowIfNull(context);
-
-        if (run.SymbolId != Partition.SymbolId && Partition.SymbolId > 0)
-        {
-            RecordDenied(run.FromUtc, run.ToUtc, warmupCandles, context, "SymbolMismatch",
-                $"Run symbol {run.SymbolId} does not match scope symbol {Partition.SymbolId}.");
-            throw new InvalidOperationException(
-                $"Validation training scope symbol mismatch: run={run.SymbolId}, scope={Partition.SymbolId}.");
-        }
-
-        if (!TimeframeParser.TryParse(run.Timeframe, out var parsedTimeframe))
-        {
-            throw new InvalidOperationException(TimeframeNormalizer.UnsupportedTimeframeMessage(run.Timeframe));
-        }
-
-        var fromUtc = DateTime.SpecifyKind(run.FromUtc, DateTimeKind.Utc);
-        var toUtc = DateTime.SpecifyKind(run.ToUtc, DateTimeKind.Utc);
-        var boundary = ValidationBoundaryUtc;
-
-        if (fromUtc >= boundary || toUtc > boundary)
-        {
-            RecordDenied(fromUtc, toUtc, warmupCandles, context, "BoundaryCrossed",
-                $"Requested training range [{fromUtc:O}, {toUtc:O}) crosses ValidationStartUtc {boundary:O}.");
-            throw new ValidationTrainingBoundaryViolationException(
-                ValidationExperimentId,
-                boundary,
-                context.ToCallerAuditLabel(),
-                fromUtc,
-                toUtc,
-                $"Requested training range [{fromUtc:O}, {toUtc:O}) crosses ValidationStartUtc {boundary:O}.");
-        }
-
-        var warm = warmupCandles > 0
-            ? SliceWarmupBefore(fromUtc, warmupCandles)
-            : Array.Empty<Candle>();
-        var eval = SliceEvaluation(fromUtc, toUtc);
-        var candles = warm.Count == 0 ? eval : warm.Concat(eval).ToList();
-
-        foreach (var candle in candles)
-        {
-            var open = DateTime.SpecifyKind(candle.OpenTimeUtc, DateTimeKind.Utc);
-            if (open >= boundary)
-            {
-                RecordDenied(fromUtc, toUtc, warmupCandles, context, "BoundaryCrossed",
-                    $"Returned candle at {open:O} is at or beyond ValidationStartUtc {boundary:O}.");
-                throw new ValidationTrainingBoundaryViolationException(
-                    ValidationExperimentId,
-                    boundary,
-                    context.ToCallerAuditLabel(),
-                    fromUtc,
-                    toUtc,
-                    $"Returned candle at {open:O} is at or beyond ValidationStartUtc {boundary:O}.");
-            }
-        }
-
-        var evaluationIndices = candles
-            .Select((candle, index) => (candle, index))
-            .Where(item =>
-                item.candle.OpenTimeUtc >= fromUtc
-                && item.candle.OpenTimeUtc < toUtc
-                && item.candle.OpenTimeUtc < boundary)
-            .Select(item => item.index)
-            .ToList();
-
-        RecordAllowed(fromUtc, toUtc, warmupCandles, candles, context, "Training");
-
-        return new StrategyLabDataset
-        {
-            SymbolId = run.SymbolId,
-            SymbolName = string.IsNullOrWhiteSpace(run.Symbol) ? Partition.SymbolName : run.Symbol,
-            Timeframe = parsedTimeframe,
-            Candles = candles,
-            IndicatorSnapshots = new Dictionary<long, IndicatorSnapshot>(),
-            EvaluationIndices = evaluationIndices,
-            WarmupCandleCount = warm.Count,
-            WarmupContentFingerprint = warm.Count > 0 ? ComputeContentFingerprint(warm) : null,
-            EvaluationContentFingerprint = eval.Count > 0 ? ComputeContentFingerprint(eval) : null,
-            CombinedContentFingerprint = candles.Count > 0 ? ComputeContentFingerprint(candles) : null
-        };
-    }
+    // REMOVED in Milestone 23.0E1B: Legacy CreateStrategyLabDataset(StrategyLabRun, int, ValidationCandleAccessContext)
+    // Use CreateStrategyLabDataset(ValidationDatasetMaterializationRequest) instead
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
@@ -911,6 +1103,8 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         string denialCode,
         string reason)
     {
+        var partition = ResolveDatasetPartitionForDenied(context.AccessPurpose, requestedStart);
+        
         lock (_gate)
         {
             _accessLog.Add(new ValidationCandleAccessRecord
@@ -937,14 +1131,41 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                 DenialCode = string.IsNullOrWhiteSpace(denialCode) ? null : denialCode,
                 DenialReason = reason,
                 CorrelationId = CorrelationId,
-                DatasetPartition = ResolveDatasetPartition(context.AccessPurpose),
+                DatasetPartition = partition,
                 RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion
             });
         }
     }
 
-    private static string ResolveDatasetPartition(ValidationCandleAccessPurpose purpose) =>
-        purpose == ValidationCandleAccessPurpose.WarmupBefore ? "Warmup" : "Training";
+    private string ResolveDatasetPartitionForDenied(ValidationCandleAccessPurpose purpose, DateTime? requestedStart)
+    {
+        return purpose switch
+        {
+            ValidationCandleAccessPurpose.WarmupBefore or
+            ValidationCandleAccessPurpose.WarmupLoad or
+            ValidationCandleAccessPurpose.WarmupDiagnostic => "Warmup",
+
+            ValidationCandleAccessPurpose.EvaluationRange or
+            ValidationCandleAccessPurpose.EvaluationPartial or
+            ValidationCandleAccessPurpose.EvaluationLoad or
+            ValidationCandleAccessPurpose.RepositoryCount or
+            ValidationCandleAccessPurpose.RepositoryRecent or
+            ValidationCandleAccessPurpose.RepositoryRange => "Evaluation",
+
+            ValidationCandleAccessPurpose.DatasetMaterialization or
+            ValidationCandleAccessPurpose.StrategyLabDataset => "Combined",
+
+            ValidationCandleAccessPurpose.DirectWarmup => "DirectWarmup",
+            ValidationCandleAccessPurpose.DirectEvaluation => "DirectEvaluation",
+
+            ValidationCandleAccessPurpose.ByOpenTime =>
+                requestedStart.HasValue && requestedStart.Value < SegmentStartUtc
+                    ? "DirectWarmup"
+                    : "DirectEvaluation",
+
+            _ => "Denied"
+        };
+    }
 
     private static DateTime? Normalize(DateTime? value) =>
         value is null ? null : DateTime.SpecifyKind(value.Value, DateTimeKind.Utc);

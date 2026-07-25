@@ -337,10 +337,19 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             detector?.Initialize(parameters);
 
             var evaluationIndices = dataset.EvaluationIndices
-                .Where(i => dataset.Candles[i].OpenTimeUtc >= run.FromUtc && dataset.Candles[i].OpenTimeUtc <= run.ToUtc)
+                .Where(i => StrategyLabCandleLoadContract.ContainsEvaluationOpenTime(
+                    run.CandleLoadContractVersion, 
+                    dataset.Candles[i].OpenTimeUtc, 
+                    run.FromUtc, 
+                    run.ToUtc))
                 .ToList();
             var warmupCandlesLoaded = dataset.Candles.Count(c => c.OpenTimeUtc < run.FromUtc);
-            var testRangeCandles = dataset.Candles.Count(c => c.OpenTimeUtc >= run.FromUtc && c.OpenTimeUtc <= run.ToUtc);
+            var testRangeCandles = dataset.Candles.Count(c => 
+                StrategyLabCandleLoadContract.ContainsEvaluationOpenTime(
+                    run.CandleLoadContractVersion, 
+                    c.OpenTimeUtc, 
+                    run.FromUtc, 
+                    run.ToUtc));
 
             if (detector is not null)
             {
@@ -907,6 +916,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
     {
         var risk = direction == TradeDirection.Long ? entry - stop : stop - entry;
         var rr = risk > 0 ? Math.Abs((target - entry) / risk) : 0m;
+        var entryTimeUtc = DateTime.SpecifyKind(candle.CloseTimeUtc, DateTimeKind.Utc);
 
         return new StrategyResearchCandidate
         {
@@ -918,8 +928,8 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             Symbol = run.Symbol,
             Timeframe = run.Timeframe,
             Direction = direction,
-            SetupDetectedAtUtc = candle.CloseTimeUtc,
-            ProposedEntryTimeUtc = candle.CloseTimeUtc,
+            SetupDetectedAtUtc = entryTimeUtc,
+            ProposedEntryTimeUtc = entryTimeUtc,
             ProposedEntryPrice = entry,
             StopLoss = stop,
             Target1 = target,

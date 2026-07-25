@@ -260,37 +260,9 @@ public sealed class ValidationLab230E1PartitionEnforcementTests
         Assert.Equal("Combined", datasetEvent.DatasetPartition);
     }
 
-    [Fact]
-    public void Constructor_AllowsDuplicateTimestamps_DeduplicatedInternalCollection()
-    {
-        var candles = new List<Candle>();
-        var ts = EvalStart.AddHours(-10);
-        candles.Add(BuildCandle(ts, 100m));
-        candles.Add(BuildCandle(ts, 101m));
-
-        var warmup = candles.Where(c => c.OpenTimeUtc < EvalStart).ToList();
-        var evaluation = Array.Empty<Candle>();
-
-        var partition = ValidationTrainingCandleScope.BuildPartition(
-            validationExperimentId: 1,
-            symbolId: SymbolId,
-            symbolName: "TESTUSDT",
-            timeframe: "1h",
-            requiredWarmup: warmup.Count,
-            availableWarmup: warmup.Count,
-            evaluationCount: 0,
-            status: ValidationWarmupStatus.Complete,
-            evalStart: EvalStart,
-            evalEndExclusive: EvalStart.AddHours(EvalCount),
-            boundary: EvalStart.AddHours(EvalCount),
-            requirementsVersion: StrategyExecutionRequirements.Version,
-            warmup: warmup,
-            evaluation: evaluation,
-            combined: warmup);
-
-        var scope = new ValidationTrainingCandleScope(partition, warmup, evaluation);
-        Assert.Empty(scope.AccessLog);
-    }
+    // REMOVED: Constructor_AllowsDuplicateTimestamps_DeduplicatedInternalCollection
+    // This test is replaced by ValidationLab230E1BPartitionClosureTests.Constructor_DuplicateTimestamp_IsRejected
+    // which expects rejection rather than silent deduplication.
 
     [Fact]
     public void ZeroWarmup_StillEmitsWarmupLoadWithCountZero()

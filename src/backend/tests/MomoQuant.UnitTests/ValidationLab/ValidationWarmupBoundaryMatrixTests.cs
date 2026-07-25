@@ -155,32 +155,20 @@ public sealed class ValidationWarmupBoundaryMatrixTests
             goodWarmup,
             goodEval);
 
-        var run = new StrategyLabRun
+        // Use typed materialization request instead of legacy StrategyLabRun overload
+        var materializationRequest = new ValidationDatasetMaterializationRequest
         {
-            Id = 1,
-            Name = "bad-symbol",
-            StrategyCode = "X",
-            StrategyVersion = "1",
-            ExchangeId = 1,
-            SymbolId = 999,
-            Symbol = "OTHER",
+            SymbolId = 999, // Wrong symbol
+            SymbolName = "OTHER",
             Timeframe = "1h",
-            FromUtc = EvalStart,
-            ToUtc = EvalStart.AddHours(5),
-            ExecutionMode = StrategyLabExecutionMode.RawStrategy,
-            ParametersJson = "{}",
-            InitialBalance = 1,
-            FeeSettingsJson = "{}",
-            SlippageSettingsJson = "{}",
-            Status = StrategyLabRunStatus.Created,
-            CreatedAtUtc = DateTime.UtcNow
+            EvaluationFromUtc = EvalStart,
+            EvaluationToExclusiveUtc = EvalStart.AddHours(5),
+            WarmupCandleCount = 5,
+            CallerComponent = "Matrix"
         };
 
-        Assert.Throws<InvalidOperationException>(() =>
-            goodScope.CreateStrategyLabDataset(
-                run,
-                5,
-                ValidationCandleAccessContext.Create("Matrix", ValidationCandleAccessPurpose.StrategyLabDataset)));
+        Assert.Throws<ValidationCandlePartitionViolationException>(() =>
+            goodScope.CreateStrategyLabDataset(materializationRequest));
     }
 
     [Fact]

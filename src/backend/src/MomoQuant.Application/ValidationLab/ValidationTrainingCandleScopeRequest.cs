@@ -204,7 +204,7 @@ public sealed class ValidationCandlePartitionMetadata
     public required int RequiredWarmupCandleCount { get; init; }
     public required int AvailableWarmupCandleCount { get; init; }
     public required int EvaluationCandleCount { get; init; }
-    public required int TotalCandleCount { get; init; }
+    public required int TotalCandleCount { get; set; }
     public required ValidationWarmupStatus WarmupStatus { get; init; }
     public required DateTime TrainingEvaluationStartUtc { get; init; }
     public required DateTime TrainingEvaluationEndExclusiveUtc { get; init; }
@@ -213,8 +213,8 @@ public sealed class ValidationCandlePartitionMetadata
     public required string SymbolName { get; init; }
     public required string Timeframe { get; init; }
     public required string RequirementsVersion { get; init; }
-    public int EvaluationStartIndex { get; init; }
-    public string? WarmupContentFingerprint { get; init; }
+    public int EvaluationStartIndex { get; set; }
+    public string? WarmupContentFingerprint { get; set; }
     public string? EvaluationContentFingerprint { get; init; }
     public string? CombinedContentFingerprint { get; init; }
     
