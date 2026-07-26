@@ -158,21 +158,23 @@ public sealed partial class ValidationLabService
             ServiceResult<ValidationExperimentDto>? result = null;
             try
             {
-                await _trainingScopeExecution.ExecuteWithScopeAsync(experiment, scopeRequest, async trainingScope =>
+                // Bootstrap once: create a temporary scope for warmup fingerprint only (no trial audit).
+                await _trainingScopeExecution.ExecuteWithScopeAsync(experiment, scopeRequest, async bootstrapScope =>
                 {
-                experiment.WarmupSnapshotJson = JsonSerializer.Serialize(new
-                {
-                    requiredWarmupCandleCount = trainingScope.Partition.RequiredWarmupCandleCount,
-                    availableWarmupCandleCount = trainingScope.Partition.AvailableWarmupCandleCount,
-                    warmupStatus = trainingScope.Partition.WarmupStatus.ToString(),
-                    requirementsVersion = trainingScope.Partition.RequirementsVersion,
-                    strategyId = requirements.StrategyId,
-                    strategyCode = requirements.StrategyCode,
-                    strategyVersion = requirements.StrategyVersion,
-                    warmupContentFingerprint = trainingScope.Partition.WarmupContentFingerprint
-                }, JsonOptions);
-                experiment.UpdatedAtUtc = DateTime.UtcNow;
-                await _experiments.UpdateAsync(experiment, cancellationToken);
+                    experiment.WarmupSnapshotJson = JsonSerializer.Serialize(new
+                    {
+                        requiredWarmupCandleCount = bootstrapScope.Partition.RequiredWarmupCandleCount,
+                        availableWarmupCandleCount = bootstrapScope.Partition.AvailableWarmupCandleCount,
+                        warmupStatus = bootstrapScope.Partition.WarmupStatus.ToString(),
+                        requirementsVersion = bootstrapScope.Partition.RequirementsVersion,
+                        strategyId = requirements.StrategyId,
+                        strategyCode = requirements.StrategyCode,
+                        strategyVersion = requirements.StrategyVersion,
+                        warmupContentFingerprint = bootstrapScope.Partition.WarmupContentFingerprint
+                    }, JsonOptions);
+                    experiment.UpdatedAtUtc = DateTime.UtcNow;
+                    await _experiments.UpdateAsync(experiment, cancellationToken);
+                }, cancellationToken);
 
                 var draft = ParseDraft(experiment.DraftConfigurationJson);
                 var profile = ToQualificationProfile(draft.QualificationProfile, experiment.PrimaryQualificationLayer);
@@ -217,57 +219,196 @@ public sealed partial class ValidationLabService
                     trial.ErrorMessage = null;
                     await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
 
+                    // Recover / supersede incomplete authoritative audit before access.
+                    var auditExecution = await EnsureAuthoritativeAuditExecutionAsync(
+                        experiment, trial, leaseOwner, cancellationToken);
+
+                    var trialScopeRequest = new ValidationTrainingCandleScopeRequest
+                    {
+                        ValidationExperimentId = scopeRequest.ValidationExperimentId,
+                        SymbolId = scopeRequest.SymbolId,
+                        SymbolName = scopeRequest.SymbolName,
+                        Timeframe = scopeRequest.Timeframe,
+                        TrainingEvaluationStartUtc = scopeRequest.TrainingEvaluationStartUtc,
+                        TrainingEvaluationEndExclusiveUtc = scopeRequest.TrainingEvaluationEndExclusiveUtc,
+                        ValidationBoundaryUtc = scopeRequest.ValidationBoundaryUtc,
+                        RequiredWarmupCandleCount = scopeRequest.RequiredWarmupCandleCount,
+                        RequirementsVersion = scopeRequest.RequirementsVersion,
+                        StrategyId = scopeRequest.StrategyId,
+                        StrategyCode = scopeRequest.StrategyCode,
+                        StrategyVersion = scopeRequest.StrategyVersion,
+                        BoundScopeExecutionId = auditExecution.ScopeExecutionId,
+                        BoundAuditExecutionId = auditExecution.AuditExecutionId,
+                        BoundExecutionToken = auditExecution.ExecutionToken,
+                        BoundAttemptNumber = auditExecution.AttemptNumber
+                    };
+
                     try
                     {
-                        await _trainingScopeExecution.ExecuteTrialAsync(
-                            trainingScope,
-                            trialNumber,
-                            trial.Id,
-                            async () =>
+                        await _trainingScopeExecution.ExecuteWithScopeAsync(
+                            experiment,
+                            trialScopeRequest,
+                            async trainingScope =>
                             {
-                                var run = await CreateLabRunAsync(
-                                    experiment,
-                                    combo,
-                                    draft,
-                                    experiment.TrainingStartUtc.Value,
-                                    ToExclusiveUtc(experiment.TrainingEndUtc.Value, experiment.Timeframe),
-                                    $"VL-Train-{experiment.Id}-T{trialNumber}",
-                                    cancellationToken);
-
-                                trial.StrategyLabRunId = run.Id;
-                                await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
-
-                                var trainingBoundary = DateTime.SpecifyKind(
-                                    experiment.ValidationStartUtc!.Value,
-                                    DateTimeKind.Utc);
-                                var executionContext = StrategyLabExecutionContext.ForValidationTraining(
-                                    validationExperimentId: experiment.Id,
-                                    validationTrialId: trial.Id,
-                                    validationTrialNumber: trialNumber,
-                                    trainingBoundaryUtc: trainingBoundary,
-                                    candleDataSource: new ValidationTrainingStrategyLabCandleDataSource(
-                                        trainingScope,
-                                        "ValidationLab.Training"),
-                                    callerComponent: "ValidationLab.Training");
-
-                                await _labRunner.ExecuteAsync(run.Id, executionContext, cancellationToken);
-                                run = await _labRuns.GetByIdAsync(run.Id, cancellationToken) ?? run;
-
-                                if (run.Status != StrategyLabRunStatus.Completed)
+                                try
                                 {
-                                    trial.Status = ValidationTrialStatus.Failed;
-                                    trial.ErrorMessage = run.ErrorMessage
-                                        ?? $"Strategy lab run {run.Id} ended with status {run.Status}.";
-                                    trial.CompletedAtUtc = DateTime.UtcNow;
-                                    await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                                    await _trainingScopeExecution.ExecuteTrialAsync(
+                                        trainingScope,
+                                        trialNumber,
+                                        trial.Id,
+                                        async () =>
+                                        {
+                                            var run = await CreateLabRunAsync(
+                                                experiment,
+                                                combo,
+                                                draft,
+                                                experiment.TrainingStartUtc.Value,
+                                                ToExclusiveUtc(experiment.TrainingEndUtc.Value, experiment.Timeframe),
+                                                $"VL-Train-{experiment.Id}-T{trialNumber}",
+                                                cancellationToken);
+
+                                            trial.StrategyLabRunId = run.Id;
+                                            await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+
+                                            var trainingBoundary = DateTime.SpecifyKind(
+                                                experiment.ValidationStartUtc!.Value,
+                                                DateTimeKind.Utc);
+                                            var executionContext = StrategyLabExecutionContext.ForValidationTraining(
+                                                validationExperimentId: experiment.Id,
+                                                validationTrialId: trial.Id,
+                                                validationTrialNumber: trialNumber,
+                                                trainingBoundaryUtc: trainingBoundary,
+                                                candleDataSource: new ValidationTrainingStrategyLabCandleDataSource(
+                                                    trainingScope,
+                                                    "ValidationLab.Training"),
+                                                callerComponent: "ValidationLab.Training");
+
+                                            await _labRunner.ExecuteAsync(run.Id, executionContext, cancellationToken);
+                                            run = await _labRuns.GetByIdAsync(run.Id, cancellationToken) ?? run;
+
+                                            if (run.Status != StrategyLabRunStatus.Completed)
+                                            {
+                                                trial.Status = ValidationTrialStatus.Failed;
+                                                trial.ErrorMessage = run.ErrorMessage
+                                                    ?? $"Strategy lab run {run.Id} ended with status {run.Status}.";
+                                                trial.CompletedAtUtc = DateTime.UtcNow;
+                                                await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                                                return;
+                                            }
+
+                                            await PopulateTrialMetricsAsync(
+                                                experiment, trial, combo, run, profile, cancellationToken);
+                                            await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                                        },
+                                        cancellationToken);
+                                }
+                                catch (ValidationTrainingBoundaryException ex)
+                                {
+                                    var optimizerFp = _parameterFingerprint.ComputeFingerprint(draft.Parameters);
+                                    var handled = await _trainingFailureHandler.HandleBoundaryFailureAsync(
+                                        experiment,
+                                        trial,
+                                        trainingScope,
+                                        ex,
+                                        optimizerInputFingerprint: optimizerFp,
+                                        leaseOwner: leaseOwner,
+                                        cancellationToken: cancellationToken);
+                                    result = ServiceResult<ValidationExperimentDto>.Fail(
+                                        handled.UserSafeErrorMessage,
+                                        handled.ErrorCode);
                                     return;
                                 }
 
-                                await PopulateTrialMetricsAsync(
-                                    experiment, trial, combo, run, profile, cancellationToken);
-                                await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                                // Flush already ran in ExecuteTrialAsync finally; finalize durable audit.
+                                if (result is not null)
+                                {
+                                    return;
+                                }
+
+                                var finalExpected = trainingScope.AccessLog.Count == 0
+                                    ? auditExecution.LastConfirmedSequence
+                                    : trainingScope.AccessLog.Max(r => r.ScopeSequenceNumber);
+
+                                auditExecution = await _auditExecutions.GetByAuditExecutionIdAsync(
+                                    auditExecution.AuditExecutionId, cancellationToken)
+                                    ?? auditExecution;
+                                if (finalExpected < auditExecution.LastConfirmedSequence)
+                                {
+                                    finalExpected = auditExecution.LastConfirmedSequence;
+                                }
+
+                                try
+                                {
+                                    var completion = await _auditFinalizer.CompleteAsync(
+                                        auditExecution.AuditExecutionId,
+                                        finalExpected,
+                                        cancellationToken);
+
+                                    trial = await _trials.GetByExperimentAndFingerprintAsync(
+                                        experiment.Id, fingerprint, cancellationToken) ?? trial;
+                                    auditExecution = await _auditExecutions.GetByAuditExecutionIdAsync(
+                                        auditExecution.AuditExecutionId, cancellationToken) ?? auditExecution;
+
+                                    var metricsPassed = string.Equals(
+                                        trial.GuardrailDecision,
+                                        "Passed",
+                                        StringComparison.OrdinalIgnoreCase)
+                                        && trial.Status != ValidationTrialStatus.GuardrailRejected
+                                        && trial.Status != ValidationTrialStatus.Failed;
+
+                                    if (!metricsPassed)
+                                    {
+                                        return;
+                                    }
+
+                                    if (completion.IsComplete
+                                        && auditExecution.Status == ValidationAuditExecutionStatus.Completed
+                                        && trial.AuditCompletionStatus == ValidationAuditCompletionStatus.Complete)
+                                    {
+                                        var completeness = new ValidationAuditCompletenessResult
+                                        {
+                                            AuditExecutionId = auditExecution.AuditExecutionId,
+                                            IsAuthoritative = true,
+                                            IsTerminal = true,
+                                            IsComplete = true,
+                                            FinalExpectedSequence = auditExecution.FinalExpectedSequence,
+                                            LastConfirmedSequence = auditExecution.LastConfirmedSequence,
+                                            ExpectedEventCount = auditExecution.ExpectedEventCount,
+                                            ConfirmedEventCount = auditExecution.ConfirmedEventCount,
+                                            CompletionCode = ValidationAuditCompletenessCode.Complete
+                                        };
+                                        _trialAuditCompletionGate.ApplyCompletedStatus(
+                                            trial, auditExecution, completeness);
+                                    }
+                                    else
+                                    {
+                                        trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
+                                        trial.ErrorMessage =
+                                            $"Audit finalization failed: {completion.FailureCode ?? completion.CompletionCode.ToString()}.";
+                                        trial.CompletedAtUtc = DateTime.UtcNow;
+                                        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+                                    }
+
+                                    await ValidationTrainingDbRetry.ExecuteAsync(
+                                        () => _trials.UpdateAsync(trial, cancellationToken));
+                                }
+                                catch (ValidationAuditExecutionException ex)
+                                {
+                                    trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
+                                    trial.ErrorMessage = ex.Message;
+                                    trial.CompletedAtUtc = DateTime.UtcNow;
+                                    trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+                                    await ValidationTrainingDbRetry.ExecuteAsync(
+                                        () => _trials.UpdateAsync(trial, cancellationToken));
+                                }
                             },
                             cancellationToken);
+
+                        if (result is not null)
+                        {
+                            await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
+                            break;
+                        }
                     }
                     catch (ValidationAccessEvidencePersistenceException ex)
                     {
@@ -281,29 +422,20 @@ public sealed partial class ValidationLabService
                         result = ServiceResult<ValidationExperimentDto>.Fail(
                             handled.UserSafeErrorMessage,
                             handled.ErrorCode);
-                        return;
+                        break;
                     }
-                    catch (ValidationTrainingBoundaryException ex)
+                    catch (ValidationAuditExecutionIdentityMismatchException ex)
                     {
-                        // Production owns leakage/boundary status transitions (flush, trial, experiment, op-status).
-                        var optimizerFp = _parameterFingerprint.ComputeFingerprint(draft.Parameters);
-                        var handled = await _trainingFailureHandler.HandleBoundaryFailureAsync(
-                            experiment,
-                            trial,
-                            trainingScope,
-                            ex,
-                            optimizerInputFingerprint: optimizerFp,
-                            leaseOwner: leaseOwner,
-                            cancellationToken: cancellationToken);
+                        trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
+                        trial.ErrorMessage = ex.SafeMessage;
+                        trial.CompletedAtUtc = DateTime.UtcNow;
+                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
                         await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
-                        result = ServiceResult<ValidationExperimentDto>.Fail(
-                            handled.UserSafeErrorMessage,
-                            handled.ErrorCode);
-                        return;
+                        result = ServiceResult<ValidationExperimentDto>.Fail(ex.SafeMessage, ex.ErrorCode);
+                        break;
                     }
                     catch (Exception ex) when (ValidationTrainingDbRetry.IsTransient(ex))
                     {
-                        await PersistTrainingCandleAccessLogAsync(trainingScope, cancellationToken);
                         trial.Status = ValidationTrialStatus.Interrupted;
                         trial.ErrorMessage = ex.Message;
                         trial.CompletedAtUtc = DateTime.UtcNow;
@@ -315,7 +447,7 @@ public sealed partial class ValidationLabService
                         await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
                         await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
                         result = ServiceResult<ValidationExperimentDto>.Fail(ex.Message);
-                        return;
+                        break;
                     }
                     catch (Exception ex)
                     {
@@ -327,10 +459,14 @@ public sealed partial class ValidationLabService
 
                     await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
                     await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
+
+                    if (result is not null)
+                    {
+                        break;
+                    }
                 }
 
-                result = await FinalizeTrainingAsync(experiment, draft, combos.Count, cancellationToken, leaseOwner);
-                }, cancellationToken);
+                result ??= await FinalizeTrainingAsync(experiment, draft, combos.Count, cancellationToken, leaseOwner);
             }
             catch (ValidationTrainingInsufficientWarmupException ex)
             {
@@ -658,5 +794,101 @@ public sealed partial class ValidationLabService
 
         await _labRuns.AddAsync(run, cancellationToken);
         return run;
+    }
+
+    /// <summary>
+    /// Ensures the trial has an active authoritative durable audit execution before candle access.
+    /// Recovers/supersedes incomplete prior attempts as needed (WP6/WP10).
+    /// </summary>
+    private async Task<ValidationAuditExecution> EnsureAuthoritativeAuditExecutionAsync(
+        ValidationExperiment experiment,
+        ValidationParameterTrial trial,
+        string leaseOwner,
+        CancellationToken cancellationToken)
+    {
+        if (trial.AuthoritativeAuditExecutionId is Guid existingId)
+        {
+            var existing = await _auditExecutions.GetByAuditExecutionIdAsync(existingId, cancellationToken);
+            if (existing is not null)
+            {
+                EnsureKnownAuditContractVersion(existing);
+
+                // Completed execution is authoritative — sync trial audit status if drifted; never create a second execution.
+                if (existing.Status == ValidationAuditExecutionStatus.Completed)
+                {
+                    if (trial.AuditCompletionStatus != ValidationAuditCompletionStatus.Complete)
+                    {
+                        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
+                        await _trials.UpdateAsync(trial, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    return existing;
+                }
+
+                if (existing.Status is ValidationAuditExecutionStatus.InProgress
+                    or ValidationAuditExecutionStatus.Created
+                    or ValidationAuditExecutionStatus.FlushManifested
+                    or ValidationAuditExecutionStatus.EventsConfirmed
+                    or ValidationAuditExecutionStatus.RecoveryRequired
+                    or ValidationAuditExecutionStatus.Failed)
+                {
+                    var recovery = await _auditRecovery.RecoverAsync(existing.AuditExecutionId, cancellationToken);
+                    if (recovery.CanContinueSameExecution && !recovery.MustRerunTrial)
+                    {
+                        return await _auditExecutions.GetByAuditExecutionIdAsync(
+                            existing.AuditExecutionId, cancellationToken)
+                            ?? existing;
+                    }
+
+                    if (recovery.MustRerunTrial
+                        && existing.Status != ValidationAuditExecutionStatus.Completed
+                        && existing.Status != ValidationAuditExecutionStatus.Superseded)
+                    {
+                        // Reload — recovery may have marked RecoveryRequired.
+                        existing = await _auditExecutions.GetByAuditExecutionIdAsync(
+                            existing.AuditExecutionId, cancellationToken) ?? existing;
+                        if (existing.Status != ValidationAuditExecutionStatus.Superseded
+                            && existing.Status != ValidationAuditExecutionStatus.Completed)
+                        {
+                            return await _auditSupersession.SupersedeForRerunAsync(
+                                existing.AuditExecutionId,
+                                newExecutionToken: Guid.NewGuid().ToString("N"),
+                                reasonCode: recovery.FailureCode ?? "PREVIOUS_EXECUTION_NOT_TERMINAL",
+                                leaseOwner: leaseOwner,
+                                cancellationToken: cancellationToken);
+                        }
+                    }
+
+                    if (existing.Status is ValidationAuditExecutionStatus.InProgress
+                        or ValidationAuditExecutionStatus.Created
+                        or ValidationAuditExecutionStatus.FlushManifested
+                        or ValidationAuditExecutionStatus.EventsConfirmed)
+                    {
+                        return existing;
+                    }
+                }
+            }
+        }
+
+        var token = Guid.NewGuid().ToString("N");
+        return await _auditExecutionFactory.CreateForTrialAsync(
+            experiment,
+            trial,
+            leaseOwner,
+            token,
+            cancellationToken);
+    }
+
+    private static void EnsureKnownAuditContractVersion(ValidationAuditExecution execution)
+    {
+        if (!string.Equals(
+                execution.AuditContractVersion,
+                ValidationAuditExecution.ContractVersionV1,
+                StringComparison.Ordinal))
+        {
+            throw new ValidationAuditExecutionException(
+                "VALIDATION_AUDIT_UNKNOWN_CONTRACT_VERSION",
+                $"Unknown AuditContractVersion '{execution.AuditContractVersion}'. Expected '{ValidationAuditExecution.ContractVersionV1}'.");
+        }
     }
 }

@@ -303,3 +303,88 @@ public enum ValidationRiskBasisValidationStatus
     /// <summary>Aggregate-only: one or more invalid/missing/incompatible basis statuses.</summary>
     InvalidRiskBasis = 13
 }
+
+/// <summary>Milestone 23.0E2C1 — kind of durable audit-execution attempt.</summary>
+public enum ValidationAuditExecutionType
+{
+    Trial = 1,
+    ScopeFinalization = 2
+}
+
+/// <summary>Milestone 23.0E2C1 — lifecycle status of a durable audit execution.</summary>
+public enum ValidationAuditExecutionStatus
+{
+    Created = 0,
+    InProgress = 1,
+    FlushManifested = 2,
+    EventsConfirmed = 3,
+    Completed = 4,
+    RecoveryRequired = 5,
+    Failed = 6,
+    Superseded = 7
+}
+
+/// <summary>Milestone 23.0E2C1 — recovery classification on an audit execution.</summary>
+public enum ValidationAuditRecoveryStatus
+{
+    None = 0,
+    RestartRecoveryPending = 1,
+    RecoveredFromConfirmedBatch = 2,
+    SupersededForRerun = 3,
+    RecoveryFailed = 4
+}
+
+/// <summary>Milestone 23.0E2C1 — trial-level durable audit-completion marker.</summary>
+public enum ValidationAuditCompletionStatus
+{
+    NotEvaluated = 0,
+    InProgress = 1,
+    RecoveryRequired = 2,
+    Complete = 3,
+    Failed = 4,
+    Superseded = 5
+}
+
+/// <summary>Milestone 23.0E2C1 — lifecycle status of an immutable audit batch manifest.</summary>
+public enum ValidationAuditBatchStatus
+{
+    Created = 0,
+    Persisting = 1,
+    Confirmed = 2,
+    ConfirmationUnavailable = 3,
+    Failed = 4,
+    Superseded = 5
+}
+
+/// <summary>Milestone 23.0E2C1 — restart-recovery decision for an audit execution.</summary>
+public enum ValidationAuditRecoveryDecision
+{
+    NoRecoveryNeeded = 0,
+    ConfirmedCommittedBatch = 1,
+    ResumePendingManifest = 2,
+    SupersedeAndRerun = 3,
+    FailClosed = 4,
+    AlreadyCompleted = 5,
+    ConflictDetected = 6
+}
+
+/// <summary>Milestone 23.0E2C1 — authoritative audit-completeness verifier codes.</summary>
+public enum ValidationAuditCompletenessCode
+{
+    Complete = 0,
+    ExecutionMissing = 1,
+    NotAuthoritative = 2,
+    ExecutionInProgress = 3,
+    RecoveryRequired = 4,
+    Superseded = 5,
+    FinalSequenceMissing = 6,
+    SequenceGap = 7,
+    DuplicateSequence = 8,
+    BatchOverlap = 9,
+    ManifestMissing = 10,
+    EventMissing = 11,
+    PayloadMismatch = 12,
+    ScopeIdentityMismatch = 13,
+    MultipleActiveExecutions = 14,
+    HistoricalNotEvaluated = 15
+}

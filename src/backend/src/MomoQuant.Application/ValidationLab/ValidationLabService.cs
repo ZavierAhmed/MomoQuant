@@ -181,6 +181,12 @@ public sealed partial class ValidationLabService : IValidationLabService
     private readonly IStrategyExecutionRequirementsResolver _executionRequirementsResolver;
     private readonly IValidationTrialMetricsRouter _trialMetricsRouter;
     private readonly IValidationTrialSegmentReconciliationService _trialSegmentReconciliation;
+    private readonly IValidationAuditExecutionFactory _auditExecutionFactory;
+    private readonly IValidationAuditExecutionSupersessionService _auditSupersession;
+    private readonly IValidationAuditExecutionRecoveryService _auditRecovery;
+    private readonly IValidationAuditExecutionFinalizer _auditFinalizer;
+    private readonly IValidationTrialAuditCompletionGate _trialAuditCompletionGate;
+    private readonly IValidationAuditExecutionRepository _auditExecutions;
 
     public ValidationLabService(
         IValidationExperimentRepository experiments,
@@ -214,7 +220,13 @@ public sealed partial class ValidationLabService : IValidationLabService
         IValidationSegmentResultWriter segmentResultWriter,
         IStrategyExecutionRequirementsResolver executionRequirementsResolver,
         IValidationTrialMetricsRouter trialMetricsRouter,
-        IValidationTrialSegmentReconciliationService trialSegmentReconciliation)
+        IValidationTrialSegmentReconciliationService trialSegmentReconciliation,
+        IValidationAuditExecutionFactory auditExecutionFactory,
+        IValidationAuditExecutionSupersessionService auditSupersession,
+        IValidationAuditExecutionRecoveryService auditRecovery,
+        IValidationAuditExecutionFinalizer auditFinalizer,
+        IValidationTrialAuditCompletionGate trialAuditCompletionGate,
+        IValidationAuditExecutionRepository auditExecutions)
     {
         _experiments = experiments;
         _trials = trials;
@@ -248,6 +260,12 @@ public sealed partial class ValidationLabService : IValidationLabService
         _executionRequirementsResolver = executionRequirementsResolver;
         _trialMetricsRouter = trialMetricsRouter;
         _trialSegmentReconciliation = trialSegmentReconciliation;
+        _auditExecutionFactory = auditExecutionFactory;
+        _auditSupersession = auditSupersession;
+        _auditRecovery = auditRecovery;
+        _auditFinalizer = auditFinalizer;
+        _trialAuditCompletionGate = trialAuditCompletionGate;
+        _auditExecutions = auditExecutions;
     }
 
     public async Task<ServiceResult<ValidationExperimentDto>> CreateExperimentAsync(

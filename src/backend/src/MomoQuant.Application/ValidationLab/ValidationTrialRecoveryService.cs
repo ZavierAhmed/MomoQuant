@@ -15,6 +15,7 @@ public sealed class ValidationTrialRecoveryReport
     public IReadOnlyList<int> RecoveredTrialNumbers { get; init; } = [];
     public IReadOnlyList<int> UnrecoverableTrialNumbers { get; init; } = [];
     public IReadOnlyList<int> SkippedAlreadyPersisted { get; init; } = [];
+    public IReadOnlyList<int> AuditRecoveryRequiredTrialNumbers { get; init; } = [];
     public string Summary { get; init; } = string.Empty;
 }
 
@@ -70,6 +71,7 @@ public sealed class ValidationTrialRecoveryService : IValidationTrialRecoverySer
         var recovered = new List<int>();
         var skipped = new List<int>();
         var unrecoverable = new List<int>();
+        var auditRecoveryRequired = new List<int>();
 
         for (var i = 0; i < combos.Count; i++)
         {
@@ -110,9 +112,43 @@ public sealed class ValidationTrialRecoveryService : IValidationTrialRecoverySer
             var trial = await BuildRecoveredTrialAsync(
                 experiment, trialNumber, combo, fingerprint, run, profile, cancellationToken);
 
-            if (existingByFp.TryGetValue(fingerprint, out var update))
+            // Milestone 23.0E2C1 WP9 — copy durable audit identity from persisted row FIRST,
+            // then gate Completed on authoritative + Complete.
+            ValidationParameterTrial? update = null;
+            if (existingByFp.TryGetValue(fingerprint, out update))
             {
+                if (update.AuthoritativeAuditExecutionId is not null)
+                {
+                    trial.AuthoritativeAuditExecutionId = update.AuthoritativeAuditExecutionId;
+                    trial.AuditAttemptNumber = update.AuditAttemptNumber;
+                    trial.AuditCompletionStatus = update.AuditCompletionStatus;
+                }
+
                 trial.Id = update.Id;
+            }
+
+            // GuardrailRejected keeps that status; Completed requires durable audit Complete.
+            if (trial.Status == ValidationTrialStatus.Completed)
+            {
+                var auditAllowsCompleted = trial.AuthoritativeAuditExecutionId is not null
+                    && trial.AuditCompletionStatus == ValidationAuditCompletionStatus.Complete;
+
+                if (!auditAllowsCompleted)
+                {
+                    trial.Status = ValidationTrialStatus.Interrupted;
+                    trial.ErrorMessage =
+                        "StrategyLab recovery restored metrics but durable audit completion is required before Completed.";
+                    if (trial.AuthoritativeAuditExecutionId is not null)
+                    {
+                        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+                    }
+
+                    auditRecoveryRequired.Add(trialNumber);
+                }
+            }
+
+            if (update is not null)
+            {
                 await _trials.UpdateAsync(trial, cancellationToken);
             }
             else
@@ -121,7 +157,14 @@ public sealed class ValidationTrialRecoveryService : IValidationTrialRecoverySer
                 existingByFp[fingerprint] = trial;
             }
 
-            recovered.Add(trialNumber);
+            if (!auditRecoveryRequired.Contains(trialNumber))
+            {
+                recovered.Add(trialNumber);
+            }
+            else
+            {
+                unrecoverable.Add(trialNumber);
+            }
         }
 
         return new ValidationTrialRecoveryReport
@@ -129,7 +172,10 @@ public sealed class ValidationTrialRecoveryService : IValidationTrialRecoverySer
             RecoveredTrialNumbers = recovered,
             UnrecoverableTrialNumbers = unrecoverable,
             SkippedAlreadyPersisted = skipped,
-            Summary = $"Recovered {recovered.Count} trial(s); skipped {skipped.Count}; unrecoverable {unrecoverable.Count}."
+            AuditRecoveryRequiredTrialNumbers = auditRecoveryRequired,
+            Summary =
+                $"Recovered {recovered.Count} trial(s); skipped {skipped.Count}; unrecoverable {unrecoverable.Count}; " +
+                $"audit-recovery-required {auditRecoveryRequired.Count}."
         };
     }
 

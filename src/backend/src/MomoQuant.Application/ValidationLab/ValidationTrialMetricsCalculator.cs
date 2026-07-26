@@ -180,7 +180,17 @@ public sealed class ValidationTrialMetricsCalculator : IValidationTrialMetricsCa
         var metrics = result.Metrics;
         var passed = result.Guardrails.Passed;
 
-        trial.Status = passed ? ValidationTrialStatus.Completed : ValidationTrialStatus.GuardrailRejected;
+        // Milestone 23.0E2C1 — when a durable audit execution is authoritative, do not set
+        // Completed here; training orchestration finalizes audit first, then the completion gate.
+        if (trial.AuthoritativeAuditExecutionId is not null)
+        {
+            trial.Status = passed ? ValidationTrialStatus.Running : ValidationTrialStatus.GuardrailRejected;
+        }
+        else
+        {
+            trial.Status = passed ? ValidationTrialStatus.Completed : ValidationTrialStatus.GuardrailRejected;
+        }
+
         trial.CompletedAtUtc = DateTime.UtcNow;
         trial.RawCandidateCount = result.BoundaryEligibleCandidateCount;
         trial.ClosedTradeCount = metrics.ClosedOutcomePopulationCount ?? metrics.ClosedTradeCount;

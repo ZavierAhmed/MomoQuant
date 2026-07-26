@@ -557,6 +557,20 @@ public sealed class Milestone230BPathMetricsPersistenceTests : IClassFixture<Mom
             await db.ValidationCandleAccessAudits
                 .Where(a => a.ValidationExperimentId == eid)
                 .ExecuteDeleteAsync();
+            var auditIds = await db.ValidationAuditExecutions
+                .Where(e => e.ValidationExperimentId == eid)
+                .Select(e => e.AuditExecutionId)
+                .ToListAsync();
+            if (auditIds.Count > 0)
+            {
+                await db.ValidationAuditBatches
+                    .Where(b => auditIds.Contains(b.AuditExecutionId))
+                    .ExecuteDeleteAsync();
+            }
+
+            await db.ValidationAuditExecutions
+                .Where(e => e.ValidationExperimentId == eid)
+                .ExecuteDeleteAsync();
             await db.ValidationParameterTrials
                 .Where(t => t.ValidationExperimentId == eid)
                 .ExecuteDeleteAsync();

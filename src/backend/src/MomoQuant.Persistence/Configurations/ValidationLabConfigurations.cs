@@ -130,6 +130,93 @@ internal sealed class ValidationParameterTrialConfiguration : IEntityTypeConfigu
         builder.Property(t => t.CompletePathInputIntegrityStatus).HasConversion<string>().HasMaxLength(64);
         builder.Property(t => t.TrialRankEligibility).HasConversion<string>().HasMaxLength(32).IsRequired();
         builder.Property(t => t.RankIneligibleReasonsJson).HasColumnType("longtext");
+
+        // Milestone 23.0E2C1 — authoritative durable audit-execution link
+        builder.Property(t => t.AuthoritativeAuditExecutionId).HasColumnType("char(36)");
+        builder.Property(t => t.AuditCompletionStatus).HasConversion<string>().HasMaxLength(32).IsRequired();
+        builder.Property(t => t.AuditAttemptNumber).IsRequired();
+        builder.HasIndex(t => t.AuthoritativeAuditExecutionId)
+            .HasDatabaseName("IX_ValTrials_AuthoritativeAuditExecutionId");
+    }
+}
+
+internal sealed class ValidationAuditExecutionConfiguration : IEntityTypeConfiguration<ValidationAuditExecution>
+{
+    public void Configure(EntityTypeBuilder<ValidationAuditExecution> builder)
+    {
+        builder.ToTable("ValidationAuditExecutions");
+        builder.Property(e => e.AuditExecutionId).HasColumnType("char(36)").IsRequired();
+        builder.Property(e => e.ScopeExecutionId).HasColumnType("char(36)").IsRequired();
+        builder.Property(e => e.ExecutionToken).HasMaxLength(128).IsRequired();
+        builder.Property(e => e.LeaseOwner).HasMaxLength(128);
+        builder.Property(e => e.ExecutionType).HasConversion<string>().HasMaxLength(32).IsRequired();
+        builder.Property(e => e.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
+        builder.Property(e => e.SupersededByAuditExecutionId).HasColumnType("char(36)");
+        builder.Property(e => e.FailureCode).HasMaxLength(128);
+        builder.Property(e => e.RecoveryStatus).HasConversion<string>().HasMaxLength(64).IsRequired();
+        builder.Property(e => e.FinalPayloadSetHash).HasMaxLength(64);
+        builder.Property(e => e.AuditContractVersion).HasMaxLength(64).IsRequired();
+        builder.Property(e => e.RowVersion).IsConcurrencyToken();
+
+        builder.HasIndex(e => e.AuditExecutionId)
+            .IsUnique()
+            .HasDatabaseName("IX_ValAuditExec_AuditExecutionId");
+        builder.HasIndex(e => e.ScopeExecutionId)
+            .IsUnique()
+            .HasDatabaseName("IX_ValAuditExec_ScopeExecutionId");
+        builder.HasIndex(e => e.ValidationExperimentId)
+            .HasDatabaseName("IX_ValAuditExec_ExperimentId");
+        builder.HasIndex(e => e.ValidationTrialId)
+            .HasDatabaseName("IX_ValAuditExec_TrialId");
+        builder.HasIndex(e => new { e.ValidationTrialId, e.AttemptNumber })
+            .HasDatabaseName("IX_ValAuditExec_Trial_Attempt");
+        builder.HasIndex(e => new { e.ValidationExperimentId, e.Status })
+            .HasDatabaseName("IX_ValAuditExec_Experiment_Status");
+
+        builder.HasOne<ValidationExperiment>()
+            .WithMany()
+            .HasForeignKey(e => e.ValidationExperimentId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ValidationParameterTrial>()
+            .WithMany()
+            .HasForeignKey(e => e.ValidationTrialId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class ValidationAuditBatchConfiguration : IEntityTypeConfiguration<ValidationAuditBatch>
+{
+    public void Configure(EntityTypeBuilder<ValidationAuditBatch> builder)
+    {
+        builder.ToTable("ValidationAuditBatches");
+        builder.Property(b => b.AuditBatchId).HasColumnType("char(36)").IsRequired();
+        builder.Property(b => b.AuditExecutionId).HasColumnType("char(36)").IsRequired();
+        builder.Property(b => b.ExpectedEventIdsJson).HasColumnType("longtext").IsRequired();
+        builder.Property(b => b.ExpectedPayloadHashesJson).HasColumnType("longtext").IsRequired();
+        builder.Property(b => b.ExpectedPayloadSetHash).HasMaxLength(64).IsRequired();
+        builder.Property(b => b.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
+        builder.Property(b => b.FailureCode).HasMaxLength(128);
+        builder.Property(b => b.AuditBatchContractVersion).HasMaxLength(64).IsRequired();
+        builder.Property(b => b.RowVersion).IsConcurrencyToken();
+
+        builder.HasIndex(b => b.AuditBatchId)
+            .IsUnique()
+            .HasDatabaseName("IX_ValAuditBatch_AuditBatchId");
+        builder.HasIndex(b => new { b.AuditExecutionId, b.BatchNumber })
+            .IsUnique()
+            .HasDatabaseName("IX_ValAuditBatch_Exec_BatchNumber");
+        builder.HasIndex(b => new { b.AuditExecutionId, b.FirstSequence, b.LastSequence })
+            .IsUnique()
+            .HasDatabaseName("IX_ValAuditBatch_Exec_SeqRange");
+        builder.HasIndex(b => b.AuditExecutionId)
+            .HasDatabaseName("IX_ValAuditBatch_AuditExecutionId");
+
+        // Logical FK: ValidationAuditBatches.AuditExecutionId → ValidationAuditExecutions.AuditExecutionId
+        builder.HasOne<ValidationAuditExecution>()
+            .WithMany()
+            .HasPrincipalKey(e => e.AuditExecutionId)
+            .HasForeignKey(b => b.AuditExecutionId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 

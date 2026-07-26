@@ -60,4 +60,13 @@ public class ValidationParameterTrial : Entity
         ValidationTrialRankEligibility.NotEvaluated;
 
     public string? RankIneligibleReasonsJson { get; set; }
+
+    // Milestone 23.0E2C1 — authoritative durable audit-execution link
+    /// <summary>Public identity of the current authoritative <c>ValidationAuditExecution</c>.</summary>
+    public Guid? AuthoritativeAuditExecutionId { get; set; }
+
+    public ValidationAuditCompletionStatus AuditCompletionStatus { get; set; } =
+        ValidationAuditCompletionStatus.NotEvaluated;
+
+    public int AuditAttemptNumber { get; set; }
 }

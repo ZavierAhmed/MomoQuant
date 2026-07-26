@@ -12,6 +12,8 @@ public interface IValidationTrainingScopeExecution
     /// <summary>
     /// Creates the training candle scope from a validated request, enters ambient context,
     /// runs <paramref name="body"/>, and flushes access evidence in a finally block.
+    /// When <see cref="ValidationTrainingCandleScopeRequest.BoundAuditExecutionId"/> is set,
+    /// verifies scope identity and enters <see cref="ValidationAuditExecutionAmbient"/>.
     /// </summary>
     Task ExecuteWithScopeAsync(
         ValidationExperiment experiment,
@@ -74,14 +76,54 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
         using var execAmbient = _executionContextAccessor.Enter(bootstrapContext);
         await using var scope = await _scopeFactory.CreateAsync(scopeRequest, cancellationToken);
         scope.CorrelationId = bootstrapContext.CorrelationId;
+
+        if (scopeRequest.BoundAuditExecutionId is Guid boundAuditId)
+        {
+            if (scopeRequest.BoundScopeExecutionId is not Guid boundScope
+                || scope.ScopeExecutionId != boundScope)
+            {
+                throw new ValidationAuditExecutionIdentityMismatchException(
+                    "Created training scope ScopeExecutionId does not match the bound durable audit identity.",
+                    expectedAuditExecutionId: boundAuditId,
+                    actualAuditExecutionId: boundAuditId,
+                    expectedScopeExecutionId: scopeRequest.BoundScopeExecutionId,
+                    actualScopeExecutionId: scope.ScopeExecutionId,
+                    expectedExecutionToken: scopeRequest.BoundExecutionToken,
+                    actualExecutionToken: scopeRequest.BoundExecutionToken);
+            }
+        }
+
         using var ambient = ValidationTrainingCandleScopeAmbient.Enter(scope);
+        IDisposable? auditAmbient = null;
+        if (scopeRequest.BoundAuditExecutionId is Guid auditId
+            && scopeRequest.BoundScopeExecutionId is Guid scopeId
+            && !string.IsNullOrWhiteSpace(scopeRequest.BoundExecutionToken))
+        {
+            auditAmbient = ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
+            {
+                AuditExecutionId = auditId,
+                ScopeExecutionId = scopeId,
+                ExecutionToken = scopeRequest.BoundExecutionToken!,
+                AttemptNumber = scopeRequest.BoundAttemptNumber ?? 0,
+                ValidationExperimentId = experiment.Id
+            });
+        }
+
         try
         {
             await body(scope);
         }
         finally
         {
-            await _recorder.FlushAsync(scope, CancellationToken.None);
+            // Flush while durable ambient is still available, then release ambient.
+            try
+            {
+                await _recorder.FlushAsync(scope, CancellationToken.None);
+            }
+            finally
+            {
+                auditAmbient?.Dispose();
+            }
         }
     }
 

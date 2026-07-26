@@ -310,6 +310,20 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
         await using var scope = _factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
 
+        var auditIds = await db.ValidationAuditExecutions
+            .Where(e => e.ValidationExperimentId == experimentId)
+            .Select(e => e.AuditExecutionId)
+            .ToListAsync();
+        if (auditIds.Count > 0)
+        {
+            await db.ValidationAuditBatches
+                .Where(b => auditIds.Contains(b.AuditExecutionId))
+                .ExecuteDeleteAsync();
+        }
+
+        await db.ValidationAuditExecutions
+            .Where(e => e.ValidationExperimentId == experimentId)
+            .ExecuteDeleteAsync();
         await db.ValidationCandleAccessAudits
             .Where(a => a.ValidationExperimentId == experimentId)
             .ExecuteDeleteAsync();

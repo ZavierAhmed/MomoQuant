@@ -90,6 +90,10 @@ public class MomoQuantDbContext : DbContext
         Set<Domain.ValidationLab.ValidationExperimentExecutionLease>();
     public DbSet<Domain.ValidationLab.ValidationCandleAccessAudit> ValidationCandleAccessAudits =>
         Set<Domain.ValidationLab.ValidationCandleAccessAudit>();
+    public DbSet<Domain.ValidationLab.ValidationAuditExecution> ValidationAuditExecutions =>
+        Set<Domain.ValidationLab.ValidationAuditExecution>();
+    public DbSet<Domain.ValidationLab.ValidationAuditBatch> ValidationAuditBatches =>
+        Set<Domain.ValidationLab.ValidationAuditBatch>();
     public DbSet<ResearchOperationStatusEntity> ResearchOperationStatuses => Set<ResearchOperationStatusEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

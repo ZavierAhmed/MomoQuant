@@ -222,6 +222,13 @@ public static class DependencyInjection
         services.AddScoped<IValidationTrainingCandleScopeFactory, ValidationTrainingCandleScopeFactory>();
         services.AddSingleton<IValidationAccessPayloadCanonicalizer, ValidationAccessPayloadCanonicalizer>();
         services.AddSingleton<IValidationAccessPersistenceRetryPolicy>(_ => new ValidationAccessPersistenceRetryPolicy());
+        services.AddSingleton<IValidationAuditPayloadSetHasher, ValidationAuditPayloadSetHasher>();
+        services.AddScoped<IValidationAuditCompletenessVerifier, ValidationAuditCompletenessVerifier>();
+        services.AddScoped<IValidationAuditExecutionFactory, ValidationAuditExecutionService>();
+        services.AddScoped<IValidationAuditExecutionSupersessionService, ValidationAuditExecutionSupersessionService>();
+        services.AddScoped<IValidationAuditExecutionRecoveryService, ValidationAuditExecutionRecoveryService>();
+        services.AddScoped<IValidationAuditExecutionFinalizer, ValidationAuditExecutionFinalizer>();
+        services.AddScoped<IValidationTrialAuditCompletionGate, ValidationTrialAuditCompletionGate>();
         services.AddScoped<IValidationCandleAccessRecorder, ValidationCandleAccessRecorder>();
         services.AddScoped<IValidationTrainingFailureHandler, ValidationTrainingFailureHandler>();
         services.AddScoped<IValidationTrainingScopeExecution, ValidationTrainingScopeExecution>();

@@ -74,6 +74,18 @@ public sealed class ValidationTrainingCandleScopeRequest
     public string? StrategyCode { get; init; }
     public string? StrategyVersion { get; init; }
 
+    /// <summary>Bound durable scope identity (Milestone 23.0E2C1). When set, the scope must use this exact Guid.</summary>
+    public Guid? BoundScopeExecutionId { get; init; }
+
+    /// <summary>Bound durable audit-execution identity.</summary>
+    public Guid? BoundAuditExecutionId { get; init; }
+
+    /// <summary>Opaque execution token from the durable audit execution.</summary>
+    public string? BoundExecutionToken { get; init; }
+
+    /// <summary>Attempt number from the durable audit execution.</summary>
+    public int? BoundAttemptNumber { get; init; }
+
     public static ValidationTrainingCandleScopeRequest FromExperiment(
         ValidationExperiment experiment,
         StrategyExecutionRequirements requirements,

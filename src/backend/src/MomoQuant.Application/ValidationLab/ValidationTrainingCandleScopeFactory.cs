@@ -152,7 +152,11 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
                 evaluation,
                 combined);
 
-            return new ValidationTrainingCandleScope(partition, warmup, evaluation);
+            return new ValidationTrainingCandleScope(
+                partition,
+                warmup,
+                evaluation,
+                scopeExecutionId: request.BoundScopeExecutionId);
         }
     }
 

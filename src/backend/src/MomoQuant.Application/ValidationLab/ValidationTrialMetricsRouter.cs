@@ -84,7 +84,15 @@ public sealed class ValidationLegacyTrialMetricsMapper : IValidationLegacyTrialM
             guardrailFailures.Add($"MaxDD>{profile.MaximumTrainingDrawdownPercent}");
 
         var passed = guardrailFailures.Count == 0;
-        trial.Status = passed ? ValidationTrialStatus.Completed : ValidationTrialStatus.GuardrailRejected;
+        if (trial.AuthoritativeAuditExecutionId is not null)
+        {
+            trial.Status = passed ? ValidationTrialStatus.Running : ValidationTrialStatus.GuardrailRejected;
+        }
+        else
+        {
+            trial.Status = passed ? ValidationTrialStatus.Completed : ValidationTrialStatus.GuardrailRejected;
+        }
+
         trial.CompletedAtUtc = DateTime.UtcNow;
         trial.RawCandidateCount = metricsCandidates.Count;
         trial.ClosedTradeCount = rawMetrics.ClosedTradeCount;

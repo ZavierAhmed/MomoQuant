@@ -93,6 +93,9 @@ public static class DependencyInjection
         services.AddScoped<IValidationAccessAuditTransactionBoundary, ValidationAccessAuditTransactionBoundary>();
         services.AddScoped<IValidationAccessAuditConfirmationReader, ValidationAccessAuditConfirmationReader>();
         services.AddScoped<IValidationCandleAccessAuditRepository, ValidationCandleAccessAuditRepository>();
+        services.AddScoped<IValidationAuditExecutionRepository, ValidationAuditExecutionRepository>();
+        services.AddScoped<IValidationAuditBatchRepository, ValidationAuditBatchRepository>();
+        services.AddScoped<IValidationAuditUnitOfWork, ValidationAuditUnitOfWork>();
         services.AddScoped<IValidationTrainingDatabaseProbe, ValidationTrainingDatabaseProbe>();
         services.AddScoped<IResearchOperationStatusRepository, ResearchOperationStatusRepository>();
 

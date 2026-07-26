@@ -128,6 +128,15 @@ public sealed class Milestone230DOrchestrationTests
     {
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var lastOpenUtc = firstOpenUtc.AddMinutes((count - 1) * 15);
+        await db.Candles
+            .Where(c => c.ExchangeId == exchangeId
+                        && c.SymbolId == symbolId
+                        && c.Timeframe == Timeframe.M15
+                        && c.OpenTimeUtc >= firstOpenUtc
+                        && c.OpenTimeUtc <= lastOpenUtc)
+            .ExecuteDeleteAsync();
+
         var now = DateTime.UtcNow;
         var candles = Enumerable.Range(0, count).Select(i =>
         {
@@ -249,6 +258,16 @@ public sealed class Milestone230DOrchestrationTests
                 .Where(t => t.ValidationExperimentId == id && t.StrategyLabRunId != null)
                 .Select(t => t.StrategyLabRunId!.Value)
                 .ToListAsync();
+            var auditIds = await db.ValidationAuditExecutions
+                .Where(e => e.ValidationExperimentId == id)
+                .Select(e => e.AuditExecutionId)
+                .ToListAsync();
+            if (auditIds.Count > 0)
+            {
+                await db.ValidationAuditBatches.Where(b => auditIds.Contains(b.AuditExecutionId)).ExecuteDeleteAsync();
+            }
+
+            await db.ValidationAuditExecutions.Where(e => e.ValidationExperimentId == id).ExecuteDeleteAsync();
             await db.ValidationCandleAccessAudits.Where(a => a.ValidationExperimentId == id).ExecuteDeleteAsync();
             await db.ValidationSegmentResults.Where(s => s.ValidationExperimentId == id).ExecuteDeleteAsync();
             await db.ValidationParameterTrials.Where(t => t.ValidationExperimentId == id).ExecuteDeleteAsync();
