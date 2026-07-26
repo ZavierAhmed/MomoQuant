@@ -220,6 +220,8 @@ public static class DependencyInjection
         services.AddScoped<IValidationTrainingPreflightService, ValidationTrainingPreflightService>();
         services.AddScoped<IValidationTrainingExecutionLeaseService, ValidationTrainingExecutionLeaseService>();
         services.AddScoped<IValidationTrainingCandleScopeFactory, ValidationTrainingCandleScopeFactory>();
+        services.AddSingleton<IValidationAccessPayloadCanonicalizer, ValidationAccessPayloadCanonicalizer>();
+        services.AddSingleton<IValidationAccessPersistenceRetryPolicy>(_ => new ValidationAccessPersistenceRetryPolicy());
         services.AddScoped<IValidationCandleAccessRecorder, ValidationCandleAccessRecorder>();
         services.AddScoped<IValidationTrainingFailureHandler, ValidationTrainingFailureHandler>();
         services.AddScoped<IValidationTrainingScopeExecution, ValidationTrainingScopeExecution>();

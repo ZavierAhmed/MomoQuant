@@ -133,12 +133,16 @@ public sealed class ValidationTrainingFailureHandlerTests
         };
         trials.Items.Add(trial);
 
-        var persistResult = ValidationAccessBatchPersistResult.Create(
-            requested: [Guid.NewGuid()],
-            newlyInserted: Array.Empty<Guid>(),
-            alreadyExisting: Array.Empty<Guid>(),
-            confirmed: Array.Empty<Guid>(),
-            ValidationAccessBatchCommitStatus.Failed);
+        var failedEventId = Guid.NewGuid();
+        var persistResult = new ValidationAccessBatchPersistResult
+        {
+            RequestedEventIds = [failedEventId],
+            MissingEventIds = [failedEventId],
+            CommitStatus = ValidationAccessBatchCommitStatus.FailedPermanent,
+            VerificationStatus = ValidationAccessBatchVerificationStatus.FailedPermanent,
+            RecoveryStatus = ValidationAccessBatchRecoveryStatus.None,
+            CompletedAtUtc = DateTime.UtcNow
+        };
         var ex = new ValidationAccessEvidencePersistenceException(persistResult);
 
         var result = await handler.HandleAuditPersistenceFailureAsync(
@@ -215,12 +219,24 @@ public sealed class ValidationTrainingFailureHandlerTests
                 }
             }
 
-            return Task.FromResult(ValidationAccessBatchPersistResult.Create(
-                requested,
-                newly,
-                already,
-                requested,
-                ValidationAccessBatchCommitStatus.Committed));
+            var canonicalizer = new ValidationAccessPayloadCanonicalizer();
+            return Task.FromResult(new ValidationAccessBatchPersistResult
+            {
+                RequestedEventIds = requested,
+                NewlyInsertedEventIds = newly,
+                AlreadyExistingEventIds = already,
+                AttemptedEventIds = newly,
+                ConfirmedMatchingEventIds = requested,
+                ConfirmedPayloadHashes = distinct.ToDictionary(
+                    a => a.AccessEventId,
+                    a => a.AccessPayloadHash ?? canonicalizer.ComputeSha256(a)),
+                CommitStatus = ValidationAccessBatchCommitStatus.CommitSucceeded,
+                VerificationStatus = ValidationAccessBatchVerificationStatus.FullyPayloadConfirmed,
+                RecoveryStatus = ValidationAccessBatchRecoveryStatus.ConfirmedAfterNormalCommit,
+                PersistenceAttemptCount = 1,
+                ConfirmationAttemptCount = 1,
+                CompletedAtUtc = DateTime.UtcNow
+            });
         }
 
         public Task<IReadOnlyList<ValidationCandleAccessAudit>> GetByExperimentIdAsync(

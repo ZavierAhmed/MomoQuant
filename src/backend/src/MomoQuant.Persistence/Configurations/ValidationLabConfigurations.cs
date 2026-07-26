@@ -196,6 +196,8 @@ internal sealed class ValidationCandleAccessAuditConfiguration : IEntityTypeConf
         builder.Property(a => a.CorrelationId).HasMaxLength(64);
         builder.Property(a => a.DatasetPartition).HasMaxLength(64);
         builder.Property(a => a.RecorderVersion).HasMaxLength(64).IsRequired();
+        builder.Property(a => a.AccessPayloadHash).HasMaxLength(64);
+        builder.Property(a => a.AccessPayloadContractVersion).HasMaxLength(64);
         builder.HasIndex(a => a.AccessEventId)
             .IsUnique()
             .HasDatabaseName("IX_ValCandleAccess_AccessEventId");

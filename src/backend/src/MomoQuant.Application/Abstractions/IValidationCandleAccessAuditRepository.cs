@@ -10,10 +10,13 @@ public interface IValidationCandleAccessAuditRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// MySQL-safe upsert by <see cref="ValidationCandleAccessAudit.AccessEventId"/>, then SELECT-confirms
-    /// every requested id. Success requires ConfirmedPersistedEventIds == RequestedEventIds (as sets);
-    /// otherwise throws <see cref="ValidationAccessEvidencePersistenceException"/>.
-    /// Never treats a duplicate-key rollback as successful persistence of a mixed batch.
+    /// Payload-verified, idempotent persist by <see cref="ValidationCandleAccessAudit.AccessEventId"/>.
+    /// Success requires every distinct requested event to be confirmed durable with a matching
+    /// canonical immutable payload (ConfirmedMatchingEventIds == RequestedEventIds as sets) using a
+    /// fresh confirmation context; otherwise throws a
+    /// <see cref="ValidationAccessEvidencePersistenceException"/> subtype.
+    /// A commit exception is treated as outcome-unknown and verified — never assumed rolled back.
+    /// Duplicate IDs with conflicting payloads fail closed (in-batch: before any database access).
     /// </summary>
     Task<ValidationAccessBatchPersistResult> AddRangeIdempotentByAccessEventIdAsync(
         IReadOnlyList<ValidationCandleAccessAudit> audits,

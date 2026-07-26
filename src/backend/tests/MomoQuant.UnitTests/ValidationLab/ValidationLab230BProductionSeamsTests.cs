@@ -207,12 +207,24 @@ public class ValidationLab230BProductionSeamsTests
                 }
             }
 
-            return Task.FromResult(ValidationAccessBatchPersistResult.Create(
-                requested,
-                newly,
-                already,
-                requested,
-                ValidationAccessBatchCommitStatus.Committed));
+            var canonicalizer = new ValidationAccessPayloadCanonicalizer();
+            return Task.FromResult(new ValidationAccessBatchPersistResult
+            {
+                RequestedEventIds = requested,
+                NewlyInsertedEventIds = newly,
+                AlreadyExistingEventIds = already,
+                AttemptedEventIds = newly,
+                ConfirmedMatchingEventIds = requested,
+                ConfirmedPayloadHashes = distinct.ToDictionary(
+                    a => a.AccessEventId,
+                    a => a.AccessPayloadHash ?? canonicalizer.ComputeSha256(a)),
+                CommitStatus = ValidationAccessBatchCommitStatus.CommitSucceeded,
+                VerificationStatus = ValidationAccessBatchVerificationStatus.FullyPayloadConfirmed,
+                RecoveryStatus = ValidationAccessBatchRecoveryStatus.ConfirmedAfterNormalCommit,
+                PersistenceAttemptCount = 1,
+                ConfirmationAttemptCount = 1,
+                CompletedAtUtc = DateTime.UtcNow
+            });
         }
 
         public Task<IReadOnlyList<ValidationCandleAccessAudit>> GetByExperimentIdAsync(

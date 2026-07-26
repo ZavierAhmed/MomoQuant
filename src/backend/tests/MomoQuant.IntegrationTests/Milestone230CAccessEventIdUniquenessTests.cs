@@ -33,8 +33,8 @@ public sealed class Milestone230CAccessEventIdUniquenessTests : IClassFixture<Mo
             var first = NewAudit(experimentId, accessEventId, scopeExecutionId, "First");
             Assert.Equal(1, (await audits.AddRangeIdempotentByAccessEventIdAsync([first])).NewlyInsertedCount);
 
-            var duplicate = NewAudit(experimentId, accessEventId, scopeExecutionId, "Duplicate");
-            var replay = await audits.AddRangeIdempotentByAccessEventIdAsync([duplicate]);
+            // E2B: replay must present the identical immutable payload; conflicting payloads fail closed.
+            var replay = await audits.AddRangeIdempotentByAccessEventIdAsync([first]);
             Assert.True(replay.IsFullyConfirmed);
             Assert.Equal(0, replay.NewlyInsertedCount);
 

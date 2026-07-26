@@ -23,8 +23,8 @@ public sealed class ValidationCandleAccessFlushMatrixTests
         Assert.True(result.IsFullyConfirmed);
         Assert.Equal(1, result.NewlyInsertedCount);
         Assert.Empty(result.AlreadyExistingEventIds);
-        Assert.Equal(ValidationAccessBatchCommitStatus.Committed, result.CommitStatus);
-        Assert.Equal(ValidationAccessBatchVerificationStatus.FullyConfirmed, result.VerificationStatus);
+        Assert.Equal(ValidationAccessBatchCommitStatus.CommitSucceeded, result.CommitStatus);
+        Assert.Equal(ValidationAccessBatchVerificationStatus.FullyPayloadConfirmed, result.VerificationStatus);
         Assert.Single(audits.Items);
         Assert.Equal(1, audits.Items[0].ScopeSequenceNumber);
         Assert.NotEqual(Guid.Empty, audits.Items[0].AccessEventId);
@@ -60,7 +60,7 @@ public sealed class ValidationCandleAccessFlushMatrixTests
         Assert.True(replay.IsFullyConfirmed);
         Assert.Equal(0, replay.NewlyInsertedCount);
         Assert.Equal(1, replay.AlreadyExistingCount);
-        Assert.Contains(eventId, replay.ConfirmedPersistedEventIds);
+        Assert.Contains(eventId, replay.ConfirmedMatchingEventIds);
         Assert.Single(audits.Items);
     }
 
@@ -210,10 +210,12 @@ public sealed class ValidationCandleAccessFlushMatrixTests
         var scope = CreateScope();
         _ = scope.GetRange(scope.SegmentStartUtc, scope.ValidationBoundaryUtc, "Unknown");
 
-        // First call: rows land but commit status reported as Unknown; confirmation SELECT still succeeds.
+        // First call: rows land but commit status reported as unknown; confirmation still succeeds.
+        // NOTE: fake-repository simulation only — the real MySQL unknown-commit proof lives in
+        // Milestone230E2BFaultInjectionTests (CommitThrowsAfterServerCommit_FreshConfirmationRecovers).
         var result = await recorder.FlushAsync(scope);
         Assert.True(result.IsFullyConfirmed);
-        Assert.Equal(ValidationAccessBatchCommitStatus.Unknown, result.CommitStatus);
+        Assert.Equal(ValidationAccessBatchCommitStatus.CommitOutcomeUnknown, result.CommitStatus);
         Assert.Single(audits.Items);
 
         var retry = await recorder.FlushAsync(scope);
@@ -312,6 +314,8 @@ public sealed class ValidationCandleAccessFlushMatrixTests
 
     private sealed class FakeCandleAccessAuditRepository : IValidationCandleAccessAuditRepository
     {
+        private static readonly ValidationAccessPayloadCanonicalizer Canonicalizer = new();
+
         public List<ValidationCandleAccessAudit> Items { get; } = [];
         public int FailNextPersistCount { get; set; }
         public int ArtificialPersistDelayMs { get; set; }
@@ -352,12 +356,14 @@ public sealed class ValidationCandleAccessFlushMatrixTests
             if (FailNextPersistCount > 0)
             {
                 FailNextPersistCount--;
-                var failed = ValidationAccessBatchPersistResult.Create(
+                var failed = BuildResult(
+                    distinct,
                     requested,
                     Array.Empty<Guid>(),
                     requested.Where(existingBefore.Contains).ToList(),
                     Array.Empty<Guid>(),
-                    ValidationAccessBatchCommitStatus.Failed);
+                    ValidationAccessBatchCommitStatus.FailedPermanent,
+                    ValidationAccessBatchVerificationStatus.FailedPermanent);
                 throw new ValidationAccessEvidencePersistenceException(
                     failed,
                     new InvalidOperationException("Simulated DB failure."));
@@ -383,18 +389,19 @@ public sealed class ValidationCandleAccessFlushMatrixTests
                 : requested.ToArray();
 
             var commit = SimulateUnknownCommitThenConfirm
-                ? ValidationAccessBatchCommitStatus.Unknown
-                : ValidationAccessBatchCommitStatus.Committed;
+                ? ValidationAccessBatchCommitStatus.CommitOutcomeUnknown
+                : ValidationAccessBatchCommitStatus.CommitSucceeded;
 
             // Only consume the unknown-commit simulation once.
             SimulateUnknownCommitThenConfirm = false;
 
-            var result = ValidationAccessBatchPersistResult.Create(
-                requested,
-                newly,
-                already,
-                confirmed,
-                commit);
+            var verification = confirmed.Length == requested.Count
+                ? ValidationAccessBatchVerificationStatus.FullyPayloadConfirmed
+                : confirmed.Length == 0
+                    ? ValidationAccessBatchVerificationStatus.FailedPermanent
+                    : ValidationAccessBatchVerificationStatus.PartiallyPayloadConfirmed;
+
+            var result = BuildResult(distinct, requested, newly, already, confirmed, commit, verification);
 
             if (!result.IsFullyConfirmed)
             {
@@ -402,6 +409,44 @@ public sealed class ValidationCandleAccessFlushMatrixTests
             }
 
             return result;
+        }
+
+        private static ValidationAccessBatchPersistResult BuildResult(
+            IReadOnlyList<ValidationCandleAccessAudit> distinct,
+            IReadOnlyList<Guid> requested,
+            IReadOnlyList<Guid> newlyInserted,
+            IReadOnlyList<Guid> alreadyExisting,
+            IReadOnlyList<Guid> confirmed,
+            ValidationAccessBatchCommitStatus commitStatus,
+            ValidationAccessBatchVerificationStatus verificationStatus)
+        {
+            var confirmedSet = confirmed.ToHashSet();
+            var hashes = distinct
+                .Where(d => confirmedSet.Contains(d.AccessEventId))
+                .ToDictionary(
+                    d => d.AccessEventId,
+                    d => d.AccessPayloadHash ?? Canonicalizer.ComputeSha256(d));
+
+            return new ValidationAccessBatchPersistResult
+            {
+                RequestedEventIds = requested.ToList(),
+                NewlyInsertedEventIds = newlyInserted.ToList(),
+                AlreadyExistingEventIds = alreadyExisting.ToList(),
+                AttemptedEventIds = newlyInserted.ToList(),
+                ConfirmedMatchingEventIds = confirmed.ToList(),
+                ConfirmedPayloadHashes = hashes,
+                MissingEventIds = requested.Except(confirmed).ToList(),
+                CommitStatus = commitStatus,
+                VerificationStatus = verificationStatus,
+                RecoveryStatus = verificationStatus == ValidationAccessBatchVerificationStatus.FullyPayloadConfirmed
+                    ? commitStatus == ValidationAccessBatchCommitStatus.CommitOutcomeUnknown
+                        ? ValidationAccessBatchRecoveryStatus.ConfirmedAfterAmbiguousCommit
+                        : ValidationAccessBatchRecoveryStatus.ConfirmedAfterNormalCommit
+                    : ValidationAccessBatchRecoveryStatus.None,
+                PersistenceAttemptCount = 1,
+                ConfirmationAttemptCount = 1,
+                CompletedAtUtc = DateTime.UtcNow
+            };
         }
 
         public Task<IReadOnlyList<ValidationCandleAccessAudit>> GetByExperimentIdAsync(

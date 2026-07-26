@@ -43,6 +43,19 @@ public class ValidationCandleAccessAudit : Entity
     public string? DenialReason { get; set; }
     public string? CorrelationId { get; set; }
     public string? DatasetPartition { get; set; }
+
+    /// <summary>
+    /// Uppercase 64-char SHA-256 of the canonical immutable payload
+    /// (ValidationAccessPayload contract). Null only for historical pre-E2B rows.
+    /// </summary>
+    public string? AccessPayloadHash { get; set; }
+
+    /// <summary>
+    /// Canonical payload contract version used to compute <see cref="AccessPayloadHash"/>.
+    /// Null only for historical pre-E2B rows.
+    /// </summary>
+    public string? AccessPayloadContractVersion { get; set; }
+
     public int FlushAttemptCount { get; set; }
     public DateTime? PersistedAtUtc { get; set; }
     public string RecorderVersion { get; set; } = string.Empty;

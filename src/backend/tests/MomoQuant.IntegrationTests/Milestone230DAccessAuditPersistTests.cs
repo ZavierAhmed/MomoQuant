@@ -69,8 +69,8 @@ public sealed class Milestone230DAccessAuditPersistTests : IClassFixture<MomoQua
             var row = NewAudit(experimentId, accessEventId, scopeExecutionId, seq: 1, "First");
             Assert.Equal(1, (await audits.AddRangeIdempotentByAccessEventIdAsync([row])).NewlyInsertedCount);
 
-            var duplicate = NewAudit(experimentId, accessEventId, scopeExecutionId, seq: 1, "Dup");
-            var replay = await audits.AddRangeIdempotentByAccessEventIdAsync([duplicate]);
+            // E2B: replay must present the identical immutable payload; conflicting payloads fail closed.
+            var replay = await audits.AddRangeIdempotentByAccessEventIdAsync([row]);
             Assert.True(replay.IsFullyConfirmed);
             Assert.Equal(0, replay.NewlyInsertedCount);
             Assert.Equal(1, replay.AlreadyExistingCount);

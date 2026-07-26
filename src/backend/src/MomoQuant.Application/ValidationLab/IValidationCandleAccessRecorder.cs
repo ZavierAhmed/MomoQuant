@@ -23,13 +23,20 @@ public interface IValidationCandleAccessRecorder
 
 public sealed class ValidationCandleAccessRecorder : IValidationCandleAccessRecorder
 {
-    public const string RecorderVersion = "ValidationCandleAccess/v1";
+    public const string RecorderVersion = "ValidationCandleAccess/v2";
 
     private static readonly ConditionalWeakTable<IValidationTrainingCandleScope, FlushState> FlushStates = new();
 
     private readonly IValidationCandleAccessAuditRepository _audits;
+    private readonly IValidationAccessPayloadCanonicalizer _canonicalizer;
 
-    public ValidationCandleAccessRecorder(IValidationCandleAccessAuditRepository audits) => _audits = audits;
+    public ValidationCandleAccessRecorder(
+        IValidationCandleAccessAuditRepository audits,
+        IValidationAccessPayloadCanonicalizer? canonicalizer = null)
+    {
+        _audits = audits;
+        _canonicalizer = canonicalizer ?? new ValidationAccessPayloadCanonicalizer();
+    }
 
     public async Task<ValidationAccessBatchPersistResult> FlushAsync(
         IValidationTrainingCandleScope scope,
@@ -65,7 +72,18 @@ public sealed class ValidationCandleAccessRecorder : IValidationCandleAccessReco
 
             var entities = pending.Select(r => Map(r, attempt, persistedAt)).ToList();
 
-            // Persist + confirm. On failure: LastConfirmedSequence unchanged, exception propagates.
+            // Immutable payload hash computed from the final mapped persistent representation.
+            var requestedHashes = new Dictionary<Guid, string>(entities.Count);
+            foreach (var entity in entities)
+            {
+                entity.AccessPayloadHash = _canonicalizer.ComputeSha256(entity);
+                entity.AccessPayloadContractVersion = _canonicalizer.ContractVersion;
+                requestedHashes[entity.AccessEventId] = entity.AccessPayloadHash;
+            }
+
+            var expectedSequences = pending.ToDictionary(r => r.AccessEventId, r => r.ScopeSequenceNumber);
+
+            // Persist + payload-confirm. On failure: LastConfirmedSequence unchanged, exception propagates.
             var result = await _audits.AddRangeIdempotentByAccessEventIdAsync(entities, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -74,8 +92,10 @@ public sealed class ValidationCandleAccessRecorder : IValidationCandleAccessReco
                 throw new ValidationAccessEvidencePersistenceException(result);
             }
 
-            // Advance only through contiguous confirmed sequences starting at LastConfirmedSequence + 1.
-            var confirmedIds = result.ConfirmedPersistedEventIds.ToHashSet();
+            // Advance only through contiguous, payload-confirmed sequences starting at
+            // LastConfirmedSequence + 1. Each record must be confirmed with the exact requested
+            // payload hash and an unchanged sequence number.
+            var confirmedIds = result.ConfirmedMatchingEventIds.ToHashSet();
             var nextExpected = state.LastConfirmedSequence + 1;
             var advancedTo = state.LastConfirmedSequence;
             foreach (var record in pending)
@@ -86,6 +106,17 @@ public sealed class ValidationCandleAccessRecorder : IValidationCandleAccessReco
                 }
 
                 if (!confirmedIds.Contains(record.AccessEventId))
+                {
+                    break;
+                }
+
+                if (!result.ConfirmedPayloadHashes.TryGetValue(record.AccessEventId, out var confirmedHash)
+                    || !string.Equals(confirmedHash, requestedHashes[record.AccessEventId], StringComparison.Ordinal))
+                {
+                    break;
+                }
+
+                if (expectedSequences[record.AccessEventId] != record.ScopeSequenceNumber)
                 {
                     break;
                 }
