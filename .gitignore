@@ -290,6 +290,8 @@ appsettings.*.local.json
 # Integration-test local connection overrides (never commit)
 **/integration.local.env
 integration.local.env
+**/*.local.env
+*.local.env
 
 appsettings.Secrets.json
 appsettings.*.Secrets.json
@@ -654,3 +656,9 @@ certs/local/
 !**/docs/**
 !**/tests/**
 !**/Tests/**
+
+# Local integration secrets must stay ignored even under Tests/** un-ignore
+**/integration.local.env
+integration.local.env
+**/*.local.env
+*.local.env

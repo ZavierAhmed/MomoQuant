@@ -1,11 +1,22 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using MomoQuant.Persistence;
 
 namespace MomoQuant.IntegrationTests;
 
 public class MomoQuantWebApplicationFactory : WebApplicationFactory<Program>
 {
+    public static string? LastResolvedDatabaseName { get; private set; }
+    public static string? LastConnectionSource { get; private set; }
+
+    public IIntegrationDatabaseInitializationObserver InitializationObserver { get; set; } =
+        NoOpIntegrationDatabaseInitializationObserver.Instance;
+
     static MomoQuantWebApplicationFactory()
     {
         // Optional gitignored local overrides (never commit). Loaded once for the test host process.
@@ -23,20 +34,23 @@ public class MomoQuantWebApplicationFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
+        var target = IntegrationDatabaseInitialization.ResolveTarget(InitializationObserver);
+        LastResolvedDatabaseName = target.NormalizedDatabaseName;
+        LastConnectionSource = target.ConnectionSource;
+
         builder.ConfigureAppConfiguration((_, configurationBuilder) =>
         {
-            var mysql = Environment.GetEnvironmentVariable("MOMO_INTEGRATION_MYSQL")
-                ?? "Server=localhost;Port=3306;Database=momo_quant_test;User=momo_user;Password=IntegrationTest_DbPassword_NotForProd!";
-            IntegrationDatabaseSafety.AssertDisposableTestDatabase(mysql);
-
             var redis = Environment.GetEnvironmentVariable("MOMO_INTEGRATION_REDIS")
                 ?? "127.0.0.1:6379,password=IntegrationTest_RedisPassword_NotForProd!";
 
             // Highest-priority in-memory overrides for the test host.
             configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:DefaultConnection"] = mysql,
+                ["ConnectionStrings:DefaultConnection"] = target.ConnectionString,
                 ["ConnectionStrings:Redis"] = redis,
+                ["DatabaseMigrations:ApplyOnStartup"] = "true",
+                ["DatabaseMigrations:RequireTestSuffixWhenApplying"] = "true",
+                ["DatabaseMigrations:LogPendingMigrationsWhenDisabled"] = "true",
                 ["Jwt:Secret"] = "IntegrationTest_JwtSecret_Key_AtLeast_32_Chars_Long!",
                 ["Jwt:Issuer"] = "MomoQuant",
                 ["Jwt:Audience"] = "MomoQuant",
@@ -49,35 +63,45 @@ public class MomoQuantWebApplicationFactory : WebApplicationFactory<Program>
                 ["AiService:EnableFallback"] = "true"
             });
         });
+        builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<DbContextOptions<MomoQuantDbContext>>();
+            services.AddDbContext<MomoQuantDbContext>(options =>
+                options.UseMySql(
+                    target.ConnectionString,
+                    ServerVersion.Parse(PersistenceConstants.MySqlServerVersion)));
+        });
     }
 
     private static void TryLoadLocalEnvFile()
     {
-        var candidates = new[]
-        {
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "integration.local.env")),
-            Path.Combine(Directory.GetCurrentDirectory(), "tests", "MomoQuant.IntegrationTests", "integration.local.env"),
-            Path.Combine(Directory.GetCurrentDirectory(), "integration.local.env")
-        };
-
-        var path = candidates.FirstOrDefault(File.Exists);
+        var path = IntegrationDatabaseConnectionResolver
+            .GetLocalEnvCandidatePaths()
+            .FirstOrDefault(File.Exists);
         if (path is null)
         {
             return;
         }
 
-        foreach (var raw in File.ReadAllLines(path))
+        foreach (var raw in File.ReadAllLines(path, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
         {
-            var line = raw.Trim();
+            var line = raw.Trim().TrimStart('\uFEFF');
             if (line.Length == 0 || line.StartsWith('#') || !line.Contains('='))
             {
                 continue;
             }
 
             var idx = line.IndexOf('=');
-            var key = line[..idx].Trim();
+            var key = line[..idx].Trim().TrimStart('\uFEFF');
             var value = line[(idx + 1)..].Trim();
             if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            if (key.Equals(
+                    IntegrationDatabaseConnectionResolver.EnvironmentVariableName,
+                    StringComparison.Ordinal))
             {
                 continue;
             }

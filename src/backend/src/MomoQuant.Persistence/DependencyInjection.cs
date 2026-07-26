@@ -16,6 +16,9 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddPersistence(this IServiceCollection services, IConfiguration configuration)
     {
+        services.Configure<DatabaseMigrationOptions>(
+            configuration.GetSection(DatabaseMigrationOptions.SectionName));
+
         var connectionString = configuration.GetConnectionString("DefaultConnection")
             ?? throw new InvalidOperationException("Connection string 'DefaultConnection' was not found.");
 
