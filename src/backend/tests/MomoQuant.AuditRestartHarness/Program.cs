@@ -314,22 +314,168 @@ public static class Program
         execution = await executions.GetByAuditExecutionIdAsync(options.FixtureId) ?? execution;
 
         var oldScopeExecutionId = execution.ScopeExecutionId;
+        var oldExecutionToken = execution.ExecutionToken;
+        var oldAttemptNumber = execution.AttemptNumber;
         Guid? newAuditExecutionId = null;
         Guid? newScopeExecutionId = null;
+        string? newExecutionToken = null;
         int? newAttemptNumber = null;
+        long? replacementFirstAccessSequence = null;
+        bool? oldRowsCannotSatisfyReplacementCompleteness = null;
         int? inMemoryAccessCountBeforeCrash = await ReadAccessHintAsync(options);
         if (options.CrashPoint == "AfterAuditExecutionCreatedBeforeFirstFlush"
             && recoveryResult.MustRerunTrial)
         {
             var supersession = sp.GetRequiredService<IValidationAuditExecutionSupersessionService>();
-            var replacement = await supersession.SupersedeForRerunAsync(
+            var superseded = await supersession.SupersedeForRerunAsync(
                 execution.AuditExecutionId,
                 Guid.NewGuid().ToString("N"),
                 recoveryResult.FailureCode ?? "PROCESS_INTERRUPTED_BEFORE_FLUSH",
                 leaseOwner: "harness-recover-owner");
+
+            var replacement = await executions.GetByAuditExecutionIdAsync(superseded.AuditExecutionId)
+                ?? throw new InvalidOperationException(
+                    $"Replacement audit execution {superseded.AuditExecutionId} was not found after supersession.");
+
             newAuditExecutionId = replacement.AuditExecutionId;
             newScopeExecutionId = replacement.ScopeExecutionId;
+            newExecutionToken = replacement.ExecutionToken;
             newAttemptNumber = replacement.AttemptNumber;
+
+            if (replacement.AuditExecutionId == options.FixtureId)
+            {
+                return Fail("Replacement AuditExecutionId must differ from superseded execution.");
+            }
+
+            if (replacement.ScopeExecutionId == oldScopeExecutionId)
+            {
+                return Fail("Replacement ScopeExecutionId must differ from superseded execution.");
+            }
+
+            if (string.Equals(replacement.ExecutionToken, oldExecutionToken, StringComparison.Ordinal))
+            {
+                return Fail("Replacement ExecutionToken must differ from superseded execution.");
+            }
+
+            if (replacement.AttemptNumber <= oldAttemptNumber)
+            {
+                return Fail(
+                    $"Replacement AttemptNumber must increment (old={oldAttemptNumber}, new={replacement.AttemptNumber}).");
+            }
+
+            var db = sp.GetRequiredService<MomoQuantDbContext>();
+            var experiment = await db.ValidationExperiments
+                .AsNoTracking()
+                .FirstAsync(e => e.Id == replacement.ValidationExperimentId);
+            var symbol = await db.Symbols.AsNoTracking()
+                .OrderBy(s => s.Id)
+                .FirstOrDefaultAsync();
+            if (symbol is null)
+            {
+                return Fail("Harness requires at least one symbol for replacement scope rerun.");
+            }
+
+            if (experiment.TrainingStartUtc is null
+                || experiment.TrainingEndUtc is null
+                || experiment.ValidationStartUtc is null)
+            {
+                const int evalCandles = 10;
+                var evalStart = new DateTime(2044, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                var evalEnd = evalStart.AddMinutes(evalCandles * 15);
+                var boundary = evalEnd.AddMinutes(30);
+                experiment.TrainingStartUtc = evalStart;
+                experiment.TrainingEndUtc = evalEnd;
+                experiment.ValidationStartUtc = boundary;
+            }
+
+            var evalStartUtc = DateTime.SpecifyKind(experiment.TrainingStartUtc!.Value, DateTimeKind.Utc);
+            var evalEndUtc = DateTime.SpecifyKind(experiment.TrainingEndUtc!.Value, DateTimeKind.Utc);
+            var boundaryUtc = DateTime.SpecifyKind(experiment.ValidationStartUtc!.Value, DateTimeKind.Utc);
+            const int replacementWarmup = 5;
+
+            await EnsureHarnessCandlesAsync(
+                db,
+                symbol.ExchangeId,
+                symbol.Id,
+                evalStartUtc,
+                replacementWarmup,
+                evalCandles: 10);
+
+            var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
+            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            {
+                ValidationExperimentId = experiment.Id,
+                SymbolId = symbol.Id,
+                SymbolName = symbol.SymbolName,
+                Timeframe = experiment.Timeframe,
+                TrainingEvaluationStartUtc = evalStartUtc,
+                TrainingEvaluationEndExclusiveUtc = evalEndUtc,
+                ValidationBoundaryUtc = boundaryUtc,
+                RequiredWarmupCandleCount = replacementWarmup,
+                RequirementsVersion = StrategyExecutionRequirements.Version,
+                StrategyCode = experiment.StrategyCode,
+                BoundScopeExecutionId = replacement.ScopeExecutionId,
+                BoundAuditExecutionId = replacement.AuditExecutionId,
+                BoundExecutionToken = replacement.ExecutionToken,
+                BoundAttemptNumber = replacement.AttemptNumber
+            };
+
+            await using var replacementScope = await scopeFactory.CreateAsync(scopeRequest);
+            using (ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
+            {
+                AuditExecutionId = replacement.AuditExecutionId,
+                ScopeExecutionId = replacement.ScopeExecutionId,
+                ExecutionToken = replacement.ExecutionToken,
+                AttemptNumber = replacement.AttemptNumber,
+                ValidationExperimentId = experiment.Id,
+                ValidationTrialId = replacement.ValidationTrialId
+            }))
+            {
+                var dataSource = new ValidationTrainingStrategyLabCandleDataSource(
+                    replacementScope,
+                    "AuditRestartHarness.Replacement");
+                var run = new StrategyLabRun
+                {
+                    SymbolId = symbol.Id,
+                    Symbol = symbol.SymbolName,
+                    Timeframe = experiment.Timeframe,
+                    FromUtc = evalStartUtc,
+                    ToUtc = evalEndUtc
+                };
+                _ = await dataSource.LoadAsync(run, replacementWarmup);
+            }
+
+            if (replacementScope.AccessLog.Count < 1)
+            {
+                return Fail("Replacement scope rerun must record at least one in-memory access event.");
+            }
+
+            replacementFirstAccessSequence = replacementScope.AccessLog
+                .OrderBy(r => r.ScopeSequenceNumber)
+                .First()
+                .ScopeSequenceNumber;
+
+            if (replacementFirstAccessSequence != 1)
+            {
+                return Fail(
+                    $"Replacement scope first access sequence must be 1, got {replacementFirstAccessSequence}.");
+            }
+
+            var allAccessRows = await audits.GetByExperimentIdAsync(replacement.ValidationExperimentId);
+            var oldScopeRows = allAccessRows
+                .Where(r => r.ScopeExecutionId == oldScopeExecutionId)
+                .ToList();
+            var replacementCompletenessWithOldRows = verifier.Verify(
+                trialBefore,
+                replacement,
+                batches: [],
+                accessRowsForScope: oldScopeRows);
+            oldRowsCannotSatisfyReplacementCompleteness = !replacementCompletenessWithOldRows.IsComplete;
+            if (oldRowsCannotSatisfyReplacementCompleteness != true)
+            {
+                return Fail("Old execution scope rows must not satisfy replacement execution completeness.");
+            }
+
             execution = await executions.GetByAuditExecutionIdAsync(options.FixtureId) ?? execution;
         }
 
@@ -389,8 +535,11 @@ public static class Program
             NewAuditExecutionId = newAuditExecutionId,
             OldScopeExecutionId = oldScopeExecutionId,
             NewScopeExecutionId = newScopeExecutionId,
+            OldExecutionToken = oldExecutionToken,
+            NewExecutionToken = newExecutionToken,
             NewAttemptNumber = newAttemptNumber,
-            NewFirstSequence = newAuditExecutionId is null ? (int?)null : 1,
+            ReplacementFirstAccessSequence = replacementFirstAccessSequence,
+            OldRowsCannotSatisfyReplacementCompleteness = oldRowsCannotSatisfyReplacementCompleteness,
             InMemoryAccessCountBeforeCrash = inMemoryAccessCountBeforeCrash,
             OldExecutionStatus = oldExecution?.Status.ToString()
         };
@@ -632,7 +781,8 @@ public static class Program
         services.AddScoped<IValidationAuditExecutionSupersessionService, ValidationAuditExecutionSupersessionService>();
         services.AddScoped<IValidationAuditExecutionRecoveryService, ValidationAuditExecutionRecoveryService>();
         services.AddScoped<IValidationAuditExecutionFinalizer, ValidationAuditExecutionFinalizer>();
-        services.AddScoped<IValidationTrialAuditCompletionGate, ValidationTrialAuditCompletionGate>();
+        services.AddScoped<IValidationCandleAccessRecorder, ValidationCandleAccessRecorder>();
+        services.AddScoped<IValidationAccessPayloadCanonicalizer, ValidationAccessPayloadCanonicalizer>();
         return services.BuildServiceProvider();
     }
 

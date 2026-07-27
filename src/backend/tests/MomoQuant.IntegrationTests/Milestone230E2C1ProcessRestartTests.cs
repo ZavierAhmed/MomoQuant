@@ -41,8 +41,12 @@ public sealed class Milestone230E2C1ProcessRestartTests : IClassFixture<MomoQuan
 
         Assert.NotEqual(fixtureId, newAuditId);
         Assert.NotEqual(oldScopeId, newScopeId);
+        Assert.NotEqual(
+            result.GetProperty("OldExecutionToken").GetString(),
+            result.GetProperty("NewExecutionToken").GetString());
         Assert.Equal(2, result.GetProperty("NewAttemptNumber").GetInt32());
-        Assert.Equal(1, result.GetProperty("NewFirstSequence").GetInt32());
+        Assert.Equal(1L, result.GetProperty("ReplacementFirstAccessSequence").GetInt64());
+        Assert.True(result.GetProperty("OldRowsCannotSatisfyReplacementCompleteness").GetBoolean());
         Assert.True(result.GetProperty("InMemoryAccessCountBeforeCrash").GetInt32() >= 1);
         Assert.False(result.GetProperty("BeforeRecoveryCompletenessIsComplete").GetBoolean());
     }

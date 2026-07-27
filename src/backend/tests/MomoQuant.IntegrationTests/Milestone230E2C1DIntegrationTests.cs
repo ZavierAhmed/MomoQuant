@@ -20,15 +20,18 @@ public sealed class Milestone230E2C1DIntegrationTests : IClassFixture<E2C1Instru
 {
     private readonly E2C1InstrumentationFactory _factory;
     private readonly E2C1AuditWriteCounters _counters;
+    private readonly E2C1DbCommandCounter _dbCommandCounter;
 
     public Milestone230E2C1DIntegrationTests(E2C1InstrumentationFactory factory)
     {
         _factory = factory;
         _counters = factory.Counters;
+        _dbCommandCounter = factory.DbCommandCounter;
     }
 
     public void Dispose()
     {
+        _dbCommandCounter.Reset();
         _counters.ExecutionCreates = 0;
         _counters.ExecutionUpdates = 0;
         _counters.ManifestCreates = 0;
@@ -67,6 +70,8 @@ public sealed class Milestone230E2C1DIntegrationTests : IClassFixture<E2C1Instru
         var confirmationReadsBefore = _counters.ConfirmationReadCalls;
         var finalizationBefore = _counters.FinalizationCalls;
 
+        _dbCommandCounter.Reset();
+
         try
         {
             var testExchange = await db.Exchanges.AsNoTracking().OrderBy(e => e.Id).FirstAsync();
@@ -85,6 +90,7 @@ public sealed class Milestone230E2C1DIntegrationTests : IClassFixture<E2C1Instru
             db.Symbols.Add(symbol);
             await db.SaveChangesAsync();
 
+            _dbCommandCounter.Reset();
             var warmupStart = evalStart.AddMinutes(-RequiredWarmup * 15);
             var totalCandles = RequiredWarmup + EvalCount;
             for (var i = 0; i < totalCandles; i += 500)
@@ -117,6 +123,8 @@ public sealed class Milestone230E2C1DIntegrationTests : IClassFixture<E2C1Instru
                 candleIds.AddRange(batchCandles.Select(c => c.Id));
             }
 
+            var candleSeedingCommands = _dbCommandCounter.CommandCount;
+
             var (experiment, trial) = await E2C1AuditFixtures.CreateExperimentAndTrialAsync(db, "10k-prod");
             experiment.ExchangeId = testExchange.Id;
             experiment.SymbolId = symbol.Id;
@@ -130,6 +138,8 @@ public sealed class Milestone230E2C1DIntegrationTests : IClassFixture<E2C1Instru
 
             var execution = E2C1AuditFixtures.NewExecution(experiment, trial);
             await executions.CreateAndAssignTrialAuthoritativeAsync(execution, trial);
+
+            _dbCommandCounter.Reset();
 
             var scopeRequest = new ValidationTrainingCandleScopeRequest
             {
@@ -194,6 +204,7 @@ public sealed class Milestone230E2C1DIntegrationTests : IClassFixture<E2C1Instru
             var rows = await sp.GetRequiredService<IValidationCandleAccessAuditRepository>()
                 .GetByExperimentIdAsync(experiment.Id);
             var completeness = verifier.Verify(trial, loadedExec, batches, rows);
+            var auditPathDbCommands = _dbCommandCounter.CommandCount;
 
             var executionCreates = _counters.ExecutionCreates - executionCreatesBefore;
             var executionUpdates = _counters.ExecutionUpdates - executionUpdatesBefore;
@@ -228,7 +239,13 @@ public sealed class Milestone230E2C1DIntegrationTests : IClassFixture<E2C1Instru
             Assert.True(batchCount < eventCount * 2, "Must not create per-candle manifests.");
             Assert.True(eventCount < EvalCount, "Must not create per-candle audit rows.");
             Assert.True(persistenceRoundTrips < 50, $"Persistence round-trips: {persistenceRoundTrips}");
-            Assert.True(sw.ElapsedMilliseconds < 120_000, $"TenThousandCandle bounded audit elapsed: {sw.ElapsedMilliseconds}ms, roundTrips={persistenceRoundTrips}");
+            Assert.True(candleSeedingCommands >= 20, $"Expected measurable candle seeding commands, got {candleSeedingCommands}.");
+            Assert.True(auditPathDbCommands < 200, $"Audit-path DB commands must be bounded O(1), got {auditPathDbCommands}.");
+            Assert.True(auditPathDbCommands < EvalCount, "Audit-path DB commands must not scale with candle count.");
+            Assert.True(
+                auditPathDbCommands < candleSeedingCommands,
+                $"Audit path ({auditPathDbCommands}) must be measured separately from candle seeding ({candleSeedingCommands}).");
+            Assert.True(sw.ElapsedMilliseconds < 120_000, $"TenThousandCandle bounded audit elapsed: {sw.ElapsedMilliseconds}ms, roundTrips={persistenceRoundTrips}, auditDbCommands={auditPathDbCommands}");
         }
         finally
         {

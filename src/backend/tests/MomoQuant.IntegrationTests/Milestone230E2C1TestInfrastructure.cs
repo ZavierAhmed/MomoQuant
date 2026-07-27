@@ -1,6 +1,9 @@
+using System.Data.Common;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using MomoQuant.Application.Abstractions;
@@ -268,6 +271,74 @@ internal sealed class FakeTrainingCandleScope : IValidationTrainingCandleScope
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
+public sealed class E2C1DbCommandCounter : DbCommandInterceptor
+{
+    private int _commandCount;
+
+    public int CommandCount => Volatile.Read(ref _commandCount);
+
+    public void Reset() => Interlocked.Exchange(ref _commandCount, 0);
+
+    private void Increment() => Interlocked.Increment(ref _commandCount);
+
+    public override InterceptionResult<int> NonQueryExecuting(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result)
+    {
+        Increment();
+        return base.NonQueryExecuting(command, eventData, result);
+    }
+
+    public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        Increment();
+        return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+    }
+
+    public override InterceptionResult<object> ScalarExecuting(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<object> result)
+    {
+        Increment();
+        return base.ScalarExecuting(command, eventData, result);
+    }
+
+    public override ValueTask<InterceptionResult<object>> ScalarExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<object> result,
+        CancellationToken cancellationToken = default)
+    {
+        Increment();
+        return base.ScalarExecutingAsync(command, eventData, result, cancellationToken);
+    }
+
+    public override InterceptionResult<DbDataReader> ReaderExecuting(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result)
+    {
+        Increment();
+        return base.ReaderExecuting(command, eventData, result);
+    }
+
+    public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+        Increment();
+        return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+    }
+}
+
 public sealed class E2C1AuditWriteCounters
 {
     public int ExecutionCreates { get; set; }
@@ -433,6 +504,7 @@ internal sealed class CountingConfirmationReader : IValidationAccessAuditConfirm
 public sealed class E2C1InstrumentationFactory : MomoQuantWebApplicationFactory
 {
     public E2C1AuditWriteCounters Counters { get; } = new();
+    public E2C1DbCommandCounter DbCommandCounter { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -440,6 +512,19 @@ public sealed class E2C1InstrumentationFactory : MomoQuantWebApplicationFactory
         builder.ConfigureTestServices(services =>
         {
             services.AddSingleton(Counters);
+            services.AddSingleton(DbCommandCounter);
+
+            services.RemoveAll<DbContextOptions<MomoQuantDbContext>>();
+            services.AddDbContext<MomoQuantDbContext>((sp, options) =>
+            {
+                var configuration = sp.GetRequiredService<IConfiguration>();
+                var connectionString = configuration.GetConnectionString("DefaultConnection")
+                    ?? throw new InvalidOperationException("Connection string 'DefaultConnection' was not found.");
+                options.UseMySql(
+                        connectionString,
+                        ServerVersion.Parse(PersistenceConstants.MySqlServerVersion))
+                    .AddInterceptors(sp.GetRequiredService<E2C1DbCommandCounter>());
+            });
 
             services.RemoveAll<IValidationAuditExecutionRepository>();
             services.AddScoped<IValidationAuditExecutionRepository>(sp =>
