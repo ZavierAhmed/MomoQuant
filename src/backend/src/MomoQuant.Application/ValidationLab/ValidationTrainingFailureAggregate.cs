@@ -50,9 +50,9 @@ public sealed class ValidationTrainingFailureRecord
     [JsonIgnore]
     public ExceptionDispatchInfo? DispatchInfo { get; init; }
 
-    /// <summary>Stable logical identity: precedence + code (phase is metadata, not identity).</summary>
+    /// <summary>Stable logical identity: precedence + code + phase.</summary>
     [JsonIgnore]
-    public string LogicalIdentity => $"{(int)Precedence}:{Code}";
+    public string LogicalIdentity => $"{(int)Precedence}:{Code}:{Phase}";
 
     public static ValidationTrainingFailureRecord FromException(
         Exception exception,

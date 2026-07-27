@@ -28,7 +28,7 @@ public enum E2C2RunnerMode
     ThrowingTrialFailure
 }
 
-/// <summary>Shared controllable seams for Milestone 23.0E2C2 orchestration tests.</summary>
+/// <summary>Shared controllable seams for Milestone 23.0E2C2 / E2C2B orchestration tests.</summary>
 public sealed class E2C2SeamControls
 {
     public E2C2RunnerMode RunnerMode { get; set; } = E2C2RunnerMode.AllowedComplete;
@@ -36,8 +36,13 @@ public sealed class E2C2SeamControls
     public HashSet<int> FailOnFlushNumbers { get; } = [];
     public bool FailOperationStatusSync { get; set; }
     public bool FailLeaseRelease { get; set; }
+    public bool FailLeaseHeartbeat { get; set; }
     public bool FailAuditFinalizationIncomplete { get; set; }
     public bool FailCompletenessVerification { get; set; }
+    public bool ThrowOnAuditFinalizer { get; set; }
+    public bool ThrowOnCompletenessVerifier { get; set; }
+    public bool FailScopeDisposal { get; set; }
+    public int FailExperimentUpdateCount { get; set; }
 
     public void Reset()
     {
@@ -46,8 +51,13 @@ public sealed class E2C2SeamControls
         FailOnFlushNumbers.Clear();
         FailOperationStatusSync = false;
         FailLeaseRelease = false;
+        FailLeaseHeartbeat = false;
         FailAuditFinalizationIncomplete = false;
         FailCompletenessVerification = false;
+        ThrowOnAuditFinalizer = false;
+        ThrowOnCompletenessVerifier = false;
+        FailScopeDisposal = false;
+        FailExperimentUpdateCount = 0;
     }
 }
 
@@ -95,8 +105,20 @@ public static class E2C2FailureReasonHelpers
     {
         AssertPrimaryAndOrderedCodes(experiment, expectedCodesInOrder);
         var parsed = ParseRecords(experiment.FailureReasonsJson);
-        var expectedIdentities = expectedCodesInOrder
-            .Select(code => $"{ExpectedPrecedence(code)}:{code}")
+        Assert.Equal(expectedCodesInOrder.Length, parsed.Select(r => r.LogicalIdentity).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    public static void AssertExactFailureRecords(
+        ValidationExperiment experiment,
+        params (string Code, ValidationTrainingFailurePhase Phase)[] expectedInOrder)
+    {
+        Assert.Equal(expectedInOrder[0].Code, experiment.PrimaryFailureReason);
+        var parsed = ParseRecords(experiment.FailureReasonsJson);
+        Assert.Equal(expectedInOrder.Length, parsed.Count);
+        Assert.Equal(expectedInOrder.Select(e => e.Code).ToArray(), parsed.Select(r => r.Code).ToArray());
+        Assert.Equal(expectedInOrder.Select(e => e.Phase).ToArray(), parsed.Select(r => r.Phase).ToArray());
+        var expectedIdentities = expectedInOrder
+            .Select(e => $"{ExpectedPrecedence(e.Code)}:{e.Code}:{e.Phase}")
             .ToArray();
         Assert.Equal(expectedIdentities, parsed.Select(r => r.LogicalIdentity).ToArray());
     }
@@ -112,7 +134,9 @@ public static class E2C2FailureReasonHelpers
             (int)ValidationTrainingFailurePrecedence.TrialExecution,
         ValidationTrainingFailureCodes.TrainingCleanupFailed =>
             (int)ValidationTrainingFailurePrecedence.Cleanup,
-        _ => (int)ValidationTrainingFailurePrecedence.TrialExecution
+        _ => code.Contains("Leakage", StringComparison.OrdinalIgnoreCase)
+            ? (int)ValidationTrainingFailurePrecedence.Boundary
+            : (int)ValidationTrainingFailurePrecedence.AuditDurability
     };
 
     public static void AssertNoMirroredDiagnosticDuplicates(ValidationExperiment experiment)
@@ -203,6 +227,13 @@ public sealed class E2C2OrchestrationFactory : MomoQuantWebApplicationFactory
             {
                 var inner = ActivatorUtilities.CreateInstance<ValidationAuditCompletenessVerifier>(sp);
                 return new E2C2CompletenessVerifierDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
+            });
+
+            services.RemoveAll<IValidationTrainingScopeExecution>();
+            services.AddScoped<IValidationTrainingScopeExecution>(sp =>
+            {
+                var inner = ActivatorUtilities.CreateInstance<ValidationTrainingScopeExecution>(sp);
+                return new E2C2ScopeExecutionDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
             });
         });
     }
@@ -625,8 +656,15 @@ internal sealed class E2C2LeaseDecorator : IValidationTrainingExecutionLeaseServ
         long experimentId,
         string leaseOwner,
         TimeSpan ttl,
-        CancellationToken cancellationToken = default) =>
-        _inner.HeartbeatAsync(experimentId, leaseOwner, ttl, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        if (_controls.FailLeaseHeartbeat)
+        {
+            throw new InvalidOperationException("E2C2 simulated lease heartbeat failure.");
+        }
+
+        return _inner.HeartbeatAsync(experimentId, leaseOwner, ttl, cancellationToken);
+    }
 
     public Task<ValidationLeaseOperationResult> ReleaseAsync(
         long experimentId,
@@ -661,6 +699,11 @@ internal sealed class E2C2FinalizerDecorator : IValidationAuditExecutionFinalize
         long finalExpectedSequence,
         CancellationToken cancellationToken = default)
     {
+        if (_controls.ThrowOnAuditFinalizer)
+        {
+            throw new InvalidOperationException("E2C2 simulated generic finalizer exception.");
+        }
+
         if (_controls.FailAuditFinalizationIncomplete)
         {
             return new ValidationAuditExecutionCompletionResult
@@ -696,6 +739,11 @@ internal sealed class E2C2CompletenessVerifierDecorator : IValidationAuditComple
         IReadOnlyList<ValidationAuditBatch> batches,
         IReadOnlyList<ValidationCandleAccessAudit> accessRowsForScope)
     {
+        if (_controls.ThrowOnCompletenessVerifier)
+        {
+            throw new InvalidOperationException("E2C2 simulated generic verifier exception.");
+        }
+
         if (_controls.FailCompletenessVerification)
         {
             return new ValidationAuditCompletenessResult
@@ -711,5 +759,92 @@ internal sealed class E2C2CompletenessVerifierDecorator : IValidationAuditComple
         }
 
         return _inner.Verify(trial, execution, batches, accessRowsForScope);
+    }
+}
+
+internal sealed class E2C2ScopeExecutionDecorator : IValidationTrainingScopeExecution
+{
+    private readonly IValidationTrainingScopeExecution _inner;
+    private readonly E2C2SeamControls _controls;
+
+    public E2C2ScopeExecutionDecorator(IValidationTrainingScopeExecution inner, E2C2SeamControls controls)
+    {
+        _inner = inner;
+        _controls = controls;
+    }
+
+    public async Task<ValidationTrainingScopeExecutionResult> ExecuteWithScopeAsync(
+        ValidationExperiment experiment,
+        ValidationTrainingCandleScopeRequest scopeRequest,
+        Func<IValidationTrainingCandleScope, Task> body,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _inner.ExecuteWithScopeAsync(experiment, scopeRequest, body, cancellationToken);
+        if (!_controls.FailScopeDisposal || scopeRequest.BoundAuditExecutionId is null)
+        {
+            return result;
+        }
+
+        return new ValidationTrainingScopeExecutionResult
+        {
+            BodyException = result.BodyException,
+            FlushException = result.FlushException,
+            DisposalException = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(
+                new InvalidOperationException("E2C2 simulated outer scope disposal failure.")),
+            BodyPhase = result.BodyPhase,
+            FlushPhase = result.FlushPhase,
+            FlushAttempted = result.FlushAttempted
+        };
+    }
+
+    public Task<ValidationTrainingScopeExecutionResult> ExecuteTrialAsync(
+        IValidationTrainingCandleScope scope,
+        int trialNumber,
+        long? trialId,
+        Func<Task> trialBody,
+        CancellationToken cancellationToken = default) =>
+        _inner.ExecuteTrialAsync(scope, trialNumber, trialId, trialBody, cancellationToken);
+}
+
+internal sealed class E2C2ExperimentRepositoryDecorator : IValidationExperimentRepository
+{
+    private readonly IValidationExperimentRepository _inner;
+    private readonly E2C2SeamControls _controls;
+
+    public E2C2ExperimentRepositoryDecorator(IValidationExperimentRepository inner, E2C2SeamControls controls)
+    {
+        _inner = inner;
+        _controls = controls;
+    }
+
+    public Task<ValidationExperiment?> GetByIdAsync(long id, CancellationToken cancellationToken = default) =>
+        _inner.GetByIdAsync(id, cancellationToken);
+
+    public Task<IReadOnlyList<ValidationExperiment>> GetRecentAsync(
+        int limit = 50,
+        CancellationToken cancellationToken = default) =>
+        _inner.GetRecentAsync(limit, cancellationToken);
+
+    public Task<IReadOnlyList<ValidationExperiment>> GetByStrategyFingerprintOverlapAsync(
+        string strategyCode,
+        string strategyVersion,
+        string symbol,
+        string timeframe,
+        CancellationToken cancellationToken = default) =>
+        _inner.GetByStrategyFingerprintOverlapAsync(
+            strategyCode, strategyVersion, symbol, timeframe, cancellationToken);
+
+    public Task AddAsync(ValidationExperiment experiment, CancellationToken cancellationToken = default) =>
+        _inner.AddAsync(experiment, cancellationToken);
+
+    public Task UpdateAsync(ValidationExperiment experiment, CancellationToken cancellationToken = default)
+    {
+        if (_controls.FailExperimentUpdateCount > 0)
+        {
+            _controls.FailExperimentUpdateCount--;
+            throw new InvalidOperationException("E2C2 simulated experiment persistence failure.");
+        }
+
+        return _inner.UpdateAsync(experiment, cancellationToken);
     }
 }

@@ -227,7 +227,7 @@ public sealed class Milestone230E2C2FailureAggregateUnitTests
         Assert.Equal(ValidationTrainingFailureCodes.TrainingCleanupFailed, aggregate.PrimaryFailure!.Code);
         Assert.Equal(ValidationTrainingFailureCategory.Cleanup, aggregate.PrimaryFailure.Category);
         Assert.Equal(
-            $"{(int)ValidationTrainingFailurePrecedence.Cleanup}:{ValidationTrainingFailureCodes.TrainingCleanupFailed}",
+            $"{(int)ValidationTrainingFailurePrecedence.Cleanup}:{ValidationTrainingFailureCodes.TrainingCleanupFailed}:{ValidationTrainingFailurePhase.OperationStatusSync}",
             aggregate.PrimaryFailure.LogicalIdentity);
     }
 

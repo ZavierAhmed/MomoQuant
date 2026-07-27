@@ -217,7 +217,12 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
         ArgumentNullException.ThrowIfNull(exception);
 
         var aggregate = BuildAggregate(experiment, observedFailures);
-        aggregate.Observe(exception, ValidationTrainingFailurePhase.TrialScopeFlush);
+        // Callers that already observed the failure at AuditFinalization / CompletenessVerification
+        // must retain that phase. Only observe here when no prior observed failures were supplied.
+        if (observedFailures is null || !observedFailures.HasAnyFailure)
+        {
+            aggregate.Observe(exception, ValidationTrainingFailurePhase.TrialScopeFlush);
+        }
 
         var primary = aggregate.PrimaryFailure!;
         var errorCode = primary.Code;
