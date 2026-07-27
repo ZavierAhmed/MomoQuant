@@ -224,6 +224,7 @@ public static class DependencyInjection
         services.AddSingleton<IValidationAccessPersistenceRetryPolicy>(_ => new ValidationAccessPersistenceRetryPolicy());
         services.AddSingleton<IValidationAuditPayloadSetHasher, ValidationAuditPayloadSetHasher>();
         services.AddScoped<IValidationAuditCompletenessVerifier, ValidationAuditCompletenessVerifier>();
+        services.AddScoped<IValidationAuthoritativeAuditQualificationEvaluator, ValidationAuthoritativeAuditQualificationEvaluator>();
         services.AddScoped<IValidationAuditExecutionFactory, ValidationAuditExecutionService>();
         services.AddScoped<IValidationAuditExecutionSupersessionService, ValidationAuditExecutionSupersessionService>();
         services.AddScoped<IValidationAuditExecutionRecoveryService, ValidationAuditExecutionRecoveryService>();

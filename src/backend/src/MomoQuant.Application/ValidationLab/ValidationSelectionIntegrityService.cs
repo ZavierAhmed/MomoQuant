@@ -73,7 +73,10 @@ public sealed class ValidationSelectionIntegrityService : IValidationSelectionIn
 
         if (population.EligibleTrialCount == 0 && population.TerminalTrialCount > 0)
         {
-            violations.Add(ValidationTrainingSelectionService.ZeroEligibleMessage);
+            violations.Add(
+                population.GuardrailPassedTrialCount > 0
+                    ? ValidationTrainingSelectionService.AuditIncompleteMessage
+                    : ValidationTrainingSelectionService.ZeroEligibleMessage);
             status = ValidationSelectionIntegrityStatus.FailedNoEligibleTrials;
         }
 
@@ -85,11 +88,16 @@ public sealed class ValidationSelectionIntegrityService : IValidationSelectionIn
 
         if (selected is not null)
         {
-            var eligible = string.Equals(selected.GuardrailDecision, "Passed", StringComparison.OrdinalIgnoreCase)
-                && selected.Status == ValidationTrialStatus.Completed;
+            var eligible = ValidationAuthoritativeAuditQualificationEvaluator.MeetsCachedAuditEligibilityFields(selected);
             if (!eligible && experiment.SelectionIntegrityStatus != ValidationSelectionIntegrityStatus.InfrastructureOnlyFallback)
             {
-                violations.Add("Selected trial did not pass training guardrails.");
+                var auditReason =
+                    selected.AuthoritativeAuditExecutionId is null
+                    || selected.AuditCompletionStatus != ValidationAuditCompletionStatus.Complete
+                        ? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage
+                        : "Selected trial did not pass training guardrails.";
+                // Prefer selected-trial audit ineligibility as the leading freeze/validation reason.
+                violations.Insert(0, auditReason);
                 status = ValidationSelectionIntegrityStatus.FailedSelectedTrialIneligible;
             }
 
@@ -157,7 +165,7 @@ public sealed class ValidationSelectionIntegrityService : IValidationSelectionIn
             SnapshotValidationStatus = snapshotStatus,
             FingerprintsMatch = fingerprintsMatch,
             IsEligibleForSelection = selected is not null
-                && string.Equals(selected.GuardrailDecision, "Passed", StringComparison.OrdinalIgnoreCase),
+                && ValidationAuthoritativeAuditQualificationEvaluator.MeetsCachedAuditEligibilityFields(selected),
             Violations = violations,
             Population = population
         };

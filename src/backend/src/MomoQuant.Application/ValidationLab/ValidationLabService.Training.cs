@@ -1457,6 +1457,15 @@ public sealed partial class ValidationLabService
         var trialEntities = (await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken)).ToList();
         var useSnapshotSelection =
             ValidationMetricsContract.IsPopulationPathMetricsVersion(experiment.ValidationMetricsVersion);
+
+        // Milestone 23.0E2C3 — revalidate authoritative audit evidence before ranking/selection.
+        await _authoritativeAuditQualification.RevalidatePopulationAsync(
+            experiment, trialEntities, cancellationToken);
+        foreach (var trial in trialEntities)
+        {
+            await _trials.UpdateAsync(trial, cancellationToken);
+        }
+
         ValidationTrialRanker.AssignRanks(trialEntities, useSnapshotSelection);
         foreach (var trial in trialEntities)
         {
@@ -1480,7 +1489,9 @@ public sealed partial class ValidationLabService
             experiment.FrozenParameterFingerprint = null;
             experiment.FrozenAtUtc = null;
             experiment.Status = ValidationExperimentStatus.Failed;
-            experiment.CurrentStage = "FailedNoEligibleTrials";
+            experiment.CurrentStage = selection.AuditEvidenceIncomplete
+                ? "AuditPersistenceFailed"
+                : "FailedNoEligibleTrials";
             experiment.StrategyRobustnessDecision = selection.FailureCode;
             experiment.DecisionExplanation = selection.FailureMessage;
             experiment.PercentComplete = 100m;
@@ -1489,8 +1500,23 @@ public sealed partial class ValidationLabService
 
             var existingFailures = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
             var selectionAggregate = new ValidationTrainingFailureAggregate();
-            // Do not hide earlier boundary/audit/trial reasons with a selection-only code.
-            if (!existingFailures.HasBoundaryFailure
+            if (selection.AuditEvidenceIncomplete)
+            {
+                selectionAggregate.Observe(new ValidationTrainingFailureRecord
+                {
+                    Code = ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
+                    Category = ValidationTrainingFailureCategory.AuditDurability,
+                    Precedence = ValidationTrainingFailurePrecedence.AuditDurability,
+                    Phase = ValidationTrainingFailurePhase.CompletenessVerification,
+                    UserSafeMessage = selection.FailureMessage
+                        ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                    OccurredAtUtc = DateTime.UtcNow,
+                    IsQualificationBlocking = true
+                });
+                experiment.ErrorMessage = selection.FailureMessage
+                    ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage;
+            }
+            else if (!existingFailures.HasBoundaryFailure
                 && !existingFailures.HasAuditDurabilityFailure
                 && !existingFailures.HasTrialExecutionFailure
                 && !string.IsNullOrWhiteSpace(selection.FailureCode?.ToString()))
@@ -1514,13 +1540,15 @@ public sealed partial class ValidationLabService
             }
 
             ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, selectionAggregate);
-            AppendDiagnostic(experiment, selection.FailureCode?.ToString() ?? "FailedNoEligibleTrials", selection.FailureMessage ?? string.Empty);
+            AppendDiagnostic(experiment, selection.FailureCode?.ToString()
+                ?? (selection.AuditEvidenceIncomplete
+                    ? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed
+                    : "FailedNoEligibleTrials"),
+                selection.FailureMessage ?? string.Empty);
             experiment.UpdatedAtUtc = DateTime.UtcNow;
             await _experiments.UpdateAsync(experiment, cancellationToken);
 
             var closed = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
-            // Selection-only close remains a completed training attempt (Succeeded=true, status Failed).
-            // Boundary / audit-durability / cleanup evidence must never return success.
             var mustFailResult = closed.HasBoundaryFailure
                 || closed.HasAuditDurabilityFailure
                 || closed.HasCleanupFailure;
@@ -1636,6 +1664,64 @@ public sealed partial class ValidationLabService
                 cancellationToken);
         }
 
+        // Milestone 23.0E2C3 — selected trial must currently verify authoritative audit completion.
+        if (winner is not null
+            && selection.IntegrityStatus != ValidationSelectionIntegrityStatus.InfrastructureOnlyFallback
+            && ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
+        {
+            var selectedFresh = await _trials.GetByExperimentAndFingerprintAsync(
+                experiment.Id, winner.ParameterFingerprint, cancellationToken) ?? winner;
+            var selectedAudit = await _authoritativeAuditQualification.EvaluateTrialAsync(
+                experiment, selectedFresh, cancellationToken);
+            if (!selectedAudit.IsQualificationEligible)
+            {
+                ValidationAuthoritativeAuditQualificationEvaluator.ApplyPopulationMarker(
+                    selectedFresh, selectedAudit);
+                await _trials.UpdateAsync(selectedFresh, cancellationToken);
+
+                experiment.SelectedTrialId = null;
+                experiment.SelectedTrialNumber = null;
+                experiment.SelectedTrialParameterSnapshotJson = null;
+                experiment.SelectedTrialParameterFingerprint = null;
+                experiment.SelectedMetricFingerprint = null;
+                experiment.FrozenStrategyParameterSnapshotJson = null;
+                experiment.FrozenParameterFingerprint = null;
+                experiment.FrozenAtUtc = null;
+                experiment.IsQualificationCapable = false;
+                experiment.Status = ValidationExperimentStatus.Failed;
+                experiment.CurrentStage = "AuditPersistenceFailed";
+                experiment.ErrorMessage = selectedAudit.UserSafeBlockingReason
+                    ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage;
+
+                var auditAggregate = new ValidationTrainingFailureAggregate();
+                auditAggregate.Observe(new ValidationTrainingFailureRecord
+                {
+                    Code = ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
+                    Category = ValidationTrainingFailureCategory.AuditDurability,
+                    Precedence = ValidationTrainingFailurePrecedence.AuditDurability,
+                    Phase = ValidationTrainingFailurePhase.CompletenessVerification,
+                    UserSafeMessage = experiment.ErrorMessage,
+                    OccurredAtUtc = DateTime.UtcNow,
+                    IsQualificationBlocking = true
+                });
+                ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, auditAggregate);
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return await ApplyCleanupOutcomeToResultAsync(
+                    experiment,
+                    leaseOwner,
+                    ServiceResult<ValidationExperimentDto>.Fail(
+                        experiment.ErrorMessage,
+                        ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed),
+                    cancellationToken);
+            }
+        }
+
+        if (selection.IntegrityStatus == ValidationSelectionIntegrityStatus.InfrastructureOnlyFallback)
+        {
+            experiment.IsQualificationCapable = false;
+        }
+
         experiment.Status = ValidationExperimentStatus.TrainingCompleted;
         experiment.CurrentStage = "TrainingCompleted";
         experiment.PercentComplete = 75m;
@@ -1666,9 +1752,81 @@ public sealed partial class ValidationLabService
         CancellationToken cancellationToken)
     {
         var optimizerFp = _parameterFingerprint.ComputeFingerprint(draft.Parameters);
-        var audits = await _candleAccessAudits.GetByExperimentIdAsync(experiment.Id, cancellationToken);
+        var allAudits = await _candleAccessAudits.GetByExperimentIdAsync(experiment.Id, cancellationToken);
+
+        // Security-negative evidence: denied/boundary events from any attempt remain qualification-blocking.
+        var deniedOrLeakage = ValidationLeakageEvidenceSelector.CollectNegativeBlockingEvidence(allAudits);
+        if (deniedOrLeakage.Count > 0)
+        {
+            var negative = _leakageAuditor.EvaluateFromAccessEvidence(
+                deniedOrLeakage,
+                experiment.ValidationStartUtc!.Value,
+                experiment.TrainingStartUtc!.Value,
+                experiment.TrainingEndUtc!.Value,
+                optimizerFp);
+            if (negative.Status != ValidationLeakageAuditStatus.Failed)
+            {
+                // Force fail-closed when denied rows exist even if timestamps alone would pass.
+                negative = new ValidationLeakageAuditReport
+                {
+                    Status = ValidationLeakageAuditStatus.Failed,
+                    MaximumTimestampAccessedByOptimizer = negative.MaximumTimestampAccessedByOptimizer,
+                    ValidationStartUtc = negative.ValidationStartUtc,
+                    TrainingStartUtc = negative.TrainingStartUtc,
+                    TrainingEndUtc = negative.TrainingEndUtc,
+                    OptimizerInputFingerprint = optimizerFp,
+                    TrialAccesses = negative.TrialAccesses,
+                    Reason = "ValidationDataLeakageDetected: denied or boundary-violation access evidence remains qualification-blocking.",
+                    BlocksFreezeOrPassed = true,
+                    AccessEvidenceCount = deniedOrLeakage.Count,
+                    DeniedAccessCount = deniedOrLeakage.Count(a => a.WasDenied)
+                };
+            }
+
+            experiment.LeakageAuditJson = _leakageAuditor.Serialize(negative);
+            experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
+            AppendDiagnostic(experiment, "ValidationDataLeakageDetected", negative.Reason ?? "Leakage audit failed.");
+            return;
+        }
+
+        // Positive completion proof: only rows from authoritative, verifier-complete executions.
+        var trials = await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken);
+        var evaluations = new List<(ValidationParameterTrial Trial, ValidationAuthoritativeAuditQualificationResult Evaluation)>();
+        foreach (var trial in trials)
+        {
+            if (!ValidationAuthoritativeAuditQualificationEvaluator.IsGuardrailPassedCompleted(trial))
+            {
+                continue;
+            }
+
+            var evaluation = await _authoritativeAuditQualification.EvaluateTrialAsync(
+                experiment, trial, cancellationToken);
+            evaluations.Add((trial, evaluation));
+        }
+
+        var positiveSelection = ValidationLeakageEvidenceSelector.SelectPositiveEvidence(allAudits, evaluations);
+        if (positiveSelection.AuthoritativeEvidenceIncomplete || positiveSelection.PositiveRows.Count == 0)
+        {
+            experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.NotAvailable;
+            experiment.LeakageAuditJson = _leakageAuditor.Serialize(new ValidationLeakageAuditReport
+            {
+                Status = ValidationLeakageAuditStatus.NotAvailable,
+                ValidationStartUtc = experiment.ValidationStartUtc!.Value,
+                TrainingStartUtc = experiment.TrainingStartUtc!.Value,
+                TrainingEndUtc = experiment.TrainingEndUtc!.Value,
+                OptimizerInputFingerprint = optimizerFp,
+                Reason = positiveSelection.AuthoritativeEvidenceIncomplete
+                    ? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage
+                    : "No authoritative verifier-complete access evidence was available for positive leakage evaluation.",
+                BlocksFreezeOrPassed = false,
+                AccessEvidenceCount = 0,
+                DeniedAccessCount = 0
+            });
+            return;
+        }
+
         var leakage = _leakageAuditor.EvaluateFromAccessEvidence(
-            audits,
+            positiveSelection.PositiveRows,
             experiment.ValidationStartUtc!.Value,
             experiment.TrainingStartUtc!.Value,
             experiment.TrainingEndUtc!.Value,
@@ -1771,9 +1929,48 @@ public sealed partial class ValidationLabService
         if (trial.AuthoritativeAuditExecutionId is Guid existingId)
         {
             var existing = await _auditExecutions.GetByAuditExecutionIdAsync(existingId, cancellationToken);
-            if (existing is not null)
+            if (existing is null)
+            {
+                // Stale Complete / pointer without durable execution must not mint a new proof on resume.
+                if (isResume && trial.Status == ValidationTrialStatus.Completed)
+                {
+                    return new AuthoritativeAuditExecutionEnsureResult
+                    {
+                        Execution = new ValidationAuditExecution
+                        {
+                            AuditExecutionId = existingId,
+                            ScopeExecutionId = Guid.Empty,
+                            ExecutionToken = "missing",
+                            AttemptNumber = trial.AuditAttemptNumber > 0 ? trial.AuditAttemptNumber : 1,
+                            ValidationExperimentId = experiment.Id,
+                            ValidationTrialId = trial.Id,
+                            Status = ValidationAuditExecutionStatus.Failed,
+                            StartedAtUtc = DateTime.UtcNow,
+                            UpdatedAtUtc = DateTime.UtcNow,
+                            AuditContractVersion = ValidationAuditExecution.ContractVersionV1
+                        },
+                        FailClosed = true,
+                        RecoveryDecision = ValidationAuditRecoveryDecision.FailClosed,
+                        CompletenessCode = ValidationAuditCompletenessCode.ExecutionMissing
+                    };
+                }
+            }
+            else
             {
                 EnsureKnownAuditContractVersion(existing);
+
+                if (existing.Status == ValidationAuditExecutionStatus.Superseded
+                    && isResume
+                    && trial.Status == ValidationTrialStatus.Completed)
+                {
+                    return new AuthoritativeAuditExecutionEnsureResult
+                    {
+                        Execution = existing,
+                        FailClosed = true,
+                        RecoveryDecision = ValidationAuditRecoveryDecision.FailClosed,
+                        CompletenessCode = ValidationAuditCompletenessCode.Superseded
+                    };
+                }
 
                 if (existing.Status == ValidationAuditExecutionStatus.Completed)
                 {

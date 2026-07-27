@@ -46,11 +46,18 @@ export function dedupeFailureReasons(raw?: string | null): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
     for (const item of parsed) {
-      const obj = item as { ruleKey?: string; reason?: string; message?: string };
-      const key = obj.ruleKey ?? obj.reason ?? obj.message ?? String(item);
+      const obj = item as {
+        ruleKey?: string;
+        reason?: string;
+        message?: string;
+        userSafeMessage?: string;
+        code?: string;
+      };
+      const key =
+        obj.ruleKey ?? obj.code ?? obj.reason ?? obj.message ?? obj.userSafeMessage ?? String(item);
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push(obj.reason ?? obj.message ?? String(item));
+      out.push(obj.userSafeMessage ?? obj.reason ?? obj.message ?? obj.code ?? String(item));
     }
     return out;
   } catch {

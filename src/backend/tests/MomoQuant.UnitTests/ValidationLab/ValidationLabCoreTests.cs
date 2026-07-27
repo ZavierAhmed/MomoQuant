@@ -245,11 +245,14 @@ public class ValidationLeakageRankingTests
                 TrialNumber = 1,
                 ParameterFingerprint = "A",
                 GuardrailDecision = "Passed",
+                Status = ValidationTrialStatus.Completed,
                 TrainingScore = 70m,
                 NetExpectancyR = 0.4m,
                 ProfitFactor = 1.4m,
                 MaximumDrawdownPercent = 8m,
-                ClosedTradeCount = 40
+                ClosedTradeCount = 40,
+                AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-0000000000a1"),
+                AuditCompletionStatus = ValidationAuditCompletionStatus.Complete
             },
             new()
             {
@@ -257,11 +260,14 @@ public class ValidationLeakageRankingTests
                 TrialNumber = 2,
                 ParameterFingerprint = "B",
                 GuardrailDecision = "Passed",
+                Status = ValidationTrialStatus.Completed,
                 TrainingScore = 75m,
                 NetExpectancyR = 0.5m,
                 ProfitFactor = 1.5m,
                 MaximumDrawdownPercent = 7m,
-                ClosedTradeCount = 42
+                ClosedTradeCount = 42,
+                AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-0000000000a2"),
+                AuditCompletionStatus = ValidationAuditCompletionStatus.Complete
             }
         };
 

@@ -52,6 +52,18 @@ public sealed class E2C2SeamControls
     public bool ArmTrialFingerprintGetFailureAfterFinalizer { get; set; }
     public bool ArmAuditExecutionGetFailureAfterFinalizer { get; set; }
     public bool AuditFinalizerInvoked { get; set; }
+    /// <summary>Allow holdout validation runs (non-ValidationTraining purpose) for E2C3 end-to-end / verdict tests.</summary>
+    public bool AllowNonTrainingRuns { get; set; }
+    /// <summary>After a non-training runner completes, corrupt authoritative audit for this experiment id.</summary>
+    public long? CorruptAuthoritativeAuditAfterNonTrainingRunForExperimentId { get; set; }
+    public enum AuditCorruptionMode
+    {
+        DeleteAccessRows,
+        SupersedeExecution,
+        DeleteExecution
+    }
+
+    public AuditCorruptionMode NonTrainingAuditCorruption { get; set; } = AuditCorruptionMode.DeleteAccessRows;
     private int _runnerInvocationCount;
 
     public int RunnerInvocationCount => Volatile.Read(ref _runnerInvocationCount);
@@ -81,6 +93,9 @@ public sealed class E2C2SeamControls
         ArmTrialFingerprintGetFailureAfterFinalizer = false;
         ArmAuditExecutionGetFailureAfterFinalizer = false;
         AuditFinalizerInvoked = false;
+        AllowNonTrainingRuns = false;
+        CorruptAuthoritativeAuditAfterNonTrainingRunForExperimentId = null;
+        NonTrainingAuditCorruption = AuditCorruptionMode.DeleteAccessRows;
         Volatile.Write(ref _runnerInvocationCount, 0);
     }
 }
@@ -229,7 +244,8 @@ public sealed class E2C2OrchestrationFactory : MomoQuantWebApplicationFactory
                 return new E2C2StrategyLabRunner(
                     runs,
                     candidates,
-                    sp.GetRequiredService<E2C2SeamControls>());
+                    sp.GetRequiredService<E2C2SeamControls>(),
+                    sp.GetRequiredService<IServiceScopeFactory>());
             });
 
             services.RemoveAll<IValidationCandleAccessRecorder>();
@@ -451,15 +467,18 @@ internal sealed class E2C2StrategyLabRunner : IStrategyLabRunner
     private readonly IStrategyLabRunRepository _runs;
     private readonly IStrategyResearchCandidateRepository _candidates;
     private readonly E2C2SeamControls _controls;
+    private readonly IServiceScopeFactory _scopeFactory;
 
     public E2C2StrategyLabRunner(
         IStrategyLabRunRepository runs,
         IStrategyResearchCandidateRepository candidates,
-        E2C2SeamControls controls)
+        E2C2SeamControls controls,
+        IServiceScopeFactory scopeFactory)
     {
         _runs = runs;
         _candidates = candidates;
         _controls = controls;
+        _scopeFactory = scopeFactory;
     }
 
     public Task ExecuteAsync(long runId, CancellationToken cancellationToken = default) =>
@@ -474,7 +493,14 @@ internal sealed class E2C2StrategyLabRunner : IStrategyLabRunner
         _controls.IncrementRunnerInvocation();
         if (executionContext.ExecutionPurpose != ExecutionPurpose.ValidationTraining)
         {
-            throw new InvalidOperationException("E2C2 seam runner is only for ValidationTraining tests.");
+            if (!_controls.AllowNonTrainingRuns)
+            {
+                throw new InvalidOperationException("E2C2 seam runner is only for ValidationTraining tests.");
+            }
+
+            await CompleteGenericRunAsync(runId, cancellationToken);
+            await MaybeCorruptAuditAfterNonTrainingAsync(cancellationToken);
+            return;
         }
 
         var scope = ValidationTrainingCandleScopeAmbient.Current
@@ -499,6 +525,106 @@ internal sealed class E2C2StrategyLabRunner : IStrategyLabRunner
                 await CompleteAllowedRunAsync(runId, scope, cancellationToken);
                 break;
         }
+    }
+
+    private async Task MaybeCorruptAuditAfterNonTrainingAsync(CancellationToken cancellationToken)
+    {
+        if (_controls.CorruptAuthoritativeAuditAfterNonTrainingRunForExperimentId is not long experimentId)
+        {
+            return;
+        }
+
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var sp = scope.ServiceProvider;
+        var trials = await sp.GetRequiredService<IValidationParameterTrialRepository>()
+            .GetByExperimentIdAsync(experimentId, cancellationToken);
+        var trial = trials.FirstOrDefault(t => t.AuthoritativeAuditExecutionId is not null)
+                    ?? trials.FirstOrDefault();
+        if (trial?.AuthoritativeAuditExecutionId is null)
+        {
+            return;
+        }
+
+        var execRepo = sp.GetRequiredService<IValidationAuditExecutionRepository>();
+        var execution = await execRepo.GetByAuditExecutionIdAsync(
+            trial.AuthoritativeAuditExecutionId.Value, cancellationToken);
+        if (execution is null)
+        {
+            return;
+        }
+
+        var db = sp.GetRequiredService<MomoQuantDbContext>();
+        switch (_controls.NonTrainingAuditCorruption)
+        {
+            case E2C2SeamControls.AuditCorruptionMode.SupersedeExecution:
+                // Completed executions reject MarkSuperseded; mutate durable status directly for test seams.
+                execution.Status = ValidationAuditExecutionStatus.Superseded;
+                execution.SupersededByAuditExecutionId = Guid.NewGuid();
+                execution.FailureCode = "E2C3_TEST_SUPERSEDE";
+                execution.UpdatedAtUtc = DateTime.UtcNow;
+                await execRepo.UpdateAsync(execution, cancellationToken);
+                break;
+            case E2C2SeamControls.AuditCorruptionMode.DeleteExecution:
+                await db.ValidationAuditBatches
+                    .Where(b => b.AuditExecutionId == execution.AuditExecutionId)
+                    .ExecuteDeleteAsync(cancellationToken);
+                await db.ValidationAuditExecutions
+                    .Where(e => e.AuditExecutionId == execution.AuditExecutionId)
+                    .ExecuteDeleteAsync(cancellationToken);
+                break;
+            default:
+                await db.ValidationCandleAccessAudits
+                    .Where(a => a.ScopeExecutionId == execution.ScopeExecutionId)
+                    .ExecuteDeleteAsync(cancellationToken);
+                break;
+        }
+    }
+
+    private async Task CompleteGenericRunAsync(long runId, CancellationToken cancellationToken)
+    {
+        var run = await _runs.GetByIdAsync(runId, cancellationToken)
+                  ?? throw new InvalidOperationException($"Lab run {runId} missing.");
+        run.Status = StrategyLabRunStatus.Completed;
+        run.CompletedAtUtc = DateTime.UtcNow;
+        run.ErrorMessage = null;
+        run.ResultSummaryJson = "{}";
+        await _runs.UpdateAsync(run, cancellationToken);
+
+        var setupTime = DateTime.UtcNow.AddDays(-1);
+        var entry = 100m;
+        var stop = 99m;
+        var exit = 102m;
+        await _candidates.AddRangeAsync(
+            [
+                new StrategyResearchCandidate
+                {
+                    StrategyLabRunId = run.Id,
+                    StrategyCode = run.StrategyCode,
+                    StrategyVersion = run.StrategyVersion ?? "1.0.0",
+                    ExchangeId = run.ExchangeId,
+                    SymbolId = run.SymbolId,
+                    Symbol = run.Symbol,
+                    Timeframe = run.Timeframe,
+                    Direction = TradeDirection.Long,
+                    SetupDetectedAtUtc = setupTime,
+                    ProposedEntryTimeUtc = setupTime,
+                    ProposedEntryPrice = entry,
+                    StopLoss = stop,
+                    Target1 = exit,
+                    RewardRisk = 2m,
+                    CandidateStatus = StrategyResearchCandidateStatus.Closed,
+                    RawOutcomeStatus = RawOutcomeStatus.Winner,
+                    RawExitTimeUtc = setupTime.AddMinutes(15),
+                    RawExitPrice = exit,
+                    ProposedPositionSize = 1m,
+                    RiskAmount = entry - stop,
+                    SetupFingerprint = $"m230e2c3-val-{run.Id}",
+                    StrategyReason = "M230E2C3-ValidationSeam",
+                    ParametersJson = "{}",
+                    StructureJson = "{}"
+                }
+            ],
+            cancellationToken);
     }
 
     private async Task CompleteAllowedRunAsync(

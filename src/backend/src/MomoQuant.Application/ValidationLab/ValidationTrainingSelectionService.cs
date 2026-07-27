@@ -30,6 +30,8 @@ public sealed class TrainingSelectionFinalizeResult
     public StrategyRobustnessDecision? FailureCode { get; init; }
     public string? FailureMessage { get; init; }
     public bool ShouldFailExperiment { get; init; }
+    /// <summary>True when guardrail-passed trials exist but authoritative audit evidence is incomplete.</summary>
+    public bool AuditEvidenceIncomplete { get; init; }
 }
 
 public interface IValidationTrainingSelectionService
@@ -48,6 +50,8 @@ public sealed class ValidationTrainingSelectionService : IValidationTrainingSele
     public const string DefaultPolicyVersion = "TrainingTrialSelection/Default/v1 (GuardrailPassedRequired)";
     public const string ZeroEligibleMessage =
         "All completed training trials failed the frozen training guardrails. No configuration was eligible for selection, so holdout validation was not run.";
+    public const string AuditIncompleteMessage =
+        ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage;
 
     public TrainingSelectionPopulationSummary SummarizePopulation(
         ValidationExperiment experiment,
@@ -65,9 +69,10 @@ public sealed class ValidationTrainingSelectionService : IValidationTrainingSele
         // v1.3.2 experiments additionally require snapshot rank eligibility (Milestone 23.0D).
         var useSnapshotEligibility =
             ValidationMetricsContract.IsPopulationPathMetricsVersion(experiment.ValidationMetricsVersion);
+        var guardrailPassed = trials.Count(
+            ValidationAuthoritativeAuditQualificationEvaluator.IsGuardrailPassedCompleted);
         var eligible = trials.Count(t =>
-            string.Equals(t.GuardrailDecision, "Passed", StringComparison.OrdinalIgnoreCase)
-            && t.Status == ValidationTrialStatus.Completed
+            ValidationAuthoritativeAuditQualificationEvaluator.MeetsCachedAuditEligibilityFields(t)
             && (!useSnapshotEligibility || ValidationTrialRanker.IsSnapshotRankEligible(t)));
 
         return new TrainingSelectionPopulationSummary
@@ -76,7 +81,7 @@ public sealed class ValidationTrainingSelectionService : IValidationTrainingSele
             GeneratedTrialCount = trials.Count,
             UniqueParameterFingerprintCount = unique,
             TerminalTrialCount = terminal,
-            GuardrailPassedTrialCount = eligible,
+            GuardrailPassedTrialCount = guardrailPassed,
             GuardrailRejectedTrialCount = trials.Count(t => t.Status == ValidationTrialStatus.GuardrailRejected),
             FailedTrialCount = trials.Count(t =>
                 t.Status is ValidationTrialStatus.Failed
@@ -131,27 +136,42 @@ public sealed class ValidationTrainingSelectionService : IValidationTrainingSele
                 };
             }
 
+            // Audit incompleteness is distinct from snapshot-rank ineligibility (v1.3.2).
+            var auditIncomplete = trialList.Any(t =>
+                ValidationAuthoritativeAuditQualificationEvaluator.IsGuardrailPassedCompleted(t)
+                && (t.AuthoritativeAuditExecutionId is null
+                    || t.AuditCompletionStatus != ValidationAuditCompletionStatus.Complete));
             return new TrainingSelectionFinalizeResult
             {
                 Succeeded = false,
                 Population = population,
                 IntegrityStatus = ValidationSelectionIntegrityStatus.FailedNoEligibleTrials,
-                FailureCode = StrategyRobustnessDecision.FailedNoTrainingTrialPassedGuardrails,
-                FailureMessage = ZeroEligibleMessage,
-                ShouldFailExperiment = true
+                FailureCode = auditIncomplete
+                    ? null
+                    : StrategyRobustnessDecision.FailedNoTrainingTrialPassedGuardrails,
+                FailureMessage = auditIncomplete ? AuditIncompleteMessage : ZeroEligibleMessage,
+                ShouldFailExperiment = true,
+                AuditEvidenceIncomplete = auditIncomplete
             };
         }
 
         if (winner is null)
         {
+            var auditIncomplete = trialList.Any(t =>
+                ValidationAuthoritativeAuditQualificationEvaluator.IsGuardrailPassedCompleted(t)
+                && (t.AuthoritativeAuditExecutionId is null
+                    || t.AuditCompletionStatus != ValidationAuditCompletionStatus.Complete));
             return new TrainingSelectionFinalizeResult
             {
                 Succeeded = false,
                 Population = population,
                 IntegrityStatus = ValidationSelectionIntegrityStatus.FailedSelectedTrialMissing,
-                FailureCode = StrategyRobustnessDecision.FailedNoTrainingTrialPassedGuardrails,
-                FailureMessage = ZeroEligibleMessage,
-                ShouldFailExperiment = true
+                FailureCode = auditIncomplete
+                    ? null
+                    : StrategyRobustnessDecision.FailedNoTrainingTrialPassedGuardrails,
+                FailureMessage = auditIncomplete ? AuditIncompleteMessage : ZeroEligibleMessage,
+                ShouldFailExperiment = true,
+                AuditEvidenceIncomplete = auditIncomplete
             };
         }
 

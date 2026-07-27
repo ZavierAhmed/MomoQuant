@@ -529,6 +529,8 @@ public class ValidationLab230DTrialMetricsTests
             t.ClosedTradeCount = 10;
             t.TrialRankEligibility = ValidationTrialRankEligibility.Eligible;
             t.TrialMetricFingerprint = "mf-" + fp;
+            t.AuthoritativeAuditExecutionId = Guid.Parse($"00000000-0000-0000-0000-{number:D12}");
+            t.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
             return t;
         }
 
@@ -551,12 +553,16 @@ public class ValidationLab230DTrialMetricsTests
         evaluated.GuardrailDecision = "Passed";
         evaluated.TrainingScore = 50m;
         evaluated.NetExpectancyR = 0.1m;
+        evaluated.AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        evaluated.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
 
         var nullMetric = Trial(2, "bbb");
         nullMetric.Status = ValidationTrialStatus.Completed;
         nullMetric.GuardrailDecision = "Passed";
         nullMetric.TrainingScore = 50m;
         nullMetric.NetExpectancyR = null;
+        nullMetric.AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        nullMetric.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
 
         var ordered = ValidationTrialRanker.OrderForRanking([nullMetric, evaluated]);
         Assert.Equal(new[] { 1, 2 }, ordered.Select(t => t.TrialNumber).ToArray());
@@ -571,12 +577,16 @@ public class ValidationLab230DTrialMetricsTests
         withSnapshot.TrainingScore = 10m;
         withSnapshot.TrialRankEligibility = ValidationTrialRankEligibility.Eligible;
         withSnapshot.TrialMetricFingerprint = "abc123";
+        withSnapshot.AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-000000000011");
+        withSnapshot.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
 
         var withoutSnapshot = Trial(2, "bbb");
         withoutSnapshot.Status = ValidationTrialStatus.Completed;
         withoutSnapshot.GuardrailDecision = "Passed";
         withoutSnapshot.TrainingScore = 99m; // better score, but no persisted snapshot
         withoutSnapshot.TrialRankEligibility = ValidationTrialRankEligibility.NotEvaluated;
+        withoutSnapshot.AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-000000000012");
+        withoutSnapshot.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
 
         var trials = new List<ValidationParameterTrial> { withSnapshot, withoutSnapshot };
         ValidationTrialRanker.AssignRanks(trials, requireSnapshotEligibility: true);
@@ -685,6 +695,11 @@ public class ValidationLab230DTrialMetricsTests
         Assert.Equal(1.31944m, legacyTrialB.NetExpectancyR);
         Assert.Equal(74.79m, legacyTrialB.TrainingScore);
 
+        legacyTrialA.AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-0000000000a1");
+        legacyTrialA.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
+        legacyTrialB.AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-0000000000b1");
+        legacyTrialB.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
+
         var legacyWinner = ValidationTrialRanker.SelectWinner([legacyTrialA, legacyTrialB]);
         Assert.Same(legacyTrialA, legacyWinner);
 
@@ -715,6 +730,9 @@ public class ValidationLab230DTrialMetricsTests
         Assert.Equal(Math.Round(7.6768m / 1.0796m, 8), trialB.ProfitFactor);
         Assert.Equal(73.78m, trialB.TrainingScore);
         Assert.NotNull(trialB.TrialMetricFingerprint);
+
+        trialB.AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-0000000000b2");
+        trialB.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
 
         var trials = new List<ValidationParameterTrial> { trialA, trialB };
         ValidationTrialRanker.AssignRanks(trials, requireSnapshotEligibility: true);

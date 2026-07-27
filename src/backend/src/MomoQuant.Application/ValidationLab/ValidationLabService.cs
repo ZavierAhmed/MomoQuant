@@ -189,6 +189,7 @@ public sealed partial class ValidationLabService : IValidationLabService
     private readonly IValidationAuditExecutionRepository _auditExecutions;
     private readonly IValidationAuditBatchRepository _auditBatches;
     private readonly IValidationAuditCompletenessVerifier _auditCompletenessVerifier;
+    private readonly IValidationAuthoritativeAuditQualificationEvaluator _authoritativeAuditQualification;
 
     public ValidationLabService(
         IValidationExperimentRepository experiments,
@@ -230,7 +231,8 @@ public sealed partial class ValidationLabService : IValidationLabService
         IValidationTrialAuditCompletionGate trialAuditCompletionGate,
         IValidationAuditExecutionRepository auditExecutions,
         IValidationAuditBatchRepository auditBatches,
-        IValidationAuditCompletenessVerifier auditCompletenessVerifier)
+        IValidationAuditCompletenessVerifier auditCompletenessVerifier,
+        IValidationAuthoritativeAuditQualificationEvaluator authoritativeAuditQualification)
     {
         _experiments = experiments;
         _trials = trials;
@@ -272,6 +274,7 @@ public sealed partial class ValidationLabService : IValidationLabService
         _auditExecutions = auditExecutions;
         _auditBatches = auditBatches;
         _auditCompletenessVerifier = auditCompletenessVerifier;
+        _authoritativeAuditQualification = authoritativeAuditQualification;
     }
 
     public async Task<ServiceResult<ValidationExperimentDto>> CreateExperimentAsync(
@@ -749,6 +752,36 @@ public sealed partial class ValidationLabService : IValidationLabService
                 "Freeze blocked: ValidationDataLeakageDetected. Training optimizer accessed validation-range data.");
         }
 
+        // Milestone 23.0E2C3 — denied/boundary evidence from any attempt remains qualification-blocking.
+        var freezeAccessRows = await _candleAccessAudits.GetByExperimentIdAsync(id, cancellationToken);
+        var negativeEvidence = ValidationLeakageEvidenceSelector.CollectNegativeBlockingEvidence(freezeAccessRows);
+        if (negativeEvidence.Count > 0)
+        {
+            experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
+            experiment.IsQualificationCapable = false;
+            AppendDiagnostic(experiment, "ValidationDataLeakageDetected",
+                "Denied or boundary-violation access evidence remains qualification-blocking.");
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
+            return ServiceResult<ValidationExperimentDto>.Fail(
+                "Freeze blocked: ValidationDataLeakageDetected. Training optimizer accessed validation-range data.");
+        }
+
+        if (!experiment.IsQualificationCapable)
+        {
+            return ServiceResult<ValidationExperimentDto>.Fail(
+                "Freeze blocked: experiment is not qualification-capable.");
+        }
+
+        var blockingFailures = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
+        if (blockingFailures.IsQualificationBlocking)
+        {
+            return ServiceResult<ValidationExperimentDto>.Fail(
+                blockingFailures.PrimaryFailure?.UserSafeMessage
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                blockingFailures.PrimaryFailure?.Code);
+        }
+
         // Milestone 23.0D WP21 — v1.3.2 selection must reconcile against the persisted
         // RawStrategy training segment before configuration can be frozen.
         if (ValidationMetricsContract.IsPopulationPathMetricsVersion(experiment.ValidationMetricsVersion)
@@ -762,7 +795,54 @@ public sealed partial class ValidationLabService : IValidationLabService
         var trialEntities = (await _trials.GetByExperimentIdAsync(id, cancellationToken)).ToList();
         if (!_selectionIntegrity.CanFreeze(experiment, trialEntities, out var freezeBlockReason))
         {
+            if (experiment.IsQualificationCapable
+                && (freezeBlockReason ?? string.Empty).Contains(
+                    "Authoritative validation audit", StringComparison.OrdinalIgnoreCase))
+            {
+                experiment.IsQualificationCapable = false;
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+            }
+
             return ServiceResult<ValidationExperimentDto>.Fail(freezeBlockReason ?? "Freeze blocked by selection integrity.");
+        }
+
+        // Milestone 23.0E2C3 — authoritative audit revalidation before any frozen-field mutation.
+        if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
+        {
+            var selected = trialEntities.FirstOrDefault(t => t.Id == experiment.SelectedTrialId);
+            if (selected is null)
+            {
+                return ServiceResult<ValidationExperimentDto>.Fail("Freeze blocked: selected trial was not found.");
+            }
+
+            var auditGate = await _authoritativeAuditQualification.EvaluateTrialAsync(
+                experiment, selected, cancellationToken);
+            if (!auditGate.IsQualificationEligible)
+            {
+                ValidationAuthoritativeAuditQualificationEvaluator.ApplyPopulationMarker(selected, auditGate);
+                await _trials.UpdateAsync(selected, cancellationToken);
+                experiment.IsQualificationCapable = false;
+                var freezeAggregate = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
+                freezeAggregate.Observe(new ValidationTrainingFailureRecord
+                {
+                    Code = ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
+                    Category = ValidationTrainingFailureCategory.AuditDurability,
+                    Precedence = ValidationTrainingFailurePrecedence.AuditDurability,
+                    Phase = ValidationTrainingFailurePhase.CompletenessVerification,
+                    UserSafeMessage = auditGate.UserSafeBlockingReason
+                        ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                    OccurredAtUtc = DateTime.UtcNow,
+                    IsQualificationBlocking = true
+                });
+                ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, freezeAggregate);
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return ServiceResult<ValidationExperimentDto>.Fail(
+                    auditGate.UserSafeBlockingReason
+                    ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                    ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+            }
         }
 
         if (string.IsNullOrWhiteSpace(experiment.SelectedTrialParameterSnapshotJson))
@@ -791,10 +871,6 @@ public sealed partial class ValidationLabService : IValidationLabService
         var draft = ParseDraft(experiment.DraftConfigurationJson);
         draft.Parameters = DeserializeStringDictionary(experiment.SelectedTrialParameterSnapshotJson);
         var paramsJson = experiment.SelectedTrialParameterSnapshotJson;
-        experiment.FrozenStrategyParameterSnapshotJson = paramsJson;
-        experiment.FrozenParameterFingerprint = frozenFingerprint;
-        experiment.FreezeSource = "SelectedEligibleTrainingTrial";
-        experiment.FrozenSnapshotValidationStatus = snapshotStatus;
         if (experiment.SelectedTrialParameterFingerprint is not null
             && !string.Equals(experiment.SelectedTrialParameterFingerprint, frozenFingerprint, StringComparison.Ordinal))
         {
@@ -802,6 +878,10 @@ public sealed partial class ValidationLabService : IValidationLabService
                 "Freeze blocked: selected and frozen parameter fingerprints do not match.");
         }
 
+        experiment.FrozenStrategyParameterSnapshotJson = paramsJson;
+        experiment.FrozenParameterFingerprint = frozenFingerprint;
+        experiment.FreezeSource = "SelectedEligibleTrainingTrial";
+        experiment.FrozenSnapshotValidationStatus = snapshotStatus;
         experiment.SelectedTrialParameterFingerprint = frozenFingerprint;
         experiment.FrozenConfidenceSnapshotJson = JsonSerializer.Serialize(draft.ObservationSettings, JsonOptions);
         experiment.FrozenRiskSnapshotJson = JsonSerializer.Serialize(new
@@ -874,6 +954,51 @@ public sealed partial class ValidationLabService : IValidationLabService
             experiment.UpdatedAtUtc = DateTime.UtcNow;
             await _experiments.UpdateAsync(experiment, cancellationToken);
             return ServiceResult<ValidationExperimentDetailDto>.Fail(validationBlockReason ?? "Validation blocked by selection integrity.");
+        }
+
+        if (!experiment.IsQualificationCapable)
+        {
+            return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                "Validation blocked: experiment is not qualification-capable.");
+        }
+
+        // Milestone 23.0E2C3 — revalidate authoritative audit before ValidationRunning / runner.
+        if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
+        {
+            var selected = trialEntities.FirstOrDefault(t => t.Id == experiment.SelectedTrialId);
+            if (selected is null)
+            {
+                return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                    "Validation blocked: selected trial was not found.");
+            }
+
+            var auditGate = await _authoritativeAuditQualification.EvaluateTrialAsync(
+                experiment, selected, cancellationToken);
+            if (!auditGate.IsQualificationEligible)
+            {
+                ValidationAuthoritativeAuditQualificationEvaluator.ApplyPopulationMarker(selected, auditGate);
+                await _trials.UpdateAsync(selected, cancellationToken);
+                experiment.IsQualificationCapable = false;
+                var validationAggregate = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
+                validationAggregate.Observe(new ValidationTrainingFailureRecord
+                {
+                    Code = ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
+                    Category = ValidationTrainingFailureCategory.AuditDurability,
+                    Precedence = ValidationTrainingFailurePrecedence.AuditDurability,
+                    Phase = ValidationTrainingFailurePhase.CompletenessVerification,
+                    UserSafeMessage = auditGate.UserSafeBlockingReason
+                        ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                    OccurredAtUtc = DateTime.UtcNow,
+                    IsQualificationBlocking = true
+                });
+                ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, validationAggregate);
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                    auditGate.UserSafeBlockingReason
+                    ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                    ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+            }
         }
 
         if (experiment.ValidationStartUtc is null || experiment.ValidationEndUtc is null)
@@ -1122,12 +1247,81 @@ public sealed partial class ValidationLabService : IValidationLabService
                 reconciliation.ReconciliationStatus,
                 experiment.LeakageAuditStatus,
                 metricOk);
+
+            // Milestone 23.0E2C3 — revalidate authoritative audit immediately before verdict/reveal.
+            if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
+            {
+                var selectedForVerdict = (await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken))
+                    .FirstOrDefault(t => t.Id == experiment.SelectedTrialId);
+                if (selectedForVerdict is null)
+                {
+                    experiment.IsQualificationCapable = false;
+                    experiment.StrategyRobustnessDecision = StrategyRobustnessDecision.FailedDataIntegrity;
+                    experiment.DecisionExplanation =
+                        ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage;
+                    experiment.UpdatedAtUtc = DateTime.UtcNow;
+                    await _experiments.UpdateAsync(experiment, cancellationToken);
+                    return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                        ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                        ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+                }
+
+                var verdictAudit = await _authoritativeAuditQualification.EvaluateTrialAsync(
+                    experiment, selectedForVerdict, cancellationToken);
+                if (!verdictAudit.IsQualificationEligible)
+                {
+                    ValidationAuthoritativeAuditQualificationEvaluator.ApplyPopulationMarker(
+                        selectedForVerdict, verdictAudit);
+                    await _trials.UpdateAsync(selectedForVerdict, cancellationToken);
+                    experiment.IsQualificationCapable = false;
+                    experiment.StrategyRobustnessDecision = StrategyRobustnessDecision.FailedDataIntegrity;
+                    experiment.DecisionExplanation = verdictAudit.UserSafeBlockingReason
+                        ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage;
+                    var verdictAggregate = ValidationTrainingFailurePersistence.MergeExisting(
+                        experiment.FailureReasonsJson);
+                    verdictAggregate.Observe(new ValidationTrainingFailureRecord
+                    {
+                        Code = ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
+                        Category = ValidationTrainingFailureCategory.AuditDurability,
+                        Precedence = ValidationTrainingFailurePrecedence.AuditDurability,
+                        Phase = ValidationTrainingFailurePhase.CompletenessVerification,
+                        UserSafeMessage = experiment.DecisionExplanation,
+                        OccurredAtUtc = DateTime.UtcNow,
+                        IsQualificationBlocking = true
+                    });
+                    ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, verdictAggregate);
+                    experiment.Status = ValidationExperimentStatus.Failed;
+                    experiment.CurrentStage = "AuditPersistenceFailed";
+                    // Do not reveal or complete as Passed.
+                    experiment.UpdatedAtUtc = DateTime.UtcNow;
+                    await _experiments.UpdateAsync(experiment, cancellationToken);
+                    return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                        experiment.DecisionExplanation,
+                        ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+                }
+            }
+
             experiment.StrategyRobustnessDecision = verdict.Decision;
-            experiment.PrimaryFailureReason = verdict.PrimaryFailureReason;
-            experiment.FailureReasonsJson = JsonSerializer.Serialize(verdict.FailureReasons, JsonOptions);
+            // Never replace the canonical E2C2 FailureReasonsJson aggregate with qualification-rule enums.
             experiment.QualificationRuleResultsJson =
                 ValidationVerdictService.SerializeRules(verdict.StructuredRuleResults);
             experiment.DecisionExplanation = verdict.Explanation;
+            if (!string.IsNullOrWhiteSpace(verdict.PrimaryFailureReason))
+            {
+                AppendDiagnostic(experiment, "QualificationDecision",
+                    $"{verdict.PrimaryFailureReason}: {verdict.Explanation}");
+            }
+
+            if (verdict.Decision == StrategyRobustnessDecision.Passed && !experiment.IsQualificationCapable)
+            {
+                experiment.StrategyRobustnessDecision = StrategyRobustnessDecision.FailedDataIntegrity;
+                experiment.DecisionExplanation =
+                    "Passed qualification decision rejected because the experiment is not qualification-capable.";
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return ServiceResult<ValidationExperimentDetailDto>.Fail(experiment.DecisionExplanation);
+            }
+
             experiment.DecidedAtUtc = DateTime.UtcNow;
             experiment.BoundaryCensoredCount = valPrimary?.BoundaryCensoredCount ?? 0;
             experiment.ValidationRevealStatus = ValidationRevealStatus.Revealed;
@@ -1621,12 +1815,17 @@ public sealed partial class ValidationLabService : IValidationLabService
                 $"Stored verdict {stored} is not reproducible from persisted rules (recalculated {verdict.Decision}).");
         }
 
+        // Milestone 23.0E2C3 — never replace the canonical E2C2 FailureReasonsJson aggregate.
         experiment.StrategyRobustnessDecision = verdict.Decision;
-        experiment.PrimaryFailureReason = verdict.PrimaryFailureReason;
-        experiment.FailureReasonsJson = JsonSerializer.Serialize(verdict.FailureReasons, JsonOptions);
         experiment.QualificationRuleResultsJson =
             ValidationVerdictService.SerializeRules(verdict.StructuredRuleResults);
         experiment.DecisionExplanation = verdict.Explanation;
+        if (!string.IsNullOrWhiteSpace(verdict.PrimaryFailureReason))
+        {
+            AppendDiagnostic(experiment, "QualificationDecision",
+                $"{verdict.PrimaryFailureReason}: {verdict.Explanation}");
+        }
+
         experiment.DecidedAtUtc = DateTime.UtcNow;
         experiment.UpdatedAtUtc = DateTime.UtcNow;
         await _experiments.UpdateAsync(experiment, cancellationToken);

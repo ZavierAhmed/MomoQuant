@@ -86,7 +86,9 @@ public class ValidationLab223Tests
                 GuardrailDecision = "Passed",
                 TrainingScore = 10m,
                 Rank = 1,
-                StrategyLabRunId = 10
+                StrategyLabRunId = 10,
+                AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-000000000001"),
+                AuditCompletionStatus = ValidationAuditCompletionStatus.Complete
             },
             new()
             {

@@ -43,7 +43,9 @@ public class ValidationLab224Tests
         NetExpectancyR = netExp,
         ProfitFactor = pf,
         ClosedTradeCount = 10,
-        StrategyLabRunId = 200 + num
+        StrategyLabRunId = 200 + num,
+        AuthoritativeAuditExecutionId = Guid.Parse($"00000000-0000-0000-0000-{id:D12}"),
+        AuditCompletionStatus = ValidationAuditCompletionStatus.Complete
     };
 
     private static StrategyResearchCandidate RawClosed(

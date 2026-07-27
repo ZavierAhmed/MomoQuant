@@ -19,11 +19,7 @@ public static class ValidationTrialRanker
         bool requireSnapshotEligibility = false)
     {
         var eligible = trials
-            .Where(t => t.Status is not (ValidationTrialStatus.Failed
-                            or ValidationTrialStatus.GuardrailRejected
-                            or ValidationTrialStatus.LeakageFailed
-                            or ValidationTrialStatus.AuditPersistenceFailed)
-                        && string.Equals(t.GuardrailDecision, "Passed", StringComparison.OrdinalIgnoreCase));
+            .Where(t => ValidationAuthoritativeAuditQualificationEvaluator.MeetsCachedAuditEligibilityFields(t));
 
         if (requireSnapshotEligibility)
         {
@@ -53,6 +49,26 @@ public static class ValidationTrialRanker
         foreach (var trial in trials)
         {
             trial.Rank = null;
+            if (!ValidationAuthoritativeAuditQualificationEvaluator.MeetsCachedAuditEligibilityFields(trial))
+            {
+                if (ValidationAuthoritativeAuditQualificationEvaluator.IsGuardrailPassedCompleted(trial)
+                    || trial.TrialRankEligibility == ValidationTrialRankEligibility.Eligible)
+                {
+                    if (trial.TrialRankEligibility == ValidationTrialRankEligibility.Eligible)
+                    {
+                        trial.TrialRankEligibility = ValidationTrialRankEligibility.Ineligible;
+                    }
+
+                    ValidationTrainingFailurePersistence.AppendRankIneligibleReasons(
+                        trial,
+                        [
+                            ValidationAuthoritativeAuditQualificationEvaluator.RankIneligibleReasonCode,
+                            trial.AuthoritativeAuditExecutionId is null
+                                ? ValidationAuditCompletenessCode.HistoricalNotEvaluated.ToString()
+                                : trial.AuditCompletionStatus.ToString()
+                        ]);
+                }
+            }
         }
 
         var ordered = OrderForRanking(trials, requireSnapshotEligibility);

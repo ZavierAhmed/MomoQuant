@@ -33,7 +33,9 @@ public sealed class ValidationTrialRankingTests
                 MaximumDrawdownPercent = 10m,
                 ClosedTradeCount = 40,
                 GuardrailDecision = "Passed",
-                Status = ValidationTrialStatus.Completed
+                Status = ValidationTrialStatus.Completed,
+                AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-000000000002"),
+                AuditCompletionStatus = ValidationAuditCompletionStatus.Complete
             }
         };
 
@@ -60,7 +62,9 @@ public sealed class ValidationTrialRankingTests
                 MaximumDrawdownPercent = 8m,
                 ClosedTradeCount = 40,
                 GuardrailDecision = "Passed",
-                Status = ValidationTrialStatus.Completed
+                Status = ValidationTrialStatus.Completed,
+                AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-00000000000a"),
+                AuditCompletionStatus = ValidationAuditCompletionStatus.Complete
             },
             new()
             {
@@ -72,7 +76,9 @@ public sealed class ValidationTrialRankingTests
                 MaximumDrawdownPercent = 5m,
                 ClosedTradeCount = 50,
                 GuardrailDecision = "Passed",
-                Status = ValidationTrialStatus.Completed
+                Status = ValidationTrialStatus.Completed,
+                AuthoritativeAuditExecutionId = Guid.Parse("00000000-0000-0000-0000-00000000000b"),
+                AuditCompletionStatus = ValidationAuditCompletionStatus.Complete
             }
         };
 

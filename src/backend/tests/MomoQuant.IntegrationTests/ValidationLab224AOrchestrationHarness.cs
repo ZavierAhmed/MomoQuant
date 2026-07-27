@@ -127,12 +127,78 @@ internal sealed class ValidationLab224AOrchestrationHarness
         CancellationToken cancellationToken = default)
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
-        var trialRepo = scope.ServiceProvider.GetRequiredService<IValidationParameterTrialRepository>();
+        var sp = scope.ServiceProvider;
+        var trialRepo = sp.GetRequiredService<IValidationParameterTrialRepository>();
+        var experiments = sp.GetRequiredService<IValidationExperimentRepository>();
+        var experiment = await experiments.GetByIdAsync(experimentId, cancellationToken)
+            ?? throw new InvalidOperationException("Experiment missing for trial seed.");
 
         foreach (var trial in trials)
         {
             trial.ValidationExperimentId = experimentId;
             await trialRepo.AddAsync(trial, cancellationToken);
+        }
+
+        // Milestone 23.0E2C3 — seeded eligible trials need durable authoritative audit proof.
+        var hasher = new ValidationAuditPayloadSetHasher();
+        var canonicalizer = new ValidationAccessPayloadCanonicalizer();
+        var seeded = await trialRepo.GetByExperimentIdAsync(experimentId, cancellationToken);
+        foreach (var trial in seeded.Where(t =>
+                     t.Status == ValidationTrialStatus.Completed
+                     && string.Equals(t.GuardrailDecision, "Passed", StringComparison.OrdinalIgnoreCase)))
+        {
+            var execution = E2C1AuditFixtures.NewExecution(experiment, trial);
+            await sp.GetRequiredService<IValidationAuditExecutionRepository>()
+                .CreateAndAssignTrialAuthoritativeAsync(execution, trial, cancellationToken);
+
+            var eventId = Guid.NewGuid();
+            var access = E2BAuditFixtures.NewAudit(
+                experimentId, eventId, execution.ScopeExecutionId, 1, $"M224A-{trial.TrialNumber}");
+            var hash = canonicalizer.ComputeSha256(access);
+            access.AccessPayloadHash = hash;
+            access.AccessPayloadContractVersion = ValidationAccessPayloadContractVersions.Current;
+
+            var entries = new[]
+            {
+                new ValidationAuditPayloadSetEntry(1, eventId, hash, ValidationAccessPayloadContractVersions.Current)
+            };
+            var setHash = hasher.ComputeSetHash(entries);
+            var (ids, hashes) = hasher.BuildManifestJsons(entries);
+
+            await sp.GetRequiredService<IValidationAuditBatchRepository>().AddAsync(new ValidationAuditBatch
+            {
+                AuditBatchId = Guid.NewGuid(),
+                AuditExecutionId = execution.AuditExecutionId,
+                BatchNumber = 1,
+                FirstSequence = 1,
+                LastSequence = 1,
+                ExpectedEventCount = 1,
+                ExpectedEventIdsJson = ids,
+                ExpectedPayloadHashesJson = hashes,
+                ExpectedPayloadSetHash = setHash,
+                Status = ValidationAuditBatchStatus.Confirmed,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+                ConfirmedAtUtc = DateTime.UtcNow,
+                AuditBatchContractVersion = ValidationAuditBatch.ContractVersionV1,
+                RowVersion = 1
+            }, cancellationToken);
+
+            await sp.GetRequiredService<IValidationCandleAccessAuditRepository>()
+                .AddRangeIdempotentByAccessEventIdAsync([access], cancellationToken);
+
+            execution.LastConfirmedSequence = 1;
+            execution.ConfirmedEventCount = 1;
+            execution.FinalExpectedSequence = 1;
+            execution.ExpectedEventCount = 1;
+            execution.FinalPayloadSetHash = setHash;
+            execution.Status = ValidationAuditExecutionStatus.Completed;
+            execution.CompletedAtUtc = DateTime.UtcNow;
+            trial.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
+            trial.AuthoritativeAuditExecutionId = execution.AuditExecutionId;
+            await sp.GetRequiredService<IValidationAuditExecutionRepository>()
+                .UpdateAsync(execution, cancellationToken);
+            await trialRepo.UpdateAsync(trial, cancellationToken);
         }
     }
 
