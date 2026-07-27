@@ -91,7 +91,9 @@ public sealed class Milestone230E2C1DOrchestrationTests
             {
                 var lab = resumeScope.ServiceProvider.GetRequiredService<IValidationLabService>();
                 var result = await lab.ResumeTrainingAsync(id);
-                Assert.True(result.Succeeded, result.ErrorMessage);
+                Assert.False(result.Succeeded);
+                Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
+                Assert.DoesNotContain("StackTrace", result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
             }
 
             await using (var assertScope = factory.Services.CreateAsyncScope())

@@ -43,6 +43,15 @@ public sealed class E2C2SeamControls
     public bool ThrowOnCompletenessVerifier { get; set; }
     public bool FailScopeDisposal { get; set; }
     public int FailExperimentUpdateCount { get; set; }
+    public int FailTrialUpdateCount { get; set; }
+    public HashSet<ValidationTrialStatus> FailTrialUpdateForStatuses { get; } = [];
+    public HashSet<string> FailExperimentUpdateForStages { get; } = new(StringComparer.Ordinal);
+    public bool FailExperimentUpdateWhenCleanupReasonPresent { get; set; }
+    private int _runnerInvocationCount;
+
+    public int RunnerInvocationCount => Volatile.Read(ref _runnerInvocationCount);
+
+    public void IncrementRunnerInvocation() => Interlocked.Increment(ref _runnerInvocationCount);
 
     public void Reset()
     {
@@ -58,6 +67,11 @@ public sealed class E2C2SeamControls
         ThrowOnCompletenessVerifier = false;
         FailScopeDisposal = false;
         FailExperimentUpdateCount = 0;
+        FailTrialUpdateCount = 0;
+        FailTrialUpdateForStatuses.Clear();
+        FailExperimentUpdateForStages.Clear();
+        FailExperimentUpdateWhenCleanupReasonPresent = false;
+        Volatile.Write(ref _runnerInvocationCount, 0);
     }
 }
 
@@ -235,6 +249,20 @@ public sealed class E2C2OrchestrationFactory : MomoQuantWebApplicationFactory
                 var inner = ActivatorUtilities.CreateInstance<ValidationTrainingScopeExecution>(sp);
                 return new E2C2ScopeExecutionDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
             });
+
+            services.RemoveAll<IValidationExperimentRepository>();
+            services.AddScoped<IValidationExperimentRepository>(sp =>
+            {
+                var inner = ActivatorUtilities.CreateInstance<MomoQuant.Persistence.Repositories.ValidationExperimentRepository>(sp);
+                return new E2C2ExperimentRepositoryDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
+            });
+
+            services.RemoveAll<IValidationParameterTrialRepository>();
+            services.AddScoped<IValidationParameterTrialRepository>(sp =>
+            {
+                var inner = ActivatorUtilities.CreateInstance<MomoQuant.Persistence.Repositories.ValidationParameterTrialRepository>(sp);
+                return new E2C2TrialRepositoryDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
+            });
         });
     }
 }
@@ -405,6 +433,7 @@ internal sealed class E2C2StrategyLabRunner : IStrategyLabRunner
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(executionContext);
+        _controls.IncrementRunnerInvocation();
         if (executionContext.ExecutionPurpose != ExecutionPurpose.ValidationTraining)
         {
             throw new InvalidOperationException("E2C2 seam runner is only for ValidationTraining tests.");
@@ -701,7 +730,7 @@ internal sealed class E2C2FinalizerDecorator : IValidationAuditExecutionFinalize
     {
         if (_controls.ThrowOnAuditFinalizer)
         {
-            throw new InvalidOperationException("E2C2 simulated generic finalizer exception.");
+            throw new InvalidOperationException("database unavailable");
         }
 
         if (_controls.FailAuditFinalizationIncomplete)
@@ -741,7 +770,7 @@ internal sealed class E2C2CompletenessVerifierDecorator : IValidationAuditComple
     {
         if (_controls.ThrowOnCompletenessVerifier)
         {
-            throw new InvalidOperationException("E2C2 simulated generic verifier exception.");
+            throw new ValidationAuditCompletenessVerificationException("boom");
         }
 
         if (_controls.FailCompletenessVerification)
@@ -845,6 +874,71 @@ internal sealed class E2C2ExperimentRepositoryDecorator : IValidationExperimentR
             throw new InvalidOperationException("E2C2 simulated experiment persistence failure.");
         }
 
+        // One-shot stage seam: first matching update fails; retry can persist the observed aggregate.
+        if (_controls.FailExperimentUpdateForStages.Remove(experiment.CurrentStage ?? string.Empty))
+        {
+            throw new InvalidOperationException("E2C2 simulated experiment stage persistence failure.");
+        }
+
+        if (_controls.FailExperimentUpdateWhenCleanupReasonPresent
+            && !string.IsNullOrWhiteSpace(experiment.FailureReasonsJson)
+            && experiment.FailureReasonsJson.Contains(
+                ValidationTrainingFailureCodes.TrainingCleanupFailed,
+                StringComparison.Ordinal))
+        {
+            // One-shot: allow a subsequent retry to persist the cleanup observation.
+            _controls.FailExperimentUpdateWhenCleanupReasonPresent = false;
+            throw new InvalidOperationException("E2C2 simulated cleanup secondary persistence failure.");
+        }
+
         return _inner.UpdateAsync(experiment, cancellationToken);
+    }
+}
+
+internal sealed class E2C2TrialRepositoryDecorator : IValidationParameterTrialRepository
+{
+    private readonly IValidationParameterTrialRepository _inner;
+    private readonly E2C2SeamControls _controls;
+
+    public E2C2TrialRepositoryDecorator(IValidationParameterTrialRepository inner, E2C2SeamControls controls)
+    {
+        _inner = inner;
+        _controls = controls;
+    }
+
+    public Task<IReadOnlyList<ValidationParameterTrial>> GetByExperimentIdAsync(
+        long experimentId,
+        CancellationToken cancellationToken = default) =>
+        _inner.GetByExperimentIdAsync(experimentId, cancellationToken);
+
+    public Task<ValidationParameterTrial?> GetByExperimentAndFingerprintAsync(
+        long experimentId,
+        string parameterFingerprint,
+        CancellationToken cancellationToken = default) =>
+        _inner.GetByExperimentAndFingerprintAsync(experimentId, parameterFingerprint, cancellationToken);
+
+    public Task AddAsync(ValidationParameterTrial trial, CancellationToken cancellationToken = default) =>
+        _inner.AddAsync(trial, cancellationToken);
+
+    public Task AddRangeAsync(
+        IEnumerable<ValidationParameterTrial> trials,
+        CancellationToken cancellationToken = default) =>
+        _inner.AddRangeAsync(trials, cancellationToken);
+
+    public Task UpdateAsync(ValidationParameterTrial trial, CancellationToken cancellationToken = default)
+    {
+        if (_controls.FailTrialUpdateCount > 0)
+        {
+            _controls.FailTrialUpdateCount--;
+            throw new InvalidOperationException("E2C2 simulated trial persistence failure.");
+        }
+
+        // One-shot status seam: first matching update fails; retry can persist the observed aggregate.
+        if (_controls.FailTrialUpdateForStatuses.Remove(trial.Status))
+        {
+            throw new InvalidOperationException("E2C2 simulated trial status persistence failure.");
+        }
+
+        return _inner.UpdateAsync(trial, cancellationToken);
     }
 }

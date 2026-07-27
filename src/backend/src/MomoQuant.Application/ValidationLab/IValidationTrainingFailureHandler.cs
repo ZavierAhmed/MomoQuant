@@ -1,6 +1,4 @@
-using System.Text.Json;
 using MomoQuant.Application.Abstractions;
-using MomoQuant.Application.Common;
 using MomoQuant.Application.Research;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.ValidationLab;
@@ -129,79 +127,45 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
                 .ConfigureAwait(false);
         }
 
-        var primary = aggregate.PrimaryFailure!;
-        var errorCode = primary.Code;
-        var userSafe = primary.UserSafeMessage;
-
-        trial.Status = ValidationTrialStatus.LeakageFailed;
-        trial.ErrorMessage = userSafe;
-        trial.CompletedAtUtc = DateTime.UtcNow;
-        trial.AuditCompletionStatus = aggregate.HasAuditDurabilityFailure
-            ? ValidationAuditCompletionStatus.RecoveryRequired
-            : trial.AuditCompletionStatus;
-        trial.TrialRankEligibility = ValidationTrialRankEligibility.Ineligible;
-        ValidationTrainingFailurePersistence.ApplyTrialWarnings(trial, aggregate);
-        ValidationTrainingFailurePersistence.AppendRankIneligibleReasons(
-            trial,
-            aggregate.AllFailures.Where(f => f.IsQualificationBlocking).Select(f => f.Code).ToArray());
-        await _trials.UpdateAsync(trial, cancellationToken).ConfigureAwait(false);
-
+        ApplyBoundaryTrialMutation(trial, aggregate);
         InvalidateTentativeSelection(experiment);
-        experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
-        experiment.CurrentStage = "LeakageDetected";
-        experiment.Status = ValidationExperimentStatus.Failed;
-        experiment.ErrorMessage = userSafe;
-        experiment.DecidedAtUtc = DateTime.UtcNow;
-        experiment.UpdatedAtUtc = DateTime.UtcNow;
-        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+        ApplyBoundaryExperimentMutation(experiment, aggregate);
 
         if (experiment.ValidationStartUtc is not null
             && experiment.TrainingStartUtc is not null
             && experiment.TrainingEndUtc is not null)
         {
-            var audits = await _audits.GetByExperimentIdAsync(experiment.Id, cancellationToken)
-                .ConfigureAwait(false);
-            var leakage = _leakageAuditor.EvaluateFromAccessEvidence(
-                audits,
-                experiment.ValidationStartUtc.Value,
-                experiment.TrainingStartUtc.Value,
-                experiment.TrainingEndUtc.Value,
-                optimizerInputFingerprint ?? string.Empty);
-            experiment.LeakageAuditJson = _leakageAuditor.Serialize(leakage);
-            experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
+            try
+            {
+                var audits = await _audits.GetByExperimentIdAsync(experiment.Id, cancellationToken)
+                    .ConfigureAwait(false);
+                var leakage = _leakageAuditor.EvaluateFromAccessEvidence(
+                    audits,
+                    experiment.ValidationStartUtc.Value,
+                    experiment.TrainingStartUtc.Value,
+                    experiment.TrainingEndUtc.Value,
+                    optimizerInputFingerprint ?? string.Empty);
+                experiment.LeakageAuditJson = _leakageAuditor.Serialize(leakage);
+                experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
+            }
+            catch (Exception leakageEx)
+            {
+                aggregate.Observe(leakageEx, ValidationTrainingFailurePhase.ExperimentStatusPersistence);
+                ApplyBoundaryExperimentMutation(experiment, aggregate);
+            }
         }
 
-        await _experiments.UpdateAsync(experiment, cancellationToken).ConfigureAwait(false);
-
-        var progress = ValidationTrainingProgressCalculator.Calculate(
-            experiment,
-            await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken).ConfigureAwait(false),
-            generatedTrialCount: experiment.MaximumTrials);
-        try
-        {
-            await _operationStatus.SyncFromValidationTrainingAsync(
-                experiment.Id,
-                status: ValidationExperimentStatus.Failed.ToString(),
+        await PersistFailureStateSafelyAsync(experiment, trial, aggregate, cancellationToken)
+            .ConfigureAwait(false);
+        await SyncOperationStatusSafelyAsync(
+                experiment,
+                aggregate,
                 stage: "LeakageDetected",
-                progress,
-                leaseOwner: leaseOwner,
-                errorCode: errorCode,
-                userSafeError: userSafe,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception syncEx)
-        {
-            aggregate.Observe(syncEx, ValidationTrainingFailurePhase.OperationStatusSync);
-            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
-            await _experiments.UpdateAsync(experiment, cancellationToken).ConfigureAwait(false);
-        }
+                leaseOwner,
+                cancellationToken)
+            .ConfigureAwait(false);
 
-        return new ValidationTrainingFailureHandleResult
-        {
-            ErrorCode = errorCode,
-            UserSafeErrorMessage = userSafe,
-            Aggregate = aggregate
-        };
+        return ToHandleResult(aggregate);
     }
 
     public async Task<ValidationTrainingFailureHandleResult> HandleAuditPersistenceFailureAsync(
@@ -224,59 +188,249 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
             aggregate.Observe(exception, ValidationTrainingFailurePhase.TrialScopeFlush);
         }
 
-        var primary = aggregate.PrimaryFailure!;
-        var errorCode = primary.Code;
-        var userSafe = primary.UserSafeMessage;
-
-        trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
-        trial.ErrorMessage = userSafe;
-        trial.CompletedAtUtc = DateTime.UtcNow;
-        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
-        trial.TrialRankEligibility = ValidationTrialRankEligibility.Ineligible;
-        ValidationTrainingFailurePersistence.ApplyTrialWarnings(trial, aggregate);
-        ValidationTrainingFailurePersistence.AppendRankIneligibleReasons(
-            trial,
-            aggregate.AllFailures.Where(f => f.IsQualificationBlocking).Select(f => f.Code).ToArray());
-        await _trials.UpdateAsync(trial, cancellationToken).ConfigureAwait(false);
-
+        ApplyAuditTrialMutation(trial, aggregate);
         InvalidateTentativeSelection(experiment);
-        experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
-        experiment.CurrentStage = "AuditPersistenceFailed";
-        experiment.Status = ValidationExperimentStatus.Failed;
-        experiment.ErrorMessage = userSafe;
-        experiment.DecidedAtUtc = DateTime.UtcNow;
-        experiment.UpdatedAtUtc = DateTime.UtcNow;
-        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+        ApplyAuditExperimentMutation(experiment, aggregate);
 
-        await _experiments.UpdateAsync(experiment, cancellationToken).ConfigureAwait(false);
+        await PersistFailureStateSafelyAsync(experiment, trial, aggregate, cancellationToken)
+            .ConfigureAwait(false);
+        await SyncOperationStatusSafelyAsync(
+                experiment,
+                aggregate,
+                stage: "AuditPersistenceFailed",
+                leaseOwner,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return ToHandleResult(aggregate);
+    }
+
+    private async Task PersistFailureStateSafelyAsync(
+        ValidationExperiment experiment,
+        ValidationParameterTrial trial,
+        ValidationTrainingFailureAggregate aggregate,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ValidationTrainingDbRetry.ExecuteAsync(
+                    () => _trials.UpdateAsync(trial, cancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception trialPersistEx)
+        {
+            aggregate.Observe(trialPersistEx, ValidationTrainingFailurePhase.TrialStatusPersistence);
+            RefreshSafeMessages(experiment, trial, aggregate);
+            try
+            {
+                await ValidationTrainingDbRetry.ExecuteAsync(
+                        () => _trials.UpdateAsync(trial, cancellationToken),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception retryEx)
+            {
+                aggregate.Observe(retryEx, ValidationTrainingFailurePhase.TrialStatusPersistence);
+                RefreshSafeMessages(experiment, trial, aggregate);
+            }
+        }
+
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+        experiment.UpdatedAtUtc = DateTime.UtcNow;
+
+        try
+        {
+            await ValidationTrainingDbRetry.ExecuteAsync(
+                    () => _experiments.UpdateAsync(experiment, cancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception experimentPersistEx)
+        {
+            aggregate.Observe(experimentPersistEx, ValidationTrainingFailurePhase.ExperimentStatusPersistence);
+            RefreshSafeMessages(experiment, trial, aggregate);
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            try
+            {
+                await ValidationTrainingDbRetry.ExecuteAsync(
+                        () => _experiments.UpdateAsync(experiment, cancellationToken),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // Bounded best-effort only — retain the in-memory aggregate and original primary.
+            }
+        }
+    }
+
+    private async Task SyncOperationStatusSafelyAsync(
+        ValidationExperiment experiment,
+        ValidationTrainingFailureAggregate aggregate,
+        string stage,
+        string? leaseOwner,
+        CancellationToken cancellationToken)
+    {
+        var primary = aggregate.PrimaryFailure!;
+        IReadOnlyList<ValidationParameterTrial> trials;
+        try
+        {
+            trials = await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            trials = Array.Empty<ValidationParameterTrial>();
+        }
 
         var progress = ValidationTrainingProgressCalculator.Calculate(
             experiment,
-            await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken).ConfigureAwait(false),
+            trials,
             generatedTrialCount: experiment.MaximumTrials);
+
         try
         {
             await _operationStatus.SyncFromValidationTrainingAsync(
                 experiment.Id,
                 status: ValidationExperimentStatus.Failed.ToString(),
-                stage: "AuditPersistenceFailed",
+                stage: stage,
                 progress,
                 leaseOwner: leaseOwner,
-                errorCode: errorCode,
-                userSafeError: userSafe,
+                errorCode: primary.Code,
+                userSafeError: primary.UserSafeMessage,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch (Exception syncEx)
         {
             aggregate.Observe(syncEx, ValidationTrainingFailurePhase.OperationStatusSync);
+            RefreshSafeMessages(experiment, trial: null, aggregate);
             ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
-            await _experiments.UpdateAsync(experiment, cancellationToken).ConfigureAwait(false);
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            try
+            {
+                await ValidationTrainingDbRetry.ExecuteAsync(
+                        () => _experiments.UpdateAsync(experiment, cancellationToken),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception secondaryPersistEx)
+            {
+                aggregate.Observe(secondaryPersistEx, ValidationTrainingFailurePhase.ExperimentStatusPersistence);
+                RefreshSafeMessages(experiment, trial: null, aggregate);
+                ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                try
+                {
+                    await ValidationTrainingDbRetry.ExecuteAsync(
+                            () => _experiments.UpdateAsync(experiment, cancellationToken),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Bounded best-effort only — retain the in-memory aggregate and original primary.
+                    // Do not recurse into Handle*FailureAsync.
+                }
+            }
+        }
+    }
+
+    private static void ApplyBoundaryTrialMutation(
+        ValidationParameterTrial trial,
+        ValidationTrainingFailureAggregate aggregate)
+    {
+        var primary = aggregate.PrimaryFailure!;
+        trial.Status = ValidationTrialStatus.LeakageFailed;
+        trial.ErrorMessage = primary.UserSafeMessage;
+        trial.CompletedAtUtc = DateTime.UtcNow;
+        trial.AuditCompletionStatus = aggregate.HasAuditDurabilityFailure
+            ? ValidationAuditCompletionStatus.RecoveryRequired
+            : trial.AuditCompletionStatus;
+        trial.TrialRankEligibility = ValidationTrialRankEligibility.Ineligible;
+        trial.Rank = null;
+        ValidationTrainingFailurePersistence.ApplyTrialWarnings(trial, aggregate);
+        ValidationTrainingFailurePersistence.AppendRankIneligibleReasons(
+            trial,
+            aggregate.AllFailures.Where(f => f.IsQualificationBlocking).Select(f => f.Code).ToArray());
+    }
+
+    private static void ApplyAuditTrialMutation(
+        ValidationParameterTrial trial,
+        ValidationTrainingFailureAggregate aggregate)
+    {
+        var primary = aggregate.PrimaryFailure!;
+        trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
+        trial.ErrorMessage = primary.UserSafeMessage;
+        trial.CompletedAtUtc = DateTime.UtcNow;
+        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+        trial.TrialRankEligibility = ValidationTrialRankEligibility.Ineligible;
+        trial.Rank = null;
+        ValidationTrainingFailurePersistence.ApplyTrialWarnings(trial, aggregate);
+        ValidationTrainingFailurePersistence.AppendRankIneligibleReasons(
+            trial,
+            aggregate.AllFailures.Where(f => f.IsQualificationBlocking).Select(f => f.Code).ToArray());
+    }
+
+    private static void ApplyBoundaryExperimentMutation(
+        ValidationExperiment experiment,
+        ValidationTrainingFailureAggregate aggregate)
+    {
+        var primary = aggregate.PrimaryFailure!;
+        experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
+        experiment.CurrentStage = "LeakageDetected";
+        experiment.Status = ValidationExperimentStatus.Failed;
+        experiment.ErrorMessage = primary.UserSafeMessage;
+        experiment.DecidedAtUtc = DateTime.UtcNow;
+        experiment.UpdatedAtUtc = DateTime.UtcNow;
+        experiment.IsQualificationCapable = false;
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+    }
+
+    private static void ApplyAuditExperimentMutation(
+        ValidationExperiment experiment,
+        ValidationTrainingFailureAggregate aggregate)
+    {
+        var primary = aggregate.PrimaryFailure!;
+        experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
+        experiment.CurrentStage = "AuditPersistenceFailed";
+        experiment.Status = ValidationExperimentStatus.Failed;
+        experiment.ErrorMessage = primary.UserSafeMessage;
+        experiment.DecidedAtUtc = DateTime.UtcNow;
+        experiment.UpdatedAtUtc = DateTime.UtcNow;
+        experiment.IsQualificationCapable = false;
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+    }
+
+    private static void RefreshSafeMessages(
+        ValidationExperiment experiment,
+        ValidationParameterTrial? trial,
+        ValidationTrainingFailureAggregate aggregate)
+    {
+        var primary = aggregate.PrimaryFailure;
+        if (primary is null)
+        {
+            return;
         }
 
+        experiment.ErrorMessage = primary.UserSafeMessage;
+        experiment.PrimaryFailureReason = primary.Code;
+        experiment.IsQualificationCapable = false;
+        if (trial is not null)
+        {
+            trial.ErrorMessage = primary.UserSafeMessage;
+        }
+    }
+
+    private static ValidationTrainingFailureHandleResult ToHandleResult(
+        ValidationTrainingFailureAggregate aggregate)
+    {
+        var primary = aggregate.PrimaryFailure!;
         return new ValidationTrainingFailureHandleResult
         {
-            ErrorCode = errorCode,
-            UserSafeErrorMessage = userSafe,
+            ErrorCode = primary.Code,
+            UserSafeErrorMessage = primary.UserSafeMessage,
             Aggregate = aggregate
         };
     }
