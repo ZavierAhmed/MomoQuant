@@ -47,8 +47,7 @@ public class ValidationLab230BProductionSeamsTests
         var execution = new ValidationTrainingScopeExecution(factory, recorder);
         var experiment = new ValidationExperiment { Id = 7 };
 
-        var thrown = await Assert.ThrowsAsync<ValidationDataLeakageException>(() =>
-            execution.ExecuteTrialAsync(
+        var result = await execution.ExecuteTrialAsync(
                 factory.Scope,
                 trialNumber: 3,
                 trialId: 99,
@@ -56,8 +55,10 @@ public class ValidationLab230BProductionSeamsTests
                 {
                     _ = factory.Scope.GetByOpenTimeUtc(factory.Scope.ValidationBoundaryUtc, "LeakProbe");
                     return Task.CompletedTask;
-                }));
+                });
 
+        Assert.False(result.IsSuccess);
+        var thrown = Assert.IsType<ValidationDataLeakageException>(result.BodyException!.SourceException);
         Assert.Contains("ValidationDataLeakageDetected", thrown.Message, StringComparison.Ordinal);
         Assert.Single(audits.Items);
         Assert.True(audits.Items[0].WasDenied);

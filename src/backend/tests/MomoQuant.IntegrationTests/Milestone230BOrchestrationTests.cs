@@ -57,8 +57,8 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                 var experiment = await experiments.GetByIdAsync(id);
                 Assert.NotNull(experiment);
 
-                var leakage = await Assert.ThrowsAsync<ValidationDataLeakageException>(() =>
-                    execution.ExecuteWithScopeAsync(
+                ValidationTrainingScopeExecutionResult? trialCapture = null;
+                var scopeResult = await execution.ExecuteWithScopeAsync(
                         experiment!,
                         ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
                             experiment!,
@@ -66,7 +66,7 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                                 experiment!.TrainingEndUtc!.Value, DateTimeKind.Utc).AddMinutes(60)),
                         async trainingScope =>
                         {
-                            await execution.ExecuteTrialAsync(
+                            trialCapture = await execution.ExecuteTrialAsync(
                                 trainingScope,
                                 trialNumber: 1,
                                 trialId: null,
@@ -78,7 +78,11 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                                         $"AdversarialTrainer:{correlationId}");
                                     return Task.CompletedTask;
                                 });
-                        }));
+                            Assert.False(trialCapture.IsSuccess);
+                        });
+                _ = scopeResult;
+                var leakage = Assert.IsType<ValidationDataLeakageException>(
+                    trialCapture!.BodyException!.SourceException);
 
                 Assert.Contains("ValidationDataLeakageDetected", leakage.Message, StringComparison.Ordinal);
 
@@ -210,14 +214,14 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
             Assert.NotNull(experiment);
 
             DateTime? allowedOpen = null;
-            await execution.ExecuteWithScopeAsync(
+            var allowedResult = await execution.ExecuteWithScopeAsync(
                 experiment!,
                 ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
                     experiment!,
                     trainingEvaluationEndExclusiveUtc: trainingEnd.AddMinutes(60)),
                 async trainingScope =>
                 {
-                    await execution.ExecuteTrialAsync(
+                    var trialResult = await execution.ExecuteTrialAsync(
                         trainingScope,
                         trialNumber: 2,
                         trialId: null,
@@ -239,7 +243,9 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                             Assert.NotNull(hit);
                             return Task.CompletedTask;
                         });
+                    trialResult.ThrowIfFailed();
                 });
+            allowedResult.ThrowIfFailed();
 
             Assert.NotNull(allowedOpen);
 

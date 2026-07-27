@@ -159,7 +159,7 @@ public sealed partial class ValidationLabService
             try
             {
                 // Bootstrap once: create a temporary scope for warmup fingerprint only (no trial audit).
-                await _trainingScopeExecution.ExecuteWithScopeAsync(experiment, scopeRequest, async bootstrapScope =>
+                var bootstrapResult = await _trainingScopeExecution.ExecuteWithScopeAsync(experiment, scopeRequest, async bootstrapScope =>
                 {
                     experiment.WarmupSnapshotJson = JsonSerializer.Serialize(new
                     {
@@ -175,6 +175,7 @@ public sealed partial class ValidationLabService
                     experiment.UpdatedAtUtc = DateTime.UtcNow;
                     await _experiments.UpdateAsync(experiment, cancellationToken);
                 }, cancellationToken);
+                bootstrapResult.ThrowIfFailed();
 
                 var draft = ParseDraft(experiment.DraftConfigurationJson);
                 var profile = ToQualificationProfile(draft.QualificationProfile, experiment.PrimaryQualificationLayer);
@@ -303,83 +304,77 @@ public sealed partial class ValidationLabService
 
                     try
                     {
-                        await _trainingScopeExecution.ExecuteWithScopeAsync(
+                        var optimizerFp = _parameterFingerprint.ComputeFingerprint(draft.Parameters);
+                        var scopeResult = await _trainingScopeExecution.ExecuteWithScopeAsync(
                             experiment,
                             trialScopeRequest,
                             async trainingScope =>
                             {
-                                try
-                                {
-                                    await _trainingScopeExecution.ExecuteTrialAsync(
-                                        trainingScope,
-                                        trialNumber,
-                                        trial.Id,
-                                        async () =>
+                                var trialResult = await _trainingScopeExecution.ExecuteTrialAsync(
+                                    trainingScope,
+                                    trialNumber,
+                                    trial.Id,
+                                    async () =>
+                                    {
+                                        var run = await CreateLabRunAsync(
+                                            experiment,
+                                            combo,
+                                            draft,
+                                            experiment.TrainingStartUtc.Value,
+                                            ToExclusiveUtc(experiment.TrainingEndUtc.Value, experiment.Timeframe),
+                                            $"VL-Train-{experiment.Id}-T{trialNumber}",
+                                            cancellationToken);
+
+                                        trial.StrategyLabRunId = run.Id;
+                                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+
+                                        var trainingBoundary = DateTime.SpecifyKind(
+                                            experiment.ValidationStartUtc!.Value,
+                                            DateTimeKind.Utc);
+                                        var executionContext = StrategyLabExecutionContext.ForValidationTraining(
+                                            validationExperimentId: experiment.Id,
+                                            validationTrialId: trial.Id,
+                                            validationTrialNumber: trialNumber,
+                                            trainingBoundaryUtc: trainingBoundary,
+                                            candleDataSource: new ValidationTrainingStrategyLabCandleDataSource(
+                                                trainingScope,
+                                                "ValidationLab.Training"),
+                                            callerComponent: "ValidationLab.Training");
+
+                                        await _labRunner.ExecuteAsync(run.Id, executionContext, cancellationToken);
+                                        run = await _labRuns.GetByIdAsync(run.Id, cancellationToken) ?? run;
+
+                                        if (run.Status != StrategyLabRunStatus.Completed)
                                         {
-                                            var run = await CreateLabRunAsync(
-                                                experiment,
-                                                combo,
-                                                draft,
-                                                experiment.TrainingStartUtc.Value,
-                                                ToExclusiveUtc(experiment.TrainingEndUtc.Value, experiment.Timeframe),
-                                                $"VL-Train-{experiment.Id}-T{trialNumber}",
-                                                cancellationToken);
-
-                                            trial.StrategyLabRunId = run.Id;
+                                            trial.Status = ValidationTrialStatus.Failed;
+                                            trial.ErrorMessage = run.ErrorMessage
+                                                ?? $"Strategy lab run {run.Id} ended with status {run.Status}.";
+                                            trial.CompletedAtUtc = DateTime.UtcNow;
                                             await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                                            return;
+                                        }
 
-                                            var trainingBoundary = DateTime.SpecifyKind(
-                                                experiment.ValidationStartUtc!.Value,
-                                                DateTimeKind.Utc);
-                                            var executionContext = StrategyLabExecutionContext.ForValidationTraining(
-                                                validationExperimentId: experiment.Id,
-                                                validationTrialId: trial.Id,
-                                                validationTrialNumber: trialNumber,
-                                                trainingBoundaryUtc: trainingBoundary,
-                                                candleDataSource: new ValidationTrainingStrategyLabCandleDataSource(
-                                                    trainingScope,
-                                                    "ValidationLab.Training"),
-                                                callerComponent: "ValidationLab.Training");
+                                        await PopulateTrialMetricsAsync(
+                                            experiment, trial, combo, run, profile, cancellationToken);
+                                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                                    },
+                                    cancellationToken);
 
-                                            await _labRunner.ExecuteAsync(run.Id, executionContext, cancellationToken);
-                                            run = await _labRuns.GetByIdAsync(run.Id, cancellationToken) ?? run;
-
-                                            if (run.Status != StrategyLabRunStatus.Completed)
-                                            {
-                                                trial.Status = ValidationTrialStatus.Failed;
-                                                trial.ErrorMessage = run.ErrorMessage
-                                                    ?? $"Strategy lab run {run.Id} ended with status {run.Status}.";
-                                                trial.CompletedAtUtc = DateTime.UtcNow;
-                                                await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
-                                                return;
-                                            }
-
-                                            await PopulateTrialMetricsAsync(
-                                                experiment, trial, combo, run, profile, cancellationToken);
-                                            await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
-                                        },
-                                        cancellationToken);
-                                }
-                                catch (ValidationTrainingBoundaryException ex)
+                                if (!trialResult.IsSuccess)
                                 {
-                                    var optimizerFp = _parameterFingerprint.ComputeFingerprint(draft.Parameters);
-                                    var handled = await _trainingFailureHandler.HandleBoundaryFailureAsync(
+                                    var handled = await HandleScopeExecutionFailureAsync(
                                         experiment,
                                         trial,
                                         trainingScope,
-                                        ex,
-                                        optimizerInputFingerprint: optimizerFp,
-                                        leaseOwner: leaseOwner,
-                                        cancellationToken: cancellationToken);
-                                    result = ServiceResult<ValidationExperimentDto>.Fail(
-                                        handled.UserSafeErrorMessage,
-                                        handled.ErrorCode);
-                                    return;
-                                }
+                                        trialResult,
+                                        optimizerFp,
+                                        leaseOwner,
+                                        cancellationToken);
+                                    if (handled is not null)
+                                    {
+                                        result = handled;
+                                    }
 
-                                // Flush already ran in ExecuteTrialAsync finally; finalize durable audit.
-                                if (result is not null)
-                                {
                                     return;
                                 }
 
@@ -470,9 +465,23 @@ public sealed partial class ValidationLabService
                             },
                             cancellationToken);
 
+                        if (!scopeResult.IsSuccess && result is null)
+                        {
+                            var outerFailure = await HandleOuterScopeExecutionFailureAsync(
+                                experiment,
+                                trial,
+                                scopeResult,
+                                leaseOwner,
+                                cancellationToken);
+                            if (outerFailure is not null)
+                            {
+                                result = outerFailure;
+                            }
+                        }
+
                         if (result is not null)
                         {
-                            await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
+                            await TryReleaseTrainingLeaseAsync(experiment, leaseOwner, cancellationToken);
                             break;
                         }
                     }
@@ -539,13 +548,11 @@ public sealed partial class ValidationLabService
                 experiment.Status = ValidationExperimentStatus.Failed;
                 experiment.ErrorMessage =
                     $"Insufficient warm-up candles for training (available={ex.AvailableWarmupCandleCount}, required={ex.RequiredWarmupCandleCount}).";
-                experiment.PrimaryFailureReason = ValidationTrainingFailureCodes.InsufficientWarmup;
-                experiment.FailureReasonsJson = JsonSerializer.Serialize(
-                    new[] { ValidationTrainingFailureCodes.InsufficientWarmup },
-                    JsonOptions);
                 experiment.CurrentStage = "InsufficientWarmup";
                 experiment.UpdatedAtUtc = DateTime.UtcNow;
-                AppendDiagnostic(experiment, ValidationTrainingFailureCodes.InsufficientWarmup, experiment.ErrorMessage);
+                var warmupAggregate = new ValidationTrainingFailureAggregate();
+                warmupAggregate.Observe(ex, ValidationTrainingFailurePhase.TrialBody);
+                ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, warmupAggregate);
                 experiment.WarmupSnapshotJson = JsonSerializer.Serialize(new
                 {
                     requiredWarmupCandleCount = ex.RequiredWarmupCandleCount,
@@ -583,6 +590,121 @@ public sealed partial class ValidationLabService
             await _experiments.UpdateAsync(experiment, cancellationToken);
             await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
             return ServiceResult<ValidationExperimentDto>.Fail(ex.Message);
+        }
+    }
+
+    private async Task<ServiceResult<ValidationExperimentDto>?> HandleScopeExecutionFailureAsync(
+        ValidationExperiment experiment,
+        ValidationParameterTrial trial,
+        IValidationTrainingCandleScope scope,
+        ValidationTrainingScopeExecutionResult executionResult,
+        string optimizerFp,
+        string leaseOwner,
+        CancellationToken cancellationToken)
+    {
+        var aggregate = executionResult.ToFailureAggregate();
+        if (aggregate.HasBoundaryFailure)
+        {
+            var exception = executionResult.BodyException?.SourceException
+                ?? executionResult.FlushException!.SourceException;
+            var handled = await _trainingFailureHandler.HandleBoundaryFailureAsync(
+                experiment,
+                trial,
+                scope,
+                exception,
+                optimizerInputFingerprint: optimizerFp,
+                leaseOwner: leaseOwner,
+                observedFailures: aggregate,
+                scopeFlushAlreadyAttempted: executionResult.FlushAttempted,
+                cancellationToken);
+            return ServiceResult<ValidationExperimentDto>.Fail(
+                handled.UserSafeErrorMessage,
+                handled.ErrorCode);
+        }
+
+        if (aggregate.HasAuditDurabilityFailure)
+        {
+            var exception = executionResult.FlushException?.SourceException
+                ?? executionResult.BodyException!.SourceException;
+            var handled = await _trainingFailureHandler.HandleAuditPersistenceFailureAsync(
+                experiment,
+                trial,
+                exception,
+                leaseOwner: leaseOwner,
+                observedFailures: aggregate,
+                cancellationToken);
+            return ServiceResult<ValidationExperimentDto>.Fail(
+                handled.UserSafeErrorMessage,
+                handled.ErrorCode);
+        }
+
+        var bodyException = executionResult.BodyException?.SourceException;
+        if (bodyException is not null)
+        {
+            var primary = aggregate.PrimaryFailure;
+            trial.Status = ValidationTrialStatus.Failed;
+            trial.ErrorMessage = primary?.UserSafeMessage ?? bodyException.Message;
+            trial.CompletedAtUtc = DateTime.UtcNow;
+            ValidationTrainingFailurePersistence.ApplyTrialWarnings(trial, aggregate);
+            await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+        }
+
+        return null;
+    }
+
+    private async Task<ServiceResult<ValidationExperimentDto>?> HandleOuterScopeExecutionFailureAsync(
+        ValidationExperiment experiment,
+        ValidationParameterTrial trial,
+        ValidationTrainingScopeExecutionResult scopeResult,
+        string leaseOwner,
+        CancellationToken cancellationToken)
+    {
+        var aggregate = scopeResult.ToFailureAggregate();
+        if (!aggregate.HasAuditDurabilityFailure && !aggregate.HasBoundaryFailure)
+        {
+            return null;
+        }
+
+        if (aggregate.HasAuditDurabilityFailure)
+        {
+            var exception = scopeResult.FlushException?.SourceException
+                ?? scopeResult.BodyException!.SourceException;
+            var handled = await _trainingFailureHandler.HandleAuditPersistenceFailureAsync(
+                experiment,
+                trial,
+                exception,
+                leaseOwner: leaseOwner,
+                observedFailures: aggregate,
+                cancellationToken);
+            return ServiceResult<ValidationExperimentDto>.Fail(
+                handled.UserSafeErrorMessage,
+                handled.ErrorCode);
+        }
+
+        var boundaryException = scopeResult.BodyException!.SourceException;
+        return ServiceResult<ValidationExperimentDto>.Fail(
+            boundaryException.Message,
+            ValidationTrainingFailureCodes.ValidationDataLeakage);
+    }
+
+    private async Task TryReleaseTrainingLeaseAsync(
+        ValidationExperiment experiment,
+        string leaseOwner,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _trainingLease.ReleaseAsync(experiment.Id, leaseOwner, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            var aggregate = ValidationTrainingFailurePersistence.MergeExisting(
+                experiment.FailureReasonsJson,
+                experiment.DiagnosticsJson);
+            aggregate.Observe(ex, ValidationTrainingFailurePhase.LeaseRelease);
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
         }
     }
 

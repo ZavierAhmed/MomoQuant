@@ -7,17 +7,11 @@ using MomoQuant.Domain.ValidationLab;
 
 namespace MomoQuant.Application.ValidationLab;
 
-public static class ValidationTrainingFailureCodes
-{
-    public const string ValidationDataLeakage = "VALIDATION_DATA_LEAKAGE";
-    public const string ValidationAccessAuditPersistenceFailed = "VALIDATION_ACCESS_AUDIT_PERSISTENCE_FAILED";
-    public const string InsufficientWarmup = "VALIDATION_INSUFFICIENT_WARMUP";
-}
-
 public sealed class ValidationTrainingFailureHandleResult
 {
     public string ErrorCode { get; init; } = ValidationTrainingFailureCodes.ValidationDataLeakage;
     public string UserSafeErrorMessage { get; init; } = string.Empty;
+    public ValidationTrainingFailureAggregate Aggregate { get; init; } = new();
 }
 
 /// <summary>
@@ -37,6 +31,8 @@ public interface IValidationTrainingFailureHandler
         Exception exception,
         string? optimizerInputFingerprint = null,
         string? leaseOwner = null,
+        ValidationTrainingFailureAggregate? observedFailures = null,
+        bool scopeFlushAlreadyAttempted = false,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -48,6 +44,7 @@ public interface IValidationTrainingFailureHandler
         ValidationParameterTrial trial,
         Exception exception,
         string? leaseOwner = null,
+        ValidationTrainingFailureAggregate? observedFailures = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -94,6 +91,8 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
         Exception exception,
         string? optimizerInputFingerprint = null,
         string? leaseOwner = null,
+        ValidationTrainingFailureAggregate? observedFailures = null,
+        bool scopeFlushAlreadyAttempted = false,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(experiment);
@@ -101,31 +100,52 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
         ArgumentNullException.ThrowIfNull(scope);
         ArgumentNullException.ThrowIfNull(exception);
 
-        // Persist pending access records. If confirmation fails, escalate to audit fail-closed.
-        try
+        var aggregate = BuildAggregate(experiment, observedFailures);
+        aggregate.Observe(exception, ValidationTrainingFailurePhase.TrialBody);
+
+        if (!scopeFlushAlreadyAttempted)
         {
-            await _recorder.FlushAsync(scope, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _recorder.FlushAsync(scope, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ValidationAccessEvidencePersistenceException persistEx)
+            {
+                aggregate.Observe(persistEx, ValidationTrainingFailurePhase.TrialScopeFlush);
+            }
+            catch (Exception flushEx)
+            {
+                aggregate.Observe(flushEx, ValidationTrainingFailurePhase.TrialScopeFlush);
+            }
         }
-        catch (ValidationAccessEvidencePersistenceException persistEx)
+
+        if (aggregate.HasAuditDurabilityFailure && !aggregate.HasBoundaryFailure)
         {
             return await HandleAuditPersistenceFailureAsync(
                     experiment,
                     trial,
-                    persistEx,
+                    exception,
                     leaseOwner,
+                    aggregate,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
 
-        var errorCode = ValidationTrainingFailureCodes.ValidationDataLeakage;
-        var userSafe = UserSafeLeakageMessage;
+        var primary = aggregate.PrimaryFailure!;
+        var errorCode = primary.Code;
+        var userSafe = primary.UserSafeMessage;
 
         trial.Status = ValidationTrialStatus.LeakageFailed;
         trial.ErrorMessage = userSafe;
         trial.CompletedAtUtc = DateTime.UtcNow;
-        trial.DiagnosticWarningsJson = JsonSerializer.Serialize(
-            new[] { new { code = errorCode, message = userSafe } },
-            JsonOptions);
+        trial.AuditCompletionStatus = aggregate.HasAuditDurabilityFailure
+            ? ValidationAuditCompletionStatus.RecoveryRequired
+            : trial.AuditCompletionStatus;
+        trial.TrialRankEligibility = ValidationTrialRankEligibility.Ineligible;
+        ValidationTrainingFailurePersistence.ApplyTrialWarnings(trial, aggregate);
+        ValidationTrainingFailurePersistence.AppendRankIneligibleReasons(
+            trial,
+            aggregate.AllFailures.Where(f => f.IsQualificationBlocking).Select(f => f.Code).ToArray());
         await _trials.UpdateAsync(trial, cancellationToken).ConfigureAwait(false);
 
         InvalidateTentativeSelection(experiment);
@@ -133,13 +153,9 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
         experiment.CurrentStage = "LeakageDetected";
         experiment.Status = ValidationExperimentStatus.Failed;
         experiment.ErrorMessage = userSafe;
-        experiment.PrimaryFailureReason = errorCode;
-        experiment.FailureReasonsJson = JsonSerializer.Serialize(new[] { errorCode }, JsonOptions);
-        experiment.IsQualificationCapable = false;
         experiment.DecidedAtUtc = DateTime.UtcNow;
         experiment.UpdatedAtUtc = DateTime.UtcNow;
-
-        AppendSafeDiagnostic(experiment, errorCode, userSafe);
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
 
         if (experiment.ValidationStartUtc is not null
             && experiment.TrainingStartUtc is not null
@@ -163,20 +179,30 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
             experiment,
             await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken).ConfigureAwait(false),
             generatedTrialCount: experiment.MaximumTrials);
-        await _operationStatus.SyncFromValidationTrainingAsync(
-            experiment.Id,
-            status: ValidationExperimentStatus.Failed.ToString(),
-            stage: "LeakageDetected",
-            progress,
-            leaseOwner: leaseOwner,
-            errorCode: errorCode,
-            userSafeError: userSafe,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _operationStatus.SyncFromValidationTrainingAsync(
+                experiment.Id,
+                status: ValidationExperimentStatus.Failed.ToString(),
+                stage: "LeakageDetected",
+                progress,
+                leaseOwner: leaseOwner,
+                errorCode: errorCode,
+                userSafeError: userSafe,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception syncEx)
+        {
+            aggregate.Observe(syncEx, ValidationTrainingFailurePhase.OperationStatusSync);
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+            await _experiments.UpdateAsync(experiment, cancellationToken).ConfigureAwait(false);
+        }
 
         return new ValidationTrainingFailureHandleResult
         {
             ErrorCode = errorCode,
-            UserSafeErrorMessage = userSafe
+            UserSafeErrorMessage = userSafe,
+            Aggregate = aggregate
         };
     }
 
@@ -185,35 +211,39 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
         ValidationParameterTrial trial,
         Exception exception,
         string? leaseOwner = null,
+        ValidationTrainingFailureAggregate? observedFailures = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(experiment);
         ArgumentNullException.ThrowIfNull(trial);
         ArgumentNullException.ThrowIfNull(exception);
 
-        var errorCode = ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed;
-        var userSafe = UserSafeAuditPersistenceMessage;
+        var aggregate = BuildAggregate(experiment, observedFailures);
+        aggregate.Observe(exception, ValidationTrainingFailurePhase.TrialScopeFlush);
+
+        var primary = aggregate.PrimaryFailure!;
+        var errorCode = primary.Code;
+        var userSafe = primary.UserSafeMessage;
 
         trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
         trial.ErrorMessage = userSafe;
         trial.CompletedAtUtc = DateTime.UtcNow;
-        trial.DiagnosticWarningsJson = JsonSerializer.Serialize(
-            new[] { new { code = errorCode, message = userSafe } },
-            JsonOptions);
+        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+        trial.TrialRankEligibility = ValidationTrialRankEligibility.Ineligible;
+        ValidationTrainingFailurePersistence.ApplyTrialWarnings(trial, aggregate);
+        ValidationTrainingFailurePersistence.AppendRankIneligibleReasons(
+            trial,
+            aggregate.AllFailures.Where(f => f.IsQualificationBlocking).Select(f => f.Code).ToArray());
         await _trials.UpdateAsync(trial, cancellationToken).ConfigureAwait(false);
 
-        // Fail closed: no ranking / selection / freeze; leakage must not report Passed.
         InvalidateTentativeSelection(experiment);
         experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
         experiment.CurrentStage = "AuditPersistenceFailed";
         experiment.Status = ValidationExperimentStatus.Failed;
         experiment.ErrorMessage = userSafe;
-        experiment.PrimaryFailureReason = errorCode;
-        experiment.FailureReasonsJson = JsonSerializer.Serialize(new[] { errorCode }, JsonOptions);
-        experiment.IsQualificationCapable = false;
         experiment.DecidedAtUtc = DateTime.UtcNow;
         experiment.UpdatedAtUtc = DateTime.UtcNow;
-        AppendSafeDiagnostic(experiment, errorCode, userSafe);
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
 
         await _experiments.UpdateAsync(experiment, cancellationToken).ConfigureAwait(false);
 
@@ -221,21 +251,42 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
             experiment,
             await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken).ConfigureAwait(false),
             generatedTrialCount: experiment.MaximumTrials);
-        await _operationStatus.SyncFromValidationTrainingAsync(
-            experiment.Id,
-            status: ValidationExperimentStatus.Failed.ToString(),
-            stage: "AuditPersistenceFailed",
-            progress,
-            leaseOwner: leaseOwner,
-            errorCode: errorCode,
-            userSafeError: userSafe,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _operationStatus.SyncFromValidationTrainingAsync(
+                experiment.Id,
+                status: ValidationExperimentStatus.Failed.ToString(),
+                stage: "AuditPersistenceFailed",
+                progress,
+                leaseOwner: leaseOwner,
+                errorCode: errorCode,
+                userSafeError: userSafe,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception syncEx)
+        {
+            aggregate.Observe(syncEx, ValidationTrainingFailurePhase.OperationStatusSync);
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+            await _experiments.UpdateAsync(experiment, cancellationToken).ConfigureAwait(false);
+        }
 
         return new ValidationTrainingFailureHandleResult
         {
             ErrorCode = errorCode,
-            UserSafeErrorMessage = userSafe
+            UserSafeErrorMessage = userSafe,
+            Aggregate = aggregate
         };
+    }
+
+    private static ValidationTrainingFailureAggregate BuildAggregate(
+        ValidationExperiment experiment,
+        ValidationTrainingFailureAggregate? observedFailures)
+    {
+        var aggregate = ValidationTrainingFailurePersistence.MergeExisting(
+            experiment.FailureReasonsJson,
+            experiment.DiagnosticsJson);
+        aggregate.MergeFrom(observedFailures);
+        return aggregate;
     }
 
     private static void InvalidateTentativeSelection(ValidationExperiment experiment)
@@ -250,34 +301,5 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
         experiment.FrozenParameterFingerprint = null;
         experiment.FrozenAtUtc = null;
         experiment.SelectionIntegrityStatus = ValidationSelectionIntegrityStatus.NoEligibleTrial;
-    }
-
-    private static void AppendSafeDiagnostic(ValidationExperiment experiment, string code, string message)
-    {
-        var list = new List<object>();
-        try
-        {
-            var existing = JsonSerializer.Deserialize<List<JsonElement>>(
-                string.IsNullOrWhiteSpace(experiment.DiagnosticsJson) ? "[]" : experiment.DiagnosticsJson);
-            if (existing is not null)
-            {
-                foreach (var el in existing)
-                {
-                    list.Add(JsonSerializer.Deserialize<object>(el.GetRawText())!);
-                }
-            }
-        }
-        catch
-        {
-            // start fresh
-        }
-
-        list.Add(new
-        {
-            code,
-            message,
-            atUtc = DateTime.UtcNow
-        });
-        experiment.DiagnosticsJson = JsonSerializer.Serialize(list, JsonOptions);
     }
 }

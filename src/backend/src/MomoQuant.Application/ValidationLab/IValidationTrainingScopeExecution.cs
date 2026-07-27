@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using MomoQuant.Application.Research;
 using MomoQuant.Application.StrategyLab;
 using MomoQuant.Domain.ValidationLab;
@@ -11,21 +12,21 @@ public interface IValidationTrainingScopeExecution
 {
     /// <summary>
     /// Creates the training candle scope from a validated request, enters ambient context,
-    /// runs <paramref name="body"/>, and flushes access evidence in a finally block.
+    /// runs <paramref name="body"/>, and performs one authoritative access flush.
     /// When <see cref="ValidationTrainingCandleScopeRequest.BoundAuditExecutionId"/> is set,
     /// verifies scope identity and enters <see cref="ValidationAuditExecutionAmbient"/>.
     /// </summary>
-    Task ExecuteWithScopeAsync(
+    Task<ValidationTrainingScopeExecutionResult> ExecuteWithScopeAsync(
         ValidationExperiment experiment,
         ValidationTrainingCandleScopeRequest scopeRequest,
         Func<IValidationTrainingCandleScope, Task> body,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Sets the active trial identity, runs the trial body, and flushes access evidence in finally
-    /// (including when <see cref="ValidationDataLeakageException"/> is thrown).
+    /// Sets the active trial identity, runs the trial body, and performs one authoritative
+    /// trial-scope flush. Body and flush outcomes are captured without masking.
     /// </summary>
-    Task ExecuteTrialAsync(
+    Task<ValidationTrainingScopeExecutionResult> ExecuteTrialAsync(
         IValidationTrainingCandleScope scope,
         int trialNumber,
         long? trialId,
@@ -49,7 +50,7 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
         _executionContextAccessor = executionContextAccessor ?? new ResearchExecutionContextAccessor();
     }
 
-    public async Task ExecuteWithScopeAsync(
+    public async Task<ValidationTrainingScopeExecutionResult> ExecuteWithScopeAsync(
         ValidationExperiment experiment,
         ValidationTrainingCandleScopeRequest scopeRequest,
         Func<IValidationTrainingCandleScope, Task> body,
@@ -109,25 +110,46 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
             });
         }
 
+        ExceptionDispatchInfo? bodyException = null;
+        ExceptionDispatchInfo? flushException = null;
+        var flushAttempted = false;
         try
         {
-            await body(scope);
+            try
+            {
+                await body(scope);
+            }
+            catch (Exception ex)
+            {
+                bodyException = ExceptionDispatchInfo.Capture(ex);
+            }
+
+            try
+            {
+                flushAttempted = true;
+                await _recorder.FlushAsync(scope, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                flushException = ExceptionDispatchInfo.Capture(ex);
+            }
         }
         finally
         {
-            // Flush while durable ambient is still available, then release ambient.
-            try
-            {
-                await _recorder.FlushAsync(scope, CancellationToken.None);
-            }
-            finally
-            {
-                auditAmbient?.Dispose();
-            }
+            auditAmbient?.Dispose();
         }
+
+        return new ValidationTrainingScopeExecutionResult
+        {
+            BodyException = bodyException,
+            FlushException = flushException,
+            BodyPhase = ValidationTrainingFailurePhase.TrialBody,
+            FlushPhase = ValidationTrainingFailurePhase.OuterScopeFlush,
+            FlushAttempted = flushAttempted
+        };
     }
 
-    public async Task ExecuteTrialAsync(
+    public async Task<ValidationTrainingScopeExecutionResult> ExecuteTrialAsync(
         IValidationTrainingCandleScope scope,
         int trialNumber,
         long? trialId,
@@ -139,14 +161,36 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
 
         scope.ActiveTrialNumber = trialNumber;
         scope.ActiveTrialId = trialId;
+
+        ExceptionDispatchInfo? bodyException = null;
+        ExceptionDispatchInfo? flushException = null;
+        var flushAttempted = false;
         try
         {
             await trialBody();
         }
-        finally
+        catch (Exception ex)
         {
-            // Flush denied evidence before leakage (or any other) exception propagates.
+            bodyException = ExceptionDispatchInfo.Capture(ex);
+        }
+
+        try
+        {
+            flushAttempted = true;
             await _recorder.FlushAsync(scope, CancellationToken.None);
         }
+        catch (Exception ex)
+        {
+            flushException = ExceptionDispatchInfo.Capture(ex);
+        }
+
+        return new ValidationTrainingScopeExecutionResult
+        {
+            BodyException = bodyException,
+            FlushException = flushException,
+            BodyPhase = ValidationTrainingFailurePhase.TrialBody,
+            FlushPhase = ValidationTrainingFailurePhase.TrialScopeFlush,
+            FlushAttempted = flushAttempted
+        };
     }
 }
