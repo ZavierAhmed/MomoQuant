@@ -371,7 +371,12 @@ public enum ValidationAuditRecoveryDecision
     /// Computation and manifested evidence are complete; only durable finalizer may run.
     /// No new strategy candle access or StrategyLabRunner execution.
     /// </summary>
-    FinalizationOnlyRecovery = 7
+    FinalizationOnlyRecovery = 7,
+
+    /// <summary>
+    /// Completed execution revalidated by verifier; verification-only path permitted.
+    /// </summary>
+    VerifiedFinalizationOnly = 8
 }
 
 /// <summary>Milestone 23.0E2C1 — authoritative audit-completeness verifier codes.</summary>

@@ -9,6 +9,7 @@ public interface IValidationAuditExecutionRecoveryService
 {
     Task<ValidationAuditExecutionRecoveryResult> RecoverAsync(
         Guid auditExecutionId,
+        ValidationAuditExecutionRecoveryRequest? request = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -40,6 +41,7 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
 
     public async Task<ValidationAuditExecutionRecoveryResult> RecoverAsync(
         Guid auditExecutionId,
+        ValidationAuditExecutionRecoveryRequest? request = null,
         CancellationToken cancellationToken = default)
     {
         var execution = await _executions.GetByAuditExecutionIdAsync(auditExecutionId, cancellationToken)
@@ -49,21 +51,26 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
                 $"Audit execution {auditExecutionId} was not found.");
 
         var previousStatus = execution.Status;
+
+        var batches = (await _batches.GetByAuditExecutionIdAsync(execution.AuditExecutionId, cancellationToken)
+            .ConfigureAwait(false)).ToList();
+        var allAccess = await _accessAudits.GetByExperimentIdAsync(execution.ValidationExperimentId, cancellationToken)
+            .ConfigureAwait(false);
+        var scopeRows = allAccess.Where(r => r.ScopeExecutionId == execution.ScopeExecutionId).ToList();
+
+        var trials = await _trials.GetByExperimentIdAsync(execution.ValidationExperimentId, cancellationToken)
+            .ConfigureAwait(false);
+        var trial = trials.FirstOrDefault(t => t.Id == execution.ValidationTrialId);
+        var requiresStrategyLab = TrialRequiresStrategyLabExecution(trial);
+
         if (execution.Status == ValidationAuditExecutionStatus.Completed)
         {
-            return BuildResult(
+            return RecoverCompletedExecution(
                 execution,
                 previousStatus,
-                ValidationAuditRecoveryDecision.AlreadyCompleted,
-                confirmedBatchCount: 0,
-                unresolvedBatchCount: 0,
-                prefix: new ValidationAuditContiguousSequenceCalculator.ContiguousPrefixResult(
-                    execution.LastConfirmedSequence,
-                    execution.ConfirmedEventCount,
-                    null,
-                    false),
-                requiresStrategyLab: false,
-                isComplete: true);
+                trial,
+                batches,
+                scopeRows);
         }
 
         if (execution.Status == ValidationAuditExecutionStatus.Superseded)
@@ -98,24 +105,10 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
                 mustRerun: true);
         }
 
-        var batches = (await _batches.GetByAuditExecutionIdAsync(execution.AuditExecutionId, cancellationToken)
-            .ConfigureAwait(false)).ToList();
-        var allAccess = await _accessAudits.GetByExperimentIdAsync(execution.ValidationExperimentId, cancellationToken)
-            .ConfigureAwait(false);
-        var scopeRows = allAccess.Where(r => r.ScopeExecutionId == execution.ScopeExecutionId).ToList();
-
-        var trials = await _trials.GetByExperimentIdAsync(execution.ValidationExperimentId, cancellationToken)
-            .ConfigureAwait(false);
-        var trial = trials.FirstOrDefault(t => t.Id == execution.ValidationTrialId);
-        var requiresStrategyLab = TrialRequiresStrategyLabExecution(trial);
-
         // Rule D — crash before first flush (not a brand-new execution awaiting first access).
         if (batches.Count == 0)
         {
-            if (execution.Status == ValidationAuditExecutionStatus.InProgress
-                && execution.RecoveryStatus == ValidationAuditRecoveryStatus.None
-                && execution.LastConfirmedSequence == 0
-                && previousStatus is not ValidationAuditExecutionStatus.RecoveryRequired)
+            if (IsFreshExecutionAwaitingFirstAccess(execution, trial, request))
             {
                 return BuildResult(
                     execution,
@@ -362,6 +355,128 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
                 ? "STRATEGY_LAB_RERUN_REQUIRED"
                 : "PREVIOUS_EXECUTION_NOT_TERMINAL",
             mustRerun: true);
+    }
+
+    private ValidationAuditExecutionRecoveryResult RecoverCompletedExecution(
+        ValidationAuditExecution execution,
+        ValidationAuditExecutionStatus previousStatus,
+        ValidationParameterTrial? trial,
+        IReadOnlyList<ValidationAuditBatch> batches,
+        IReadOnlyList<ValidationCandleAccessAudit> scopeRows)
+    {
+        var confirmedBatches = batches
+            .Where(b => b.Status == ValidationAuditBatchStatus.Confirmed)
+            .ToList();
+        var prefix = ComputeContiguousPrefixFromBatches(confirmedBatches, scopeRows);
+        var confirmedCount = confirmedBatches.Count;
+        var unresolvedCount = batches.Count - confirmedCount;
+
+        if (trial is null)
+        {
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.FailClosed,
+                confirmedCount,
+                unresolvedCount,
+                prefix,
+                requiresStrategyLab: true,
+                isComplete: false,
+                failureCode: "VALIDATION_AUDIT_TRIAL_MISSING",
+                mustRerun: true);
+        }
+
+        if (trial.AuthoritativeAuditExecutionId != execution.AuditExecutionId)
+        {
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.FailClosed,
+                confirmedCount,
+                unresolvedCount,
+                prefix,
+                requiresStrategyLab: true,
+                isComplete: false,
+                failureCode: "VALIDATION_AUDIT_NOT_AUTHORITATIVE",
+                mustRerun: true);
+        }
+
+        var completeness = _verifier.Verify(trial, execution, batches, scopeRows);
+        if (completeness.IsComplete)
+        {
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.AlreadyCompleted,
+                confirmedCount,
+                unresolvedCount,
+                prefix,
+                requiresStrategyLab: false,
+                isComplete: true);
+        }
+
+        return BuildResult(
+            execution,
+            previousStatus,
+            ValidationAuditRecoveryDecision.FailClosed,
+            confirmedCount,
+            unresolvedCount,
+            prefix,
+            requiresStrategyLab: true,
+            isComplete: false,
+            failureCode: completeness.CompletionCode.ToString(),
+            mustRerun: true);
+    }
+
+    private static bool IsFreshExecutionAwaitingFirstAccess(
+        ValidationAuditExecution execution,
+        ValidationParameterTrial? trial,
+        ValidationAuditExecutionRecoveryRequest? request)
+    {
+        if (execution.Status is not ValidationAuditExecutionStatus.InProgress
+            and not ValidationAuditExecutionStatus.Created)
+        {
+            return false;
+        }
+
+        if (execution.RecoveryStatus != ValidationAuditRecoveryStatus.None)
+        {
+            return false;
+        }
+
+        if (execution.LastConfirmedSequence > 0)
+        {
+            return false;
+        }
+
+        if (request?.IsResume == true)
+        {
+            return false;
+        }
+
+        if (request?.TrialStatus == ValidationTrialStatus.Interrupted)
+        {
+            return false;
+        }
+
+        if (trial?.Status == ValidationTrialStatus.Interrupted)
+        {
+            return false;
+        }
+
+        if (trial?.AuditCompletionStatus == ValidationAuditCompletionStatus.RecoveryRequired)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request?.CurrentLeaseOwner)
+            && !string.IsNullOrWhiteSpace(execution.LeaseOwner)
+            && !string.Equals(request.CurrentLeaseOwner, execution.LeaseOwner, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private static ValidationAuditContiguousSequenceCalculator.ContiguousPrefixResult ComputeContiguousPrefixFromBatches(

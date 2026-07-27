@@ -221,10 +221,22 @@ public sealed partial class ValidationLabService
 
                     // Recover / supersede incomplete authoritative audit before access.
                     var ensureResult = await EnsureAuthoritativeAuditExecutionAsync(
-                        experiment, trial, leaseOwner, cancellationToken);
+                        experiment, trial, leaseOwner, isResume, cancellationToken);
                     var auditExecution = ensureResult.Execution;
 
-                    if (ensureResult.FinalizationOnly)
+                    if (ensureResult.FailClosed)
+                    {
+                        trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
+                        trial.ErrorMessage =
+                            $"Completed audit execution failed verifier revalidation: {ensureResult.CompletenessCode?.ToString() ?? "FailClosed"}.";
+                        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                        await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
+                        await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
+                        continue;
+                    }
+
+                    if (ensureResult.VerifiedFinalizationOnly || ensureResult.FinalizationOnly)
                     {
                         await FinalizeTrialAuditWithVerifierAsync(
                             experiment,
@@ -233,6 +245,18 @@ public sealed partial class ValidationLabService
                             fingerprint,
                             auditExecution,
                             cancellationToken);
+                        await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
+                        await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
+                        continue;
+                    }
+
+                    if (auditExecution.Status == ValidationAuditExecutionStatus.Completed)
+                    {
+                        trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
+                        trial.ErrorMessage =
+                            "Completed audit execution cannot re-enter StrategyLab training scope.";
+                        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
                         await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
                         await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
                         continue;
@@ -827,8 +851,16 @@ public sealed partial class ValidationLabService
         ValidationExperiment experiment,
         ValidationParameterTrial trial,
         string leaseOwner,
+        bool isResume,
         CancellationToken cancellationToken)
     {
+        var recoveryRequest = new ValidationAuditExecutionRecoveryRequest
+        {
+            CurrentLeaseOwner = leaseOwner,
+            IsResume = isResume,
+            TrialStatus = trial.Status
+        };
+
         if (trial.AuthoritativeAuditExecutionId is Guid existingId)
         {
             var existing = await _auditExecutions.GetByAuditExecutionIdAsync(existingId, cancellationToken);
@@ -838,13 +870,33 @@ public sealed partial class ValidationLabService
 
                 if (existing.Status == ValidationAuditExecutionStatus.Completed)
                 {
-                    if (trial.AuditCompletionStatus != ValidationAuditCompletionStatus.Complete)
+                    var completedRecovery = await _auditRecovery.RecoverAsync(
+                        existing.AuditExecutionId,
+                        recoveryRequest,
+                        cancellationToken);
+
+                    existing = await _auditExecutions.GetByAuditExecutionIdAsync(
+                        existing.AuditExecutionId, cancellationToken) ?? existing;
+
+                    if (completedRecovery.IsComplete
+                        && completedRecovery.RecoveryDecision == ValidationAuditRecoveryDecision.AlreadyCompleted)
                     {
-                        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
-                        await _trials.UpdateAsync(trial, cancellationToken).ConfigureAwait(false);
+                        return new AuthoritativeAuditExecutionEnsureResult
+                        {
+                            Execution = existing,
+                            VerifiedFinalizationOnly = true,
+                            FinalizationOnly = true,
+                            RecoveryDecision = ValidationAuditRecoveryDecision.VerifiedFinalizationOnly
+                        };
                     }
 
-                    return new AuthoritativeAuditExecutionEnsureResult { Execution = existing };
+                    return new AuthoritativeAuditExecutionEnsureResult
+                    {
+                        Execution = existing,
+                        FailClosed = true,
+                        RecoveryDecision = ValidationAuditRecoveryDecision.FailClosed,
+                        CompletenessCode = ParseCompletenessCode(completedRecovery.FailureCode)
+                    };
                 }
 
                 if (existing.Status is ValidationAuditExecutionStatus.InProgress
@@ -854,7 +906,10 @@ public sealed partial class ValidationLabService
                     or ValidationAuditExecutionStatus.RecoveryRequired
                     or ValidationAuditExecutionStatus.Failed)
                 {
-                    var recovery = await _auditRecovery.RecoverAsync(existing.AuditExecutionId, cancellationToken);
+                    var recovery = await _auditRecovery.RecoverAsync(
+                        existing.AuditExecutionId,
+                        recoveryRequest,
+                        cancellationToken);
 
                     if (recovery.RecoveryDecision == ValidationAuditRecoveryDecision.FinalizationOnlyRecovery)
                     {
@@ -918,6 +973,18 @@ public sealed partial class ValidationLabService
             token,
             cancellationToken);
         return new AuthoritativeAuditExecutionEnsureResult { Execution = created };
+    }
+
+    private static ValidationAuditCompletenessCode? ParseCompletenessCode(string? failureCode)
+    {
+        if (string.IsNullOrWhiteSpace(failureCode))
+        {
+            return null;
+        }
+
+        return Enum.TryParse<ValidationAuditCompletenessCode>(failureCode, out var code)
+            ? code
+            : null;
     }
 
     private async Task FinalizeTrialAuditWithVerifierAsync(

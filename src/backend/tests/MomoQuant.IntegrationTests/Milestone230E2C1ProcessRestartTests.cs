@@ -25,6 +25,26 @@ public sealed class Milestone230E2C1ProcessRestartTests : IClassFixture<MomoQuan
         Assert.False(result.GetProperty("CompletenessIsComplete").GetBoolean());
         Assert.NotEqual("Complete", result.GetProperty("CompletenessCode").GetString());
         Assert.Equal(0, result.GetProperty("EventCount").GetInt32());
+        Assert.NotEqual("Complete", result.GetProperty("OldExecutionStatus").GetString());
+        Assert.NotEqual("NoRecoveryNeeded", result.GetProperty("RecoveryDecision").GetString());
+        Assert.True(result.GetProperty("MustRerunTrial").GetBoolean());
+
+        var oldStatus = result.GetProperty("OldExecutionStatus").GetString();
+        Assert.True(
+            oldStatus is "Superseded" or "RecoveryRequired",
+            $"Expected Superseded or RecoveryRequired, got {oldStatus}");
+
+        var fixtureId = result.GetProperty("FixtureId").GetGuid();
+        var newAuditId = result.GetProperty("NewAuditExecutionId").GetGuid();
+        var oldScopeId = result.GetProperty("OldScopeExecutionId").GetGuid();
+        var newScopeId = result.GetProperty("NewScopeExecutionId").GetGuid();
+
+        Assert.NotEqual(fixtureId, newAuditId);
+        Assert.NotEqual(oldScopeId, newScopeId);
+        Assert.Equal(2, result.GetProperty("NewAttemptNumber").GetInt32());
+        Assert.Equal(1, result.GetProperty("NewFirstSequence").GetInt32());
+        Assert.True(result.GetProperty("InMemoryAccessCountBeforeCrash").GetInt32() >= 1);
+        Assert.False(result.GetProperty("BeforeRecoveryCompletenessIsComplete").GetBoolean());
     }
 
     [Fact]

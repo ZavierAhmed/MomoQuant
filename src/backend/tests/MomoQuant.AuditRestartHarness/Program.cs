@@ -3,8 +3,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Strategies;
+using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.ValidationLab;
 using MomoQuant.Domain.Enums;
+using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.ValidationLab;
 using MomoQuant.Persistence;
 using MomoQuant.Persistence.Repositories;
@@ -57,6 +60,7 @@ public static class Program
         var fixture = await EnsureFixtureAsync(db, options.FixtureId);
 
         var now = DateTime.UtcNow;
+        const string writeLeaseOwner = "harness-write-owner";
         var execution = new ValidationAuditExecution
         {
             AuditExecutionId = options.FixtureId,
@@ -66,6 +70,7 @@ public static class Program
             ScopeExecutionId = CreateScopeId(options.FixtureId),
             AttemptNumber = 1,
             ExecutionToken = "harness-token",
+            LeaseOwner = writeLeaseOwner,
             Status = ValidationAuditExecutionStatus.InProgress,
             StartedAtUtc = now,
             UpdatedAtUtc = now,
@@ -86,9 +91,41 @@ public static class Program
         db.ValidationAuditExecutions.Add(execution);
         await db.SaveChangesAsync();
 
+        int? inMemoryAccessCountBeforeCrash = null;
         if (options.CrashPoint == "AfterAuditExecutionCreatedBeforeFirstFlush")
         {
+            var segmentStart = now.AddDays(-2);
+            var boundary = now;
+            var trainingScope = new HarnessBoundTrainingScope(
+                fixture.Experiment.Id,
+                execution.ScopeExecutionId,
+                execution.AuditExecutionId,
+                fixture.Trial.Id,
+                segmentStart,
+                boundary);
+
+            using (ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
+            {
+                AuditExecutionId = execution.AuditExecutionId,
+                ScopeExecutionId = execution.ScopeExecutionId,
+                ExecutionToken = execution.ExecutionToken,
+                AttemptNumber = execution.AttemptNumber,
+                ValidationExperimentId = fixture.Experiment.Id,
+                ValidationTrialId = fixture.Trial.Id
+            }))
+            {
+                trainingScope.RecordEvaluationAccess("AuditRestartHarness");
+            }
+
+            if (trainingScope.AccessLog.Count < 1)
+            {
+                return Fail("Crash-before-flush phase must record at least one in-memory access event.");
+            }
+
+            inMemoryAccessCountBeforeCrash = trainingScope.AccessLog.Count;
+            await WriteAccessHintAsync(options, inMemoryAccessCountBeforeCrash.Value);
             WriteStateHint(options, execution, batchCount: 0, eventCount: 0);
+            Console.Error.WriteLine($"InMemoryAccessCount={inMemoryAccessCountBeforeCrash}");
             Environment.Exit(CrashExitCode);
         }
 
@@ -213,8 +250,37 @@ public static class Program
         var beforeRecoveryExecutionStatus = execution.Status;
         var beforeRecoveryFinalExpectedSequence = execution.FinalExpectedSequence;
 
-        var recoveryResult = await recovery.RecoverAsync(execution.AuditExecutionId);
+        var recoveryResult = await recovery.RecoverAsync(
+            execution.AuditExecutionId,
+            new ValidationAuditExecutionRecoveryRequest
+            {
+                CurrentLeaseOwner = "harness-recover-owner",
+                IsResume = true,
+                TrialStatus = trialBefore.Status
+            });
         execution = await executions.GetByAuditExecutionIdAsync(options.FixtureId) ?? execution;
+
+        var oldScopeExecutionId = execution.ScopeExecutionId;
+        Guid? newAuditExecutionId = null;
+        Guid? newScopeExecutionId = null;
+        int? newAttemptNumber = null;
+        int? inMemoryAccessCountBeforeCrash = await ReadAccessHintAsync(options);
+        if (options.CrashPoint == "AfterAuditExecutionCreatedBeforeFirstFlush"
+            && recoveryResult.MustRerunTrial)
+        {
+            var supersession = sp.GetRequiredService<IValidationAuditExecutionSupersessionService>();
+            var replacement = await supersession.SupersedeForRerunAsync(
+                execution.AuditExecutionId,
+                Guid.NewGuid().ToString("N"),
+                recoveryResult.FailureCode ?? "PROCESS_INTERRUPTED_BEFORE_FLUSH",
+                leaseOwner: "harness-recover-owner");
+            newAuditExecutionId = replacement.AuditExecutionId;
+            newScopeExecutionId = replacement.ScopeExecutionId;
+            newAttemptNumber = replacement.AttemptNumber;
+            execution = await executions.GetByAuditExecutionIdAsync(options.FixtureId) ?? execution;
+        }
+
+        var oldExecution = await executions.GetByAuditExecutionIdAsync(options.FixtureId);
 
         var finalizerInvoked = false;
         ValidationAuditExecutionCompletionResult? completeResult = null;
@@ -265,7 +331,15 @@ public static class Program
             FinalizerInvoked = finalizerInvoked,
             FinalizerIsComplete = completeResult?.IsComplete,
             FinalizerCode = completeResult?.CompletionCode.ToString(),
-            TrialAuditCompletionStatus = trial.AuditCompletionStatus.ToString()
+            TrialAuditCompletionStatus = trial.AuditCompletionStatus.ToString(),
+            OldAuditExecutionId = options.FixtureId,
+            NewAuditExecutionId = newAuditExecutionId,
+            OldScopeExecutionId = oldScopeExecutionId,
+            NewScopeExecutionId = newScopeExecutionId,
+            NewAttemptNumber = newAttemptNumber,
+            NewFirstSequence = newAuditExecutionId is null ? (int?)null : 1,
+            InMemoryAccessCountBeforeCrash = inMemoryAccessCountBeforeCrash,
+            OldExecutionStatus = oldExecution?.Status.ToString()
         };
 
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
@@ -276,6 +350,26 @@ public static class Program
         }
 
         return 0;
+    }
+
+    private static string AccessHintPath(HarnessArgs options) =>
+        Path.Combine(Path.GetTempPath(), $"e2c1-access-{options.FixtureId:N}.txt");
+
+    private static async Task WriteAccessHintAsync(HarnessArgs options, int count)
+    {
+        await File.WriteAllTextAsync(AccessHintPath(options), count.ToString());
+    }
+
+    private static async Task<int?> ReadAccessHintAsync(HarnessArgs options)
+    {
+        var path = AccessHintPath(options);
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        var text = await File.ReadAllTextAsync(path);
+        return int.TryParse(text.Trim(), out var count) ? count : null;
     }
 
     private static void WriteStateHint(
@@ -438,6 +532,7 @@ public static class Program
         services.AddSingleton<IValidationAuditPayloadSetHasher, ValidationAuditPayloadSetHasher>();
         services.AddScoped<IValidationAuditCompletenessVerifier, ValidationAuditCompletenessVerifier>();
         services.AddScoped<IValidationAuditExecutionFactory, ValidationAuditExecutionService>();
+        services.AddScoped<IValidationAuditExecutionSupersessionService, ValidationAuditExecutionSupersessionService>();
         services.AddScoped<IValidationAuditExecutionRecoveryService, ValidationAuditExecutionRecoveryService>();
         services.AddScoped<IValidationAuditExecutionFinalizer, ValidationAuditExecutionFinalizer>();
         services.AddScoped<IValidationTrialAuditCompletionGate, ValidationTrialAuditCompletionGate>();
@@ -449,6 +544,89 @@ public static class Program
         Console.Error.WriteLine(message);
         return 1;
     }
+}
+
+/// <summary>Minimal bound training scope for crash-before-flush harness (in-memory access only).</summary>
+internal sealed class HarnessBoundTrainingScope : IValidationTrainingCandleScope
+{
+    private readonly List<ValidationCandleAccessRecord> _log = new();
+
+    public HarnessBoundTrainingScope(
+        long experimentId,
+        Guid scopeExecutionId,
+        Guid boundAuditExecutionId,
+        long trialId,
+        DateTime segmentStartUtc,
+        DateTime boundaryUtc)
+    {
+        ValidationExperimentId = experimentId;
+        ScopeExecutionId = scopeExecutionId;
+        BoundAuditExecutionId = boundAuditExecutionId;
+        ActiveTrialId = trialId;
+        SegmentStartUtc = segmentStartUtc;
+        SegmentEndExclusiveUtc = boundaryUtc;
+        ValidationBoundaryUtc = boundaryUtc;
+        Partition = new ValidationCandlePartitionMetadata
+        {
+            ValidationExperimentId = experimentId,
+            RequiredWarmupCandleCount = 0,
+            AvailableWarmupCandleCount = 0,
+            EvaluationCandleCount = 1,
+            TotalCandleCount = 1,
+            WarmupStatus = ValidationWarmupStatus.NotRequired,
+            TrainingEvaluationStartUtc = segmentStartUtc,
+            TrainingEvaluationEndExclusiveUtc = boundaryUtc,
+            ValidationBoundaryUtc = boundaryUtc,
+            SymbolId = 1,
+            SymbolName = "HARNESS",
+            Timeframe = "15m",
+            RequirementsVersion = "Harness"
+        };
+    }
+
+    public Guid ScopeExecutionId { get; }
+    public Guid? BoundAuditExecutionId { get; }
+    public string? CorrelationId { get; set; }
+    public long? ActiveTrialId { get; set; }
+    public int? ActiveTrialNumber { get; set; }
+    public IReadOnlyList<ValidationCandleAccessRecord> AccessLog => _log;
+    public long ValidationExperimentId { get; }
+    public DateTime SegmentStartUtc { get; }
+    public DateTime SegmentEndExclusiveUtc { get; }
+    public DateTime ValidationBoundaryUtc { get; }
+    public ValidationCandlePartitionMetadata Partition { get; }
+
+    public void RecordEvaluationAccess(string callerComponent)
+    {
+        _log.Add(new ValidationCandleAccessRecord
+        {
+            AccessEventId = Guid.NewGuid(),
+            ScopeExecutionId = ScopeExecutionId,
+            ScopeSequenceNumber = 1,
+            ValidationExperimentId = ValidationExperimentId,
+            TrialId = ActiveTrialId,
+            TrialNumber = 1,
+            CallerComponent = callerComponent,
+            AccessPurpose = ValidationCandleAccessPurpose.EvaluationRange,
+            DatasetPartition = "Training",
+            RequestedCandleCount = 1,
+            ReturnedCandleCount = 1,
+            CandleContentFingerprint = "HARNESS01",
+            AccessedAtUtc = DateTime.UtcNow,
+            RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion
+        });
+    }
+
+    public IReadOnlyList<Candle> GetWarmupBefore(DateTime beforeOpenTimeUtc, int count, ValidationCandleAccessContext context) => [];
+    public IReadOnlyList<Candle> GetWarmupBefore(ValidationWarmupAccessRequest request) => [];
+    public IReadOnlyList<Candle> GetEvaluationRange(DateTime? fromUtc, DateTime? toUtcExclusive, ValidationCandleAccessContext context) => [];
+    public IReadOnlyList<Candle> GetEvaluationRange(ValidationEvaluationAccessRequest request) => [];
+    public Candle? GetByOpenTimeUtc(DateTime openTimeUtc, ValidationCandleAccessContext context) => null;
+    public Candle? GetByOpenTimeUtc(DateTime openTimeUtc, string callerComponent) => null;
+    public IReadOnlyList<Candle> GetRange(DateTime? fromUtc, DateTime? toUtcExclusive, string callerComponent) => [];
+    public StrategyLabDataset CreateStrategyLabDataset(ValidationDatasetMaterializationRequest request) =>
+        throw new NotSupportedException();
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
 internal sealed class HarnessArgs
