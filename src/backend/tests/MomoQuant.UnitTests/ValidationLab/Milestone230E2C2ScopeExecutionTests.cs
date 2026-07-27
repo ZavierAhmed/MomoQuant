@@ -111,16 +111,51 @@ public sealed class Milestone230E2C2ScopeExecutionTests
             async scope =>
             {
                 _ = scope.GetRange(scope.SegmentStartUtc, scope.SegmentStartUtc.AddHours(1), "OuterBodyAccess");
-                await Task.CompletedTask;
+                await ThrowFromNamedOuterBodyHelper();
             });
 
+        var aggregate = result.ToFailureAggregate();
         Assert.False(result.IsSuccess);
-        Assert.Null(result.BodyException);
+        Assert.NotNull(result.BodyException);
         Assert.NotNull(result.FlushException);
+        Assert.IsType<InvalidOperationException>(result.BodyException!.SourceException);
+        Assert.IsType<ValidationAccessEvidencePersistenceException>(result.FlushException!.SourceException);
         Assert.Equal(ValidationTrainingFailurePhase.OuterScopeFlush, result.FlushPhase);
-        Assert.Equal(
-            ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
-            result.ToFailureAggregate().PrimaryFailure!.Code);
+        Assert.Equal(ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed, aggregate.PrimaryFailure!.Code);
+        Assert.Equal(2, aggregate.AllFailures.Count);
+        Assert.Contains(aggregate.AllFailures, f => f.Code == ValidationTrainingFailureCodes.TrialExecutionFailed);
+        Assert.Contains(aggregate.AllFailures, f => f.Code == ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+    }
+
+    [Fact]
+    public async Task ExecuteWithScope_ThrowIfFailed_PreservesNamedHelperStackOrigin()
+    {
+        var audits = new FakeCandleAccessAuditRepository();
+        var recorder = new ValidationCandleAccessRecorder(audits);
+        var factory = new FakeScopeFactory();
+        var execution = new ValidationTrainingScopeExecution(factory, recorder);
+        var experiment = new ValidationExperiment
+        {
+            Id = 8,
+            TrainingStartUtc = factory.Scope.SegmentStartUtc,
+            TrainingEndUtc = factory.Scope.ValidationBoundaryUtc.AddHours(-1),
+            ValidationStartUtc = factory.Scope.ValidationBoundaryUtc
+        };
+
+        var result = await execution.ExecuteWithScopeAsync(
+            experiment,
+            ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
+                experiment,
+                trainingEvaluationEndExclusiveUtc: factory.Scope.SegmentEndExclusiveUtc),
+            async _ => await ThrowFromNamedOuterBodyHelper());
+
+        var thrown = Assert.Throws<InvalidOperationException>(() => result.ThrowIfFailed());
+        Assert.Contains(nameof(ThrowFromNamedOuterBodyHelper), thrown.StackTrace);
+    }
+
+    private static Task ThrowFromNamedOuterBodyHelper()
+    {
+        throw new InvalidOperationException("named outer body helper failure");
     }
 
     [Fact]

@@ -36,6 +36,8 @@ public sealed class E2C2SeamControls
     public HashSet<int> FailOnFlushNumbers { get; } = [];
     public bool FailOperationStatusSync { get; set; }
     public bool FailLeaseRelease { get; set; }
+    public bool FailAuditFinalizationIncomplete { get; set; }
+    public bool FailCompletenessVerification { get; set; }
 
     public void Reset()
     {
@@ -44,6 +46,8 @@ public sealed class E2C2SeamControls
         FailOnFlushNumbers.Clear();
         FailOperationStatusSync = false;
         FailLeaseRelease = false;
+        FailAuditFinalizationIncomplete = false;
+        FailCompletenessVerification = false;
     }
 }
 
@@ -82,6 +86,64 @@ public static class E2C2FailureReasonHelpers
         foreach (var code in expectedRankIneligibleCodes)
         {
             Assert.Contains(code, codes);
+        }
+    }
+
+    public static void AssertExactFailureReasons(
+        ValidationExperiment experiment,
+        params string[] expectedCodesInOrder)
+    {
+        AssertPrimaryAndOrderedCodes(experiment, expectedCodesInOrder);
+        var parsed = ParseRecords(experiment.FailureReasonsJson);
+        var expectedIdentities = expectedCodesInOrder
+            .Select(code => $"{ExpectedPrecedence(code)}:{code}")
+            .ToArray();
+        Assert.Equal(expectedIdentities, parsed.Select(r => r.LogicalIdentity).ToArray());
+    }
+
+    private static int ExpectedPrecedence(string code) => code switch
+    {
+        ValidationTrainingFailureCodes.ValidationDataLeakage =>
+            (int)ValidationTrainingFailurePrecedence.Boundary,
+        ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed =>
+            (int)ValidationTrainingFailurePrecedence.AuditDurability,
+        ValidationTrainingFailureCodes.InsufficientWarmup or ValidationTrainingFailureCodes.TrialExecutionFailed
+            or "FailedNoTrainingTrialPassedGuardrails" =>
+            (int)ValidationTrainingFailurePrecedence.TrialExecution,
+        ValidationTrainingFailureCodes.TrainingCleanupFailed =>
+            (int)ValidationTrainingFailurePrecedence.Cleanup,
+        _ => (int)ValidationTrainingFailurePrecedence.TrialExecution
+    };
+
+    public static void AssertNoMirroredDiagnosticDuplicates(ValidationExperiment experiment)
+    {
+        var parsed = ParseRecords(experiment.FailureReasonsJson);
+        Assert.Equal(parsed.Count, parsed.Select(r => r.Code).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(parsed.Count, parsed.Select(r => r.LogicalIdentity).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    public static void AssertNoSensitiveMessages(
+        ValidationExperiment experiment,
+        string? serviceResultMessage = null)
+    {
+        if (!string.IsNullOrWhiteSpace(experiment.ErrorMessage))
+        {
+            Assert.DoesNotContain("StackTrace", experiment.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(" at MomoQuant.", experiment.ErrorMessage, StringComparison.Ordinal);
+            Assert.DoesNotContain("Password=", experiment.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Server=", experiment.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        }
+
+        foreach (var record in ParseRecords(experiment.FailureReasonsJson))
+        {
+            Assert.DoesNotContain("StackTrace", record.UserSafeMessage, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(" at MomoQuant.", record.UserSafeMessage, StringComparison.Ordinal);
+        }
+
+        if (!string.IsNullOrWhiteSpace(serviceResultMessage))
+        {
+            Assert.DoesNotContain("StackTrace", serviceResultMessage, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(" at MomoQuant.", serviceResultMessage, StringComparison.Ordinal);
         }
     }
 }
@@ -127,6 +189,20 @@ public sealed class E2C2OrchestrationFactory : MomoQuantWebApplicationFactory
             {
                 var inner = ActivatorUtilities.CreateInstance<ValidationTrainingExecutionLeaseService>(sp);
                 return new E2C2LeaseDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
+            });
+
+            services.RemoveAll<IValidationAuditExecutionFinalizer>();
+            services.AddScoped<IValidationAuditExecutionFinalizer>(sp =>
+            {
+                var inner = ActivatorUtilities.CreateInstance<ValidationAuditExecutionFinalizer>(sp);
+                return new E2C2FinalizerDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
+            });
+
+            services.RemoveAll<IValidationAuditCompletenessVerifier>();
+            services.AddScoped<IValidationAuditCompletenessVerifier>(sp =>
+            {
+                var inner = ActivatorUtilities.CreateInstance<ValidationAuditCompletenessVerifier>(sp);
+                return new E2C2CompletenessVerifierDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
             });
         });
     }
@@ -567,4 +643,73 @@ internal sealed class E2C2LeaseDecorator : IValidationTrainingExecutionLeaseServ
 
     public Task<bool> IsActiveAsync(long experimentId, CancellationToken cancellationToken = default) =>
         _inner.IsActiveAsync(experimentId, cancellationToken);
+}
+
+internal sealed class E2C2FinalizerDecorator : IValidationAuditExecutionFinalizer
+{
+    private readonly IValidationAuditExecutionFinalizer _inner;
+    private readonly E2C2SeamControls _controls;
+
+    public E2C2FinalizerDecorator(IValidationAuditExecutionFinalizer inner, E2C2SeamControls controls)
+    {
+        _inner = inner;
+        _controls = controls;
+    }
+
+    public async Task<ValidationAuditExecutionCompletionResult> CompleteAsync(
+        Guid auditExecutionId,
+        long finalExpectedSequence,
+        CancellationToken cancellationToken = default)
+    {
+        if (_controls.FailAuditFinalizationIncomplete)
+        {
+            return new ValidationAuditExecutionCompletionResult
+            {
+                AuditExecutionId = auditExecutionId,
+                IsComplete = false,
+                CompletionCode = ValidationAuditCompletenessCode.FinalSequenceMissing,
+                FinalExpectedSequence = finalExpectedSequence,
+                FailureCode = ValidationAuditCompletenessCode.FinalSequenceMissing.ToString()
+            };
+        }
+
+        return await _inner.CompleteAsync(auditExecutionId, finalExpectedSequence, cancellationToken);
+    }
+}
+
+internal sealed class E2C2CompletenessVerifierDecorator : IValidationAuditCompletenessVerifier
+{
+    private readonly IValidationAuditCompletenessVerifier _inner;
+    private readonly E2C2SeamControls _controls;
+
+    public E2C2CompletenessVerifierDecorator(
+        IValidationAuditCompletenessVerifier inner,
+        E2C2SeamControls controls)
+    {
+        _inner = inner;
+        _controls = controls;
+    }
+
+    public ValidationAuditCompletenessResult Verify(
+        ValidationParameterTrial trial,
+        ValidationAuditExecution? execution,
+        IReadOnlyList<ValidationAuditBatch> batches,
+        IReadOnlyList<ValidationCandleAccessAudit> accessRowsForScope)
+    {
+        if (_controls.FailCompletenessVerification)
+        {
+            return new ValidationAuditCompletenessResult
+            {
+                AuditExecutionId = execution?.AuditExecutionId,
+                IsAuthoritative = true,
+                IsTerminal = true,
+                IsComplete = false,
+                EvidenceSatisfied = false,
+                CompletionCode = ValidationAuditCompletenessCode.SequenceGap,
+                LastConfirmedSequence = execution?.LastConfirmedSequence ?? 0
+            };
+        }
+
+        return _inner.Verify(trial, execution, batches, accessRowsForScope);
+    }
 }

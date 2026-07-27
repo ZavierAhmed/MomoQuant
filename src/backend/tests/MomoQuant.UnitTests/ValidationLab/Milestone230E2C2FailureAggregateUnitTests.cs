@@ -95,6 +95,154 @@ public sealed class Milestone230E2C2FailureAggregateUnitTests
         Assert.Equal(ValidationTrainingFailureCategory.Cleanup, aggregate.PrimaryFailure.Category);
         Assert.False(aggregate.PrimaryFailure.IsQualificationBlocking);
         Assert.False(aggregate.IsQualificationBlocking);
+
+        var experiment = new ValidationExperiment { Id = 7, IsQualificationCapable = true };
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+        Assert.False(experiment.IsQualificationCapable);
+    }
+
+    [Fact]
+    public void CleanupOnly_ApplyToExperiment_LeavesNonQualified()
+    {
+        var aggregate = new ValidationTrainingFailureAggregate();
+        aggregate.Observe(
+            new InvalidOperationException("lease release failed"),
+            ValidationTrainingFailurePhase.LeaseRelease,
+            occurredAtUtc: FixedUtc);
+
+        var experiment = new ValidationExperiment { Id = 8, IsQualificationCapable = true };
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+
+        Assert.False(experiment.IsQualificationCapable);
+        Assert.Equal(ValidationTrainingFailureCodes.TrainingCleanupFailed, experiment.PrimaryFailureReason);
+    }
+
+    [Fact]
+    public void NonblockingCleanup_CannotRestoreQualificationCapability()
+    {
+        var experiment = new ValidationExperiment
+        {
+            Id = 9,
+            IsQualificationCapable = false,
+            FailureReasonsJson = ValidationTrainingFailureJson.SerializeRecords(
+            [
+                new ValidationTrainingFailureRecord
+                {
+                    Code = ValidationTrainingFailureCodes.ValidationDataLeakage,
+                    Category = ValidationTrainingFailureCategory.Boundary,
+                    Precedence = ValidationTrainingFailurePrecedence.Boundary,
+                    Phase = ValidationTrainingFailurePhase.TrialBody,
+                    UserSafeMessage = ValidationTrainingFailureHandler.UserSafeLeakageMessage,
+                    OccurredAtUtc = FixedUtc,
+                    IsQualificationBlocking = true
+                }
+            ])
+        };
+
+        var cleanupOnly = new ValidationTrainingFailureAggregate();
+        cleanupOnly.Observe(
+            new OperationCanceledException(),
+            ValidationTrainingFailurePhase.LeaseRelease,
+            occurredAtUtc: FixedUtc.AddSeconds(1));
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, cleanupOnly);
+
+        Assert.False(experiment.IsQualificationCapable);
+    }
+
+    [Fact]
+    public void RepeatedApplyToExperiment_DoesNotManufactureExperimentStatusPersistenceDuplicate()
+    {
+        var aggregate = new ValidationTrainingFailureAggregate();
+        aggregate.Observe(BoundaryException(), ValidationTrainingFailurePhase.TrialBody, occurredAtUtc: FixedUtc);
+
+        var experiment = new ValidationExperiment { Id = 10 };
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+
+        var parsed = ValidationTrainingFailureJson.ParseRecords(experiment.FailureReasonsJson);
+        Assert.Single(parsed);
+        Assert.Equal(ValidationTrainingFailureCodes.ValidationDataLeakage, parsed[0].Code);
+    }
+
+    [Fact]
+    public void DiagnosticsJson_IsNotImportedIntoAuthoritativeAggregate()
+    {
+        var diagnosticsOnly = ValidationTrainingFailureJson.SerializeRecords(
+        [
+            new ValidationTrainingFailureRecord
+            {
+                Code = ValidationTrainingFailureCodes.TrialExecutionFailed,
+                Category = ValidationTrainingFailureCategory.TrialExecution,
+                Precedence = ValidationTrainingFailurePrecedence.TrialExecution,
+                Phase = ValidationTrainingFailurePhase.TrialBody,
+                UserSafeMessage = "Diagnostics-only trial failure.",
+                OccurredAtUtc = FixedUtc,
+                IsQualificationBlocking = false
+            }
+        ]);
+
+        var aggregate = ValidationTrainingFailurePersistence.MergeExisting(null);
+        aggregate.Observe(BoundaryException(), ValidationTrainingFailurePhase.TrialBody, occurredAtUtc: FixedUtc);
+
+        var experiment = new ValidationExperiment
+        {
+            Id = 11,
+            DiagnosticsJson = diagnosticsOnly
+        };
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+
+        var parsed = ValidationTrainingFailureJson.ParseRecords(experiment.FailureReasonsJson);
+        Assert.Single(parsed);
+        Assert.Equal(ValidationTrainingFailureCodes.ValidationDataLeakage, parsed[0].Code);
+        Assert.DoesNotContain(
+            parsed,
+            r => r.Code == ValidationTrainingFailureCodes.TrialExecutionFailed);
+    }
+
+    [Fact]
+    public void GenericFlushPhaseException_ClassifiesAsAuditDurability()
+    {
+        var aggregate = new ValidationTrainingFailureAggregate();
+        aggregate.Observe(
+            new InvalidOperationException("generic flush fault"),
+            ValidationTrainingFailurePhase.TrialScopeFlush,
+            occurredAtUtc: FixedUtc);
+
+        Assert.Equal(
+            ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
+            aggregate.PrimaryFailure!.Code);
+        Assert.Equal(ValidationTrainingFailureCategory.AuditDurability, aggregate.PrimaryFailure.Category);
+        Assert.True(aggregate.PrimaryFailure.IsQualificationBlocking);
+    }
+
+    [Fact]
+    public void GenericCleanupPhaseException_ClassifiesAsCleanup()
+    {
+        var aggregate = new ValidationTrainingFailureAggregate();
+        aggregate.Observe(
+            new InvalidOperationException("generic cleanup fault"),
+            ValidationTrainingFailurePhase.OperationStatusSync,
+            occurredAtUtc: FixedUtc);
+
+        Assert.Equal(ValidationTrainingFailureCodes.TrainingCleanupFailed, aggregate.PrimaryFailure!.Code);
+        Assert.Equal(ValidationTrainingFailureCategory.Cleanup, aggregate.PrimaryFailure.Category);
+        Assert.Equal(
+            $"{(int)ValidationTrainingFailurePrecedence.Cleanup}:{ValidationTrainingFailureCodes.TrainingCleanupFailed}",
+            aggregate.PrimaryFailure.LogicalIdentity);
+    }
+
+    [Fact]
+    public void OperationCanceled_InTrialBody_IsNotForcedToCleanup()
+    {
+        var aggregate = new ValidationTrainingFailureAggregate();
+        aggregate.Observe(
+            new OperationCanceledException(),
+            ValidationTrainingFailurePhase.TrialBody,
+            occurredAtUtc: FixedUtc);
+
+        Assert.Equal(ValidationTrainingFailureCodes.TrialExecutionFailed, aggregate.PrimaryFailure!.Code);
+        Assert.Equal(ValidationTrainingFailureCategory.TrialExecution, aggregate.PrimaryFailure.Category);
+        Assert.False(aggregate.HasCleanupFailure);
     }
 
     [Fact]
@@ -198,7 +346,7 @@ public sealed class Milestone230E2C2FailureAggregateUnitTests
         aggregate.ObserveDispatchInfo(flushDispatch, ValidationTrainingFailurePhase.TrialScopeFlush);
 
         var thrown = Assert.Throws<ValidationAccessEvidencePersistenceException>(() =>
-            aggregate.ThrowPrimary(bodyDispatch, flushDispatch));
+            aggregate.ThrowPrimary());
 
         Assert.Same(flush, thrown);
         Assert.Equal("Trial body marker", body.Message);
@@ -211,6 +359,95 @@ public sealed class Milestone230E2C2FailureAggregateUnitTests
         ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
         Assert.Equal(ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed, experiment.PrimaryFailureReason);
         Assert.False(experiment.IsQualificationCapable);
+    }
+
+    [Fact]
+    public void ThrowPrimary_RethrowsExceptionAssociatedWithPrimaryRecord_NotAssumedBodyOrFlush()
+    {
+        var body = BoundaryException();
+        var flush = AuditException();
+        var bodyDispatch = ExceptionDispatchInfo.Capture(body);
+        var flushDispatch = ExceptionDispatchInfo.Capture(flush);
+
+        var boundaryPrimary = new ValidationTrainingFailureAggregate();
+        boundaryPrimary.ObserveDispatchInfo(bodyDispatch, ValidationTrainingFailurePhase.TrialBody);
+        boundaryPrimary.ObserveDispatchInfo(flushDispatch, ValidationTrainingFailurePhase.TrialScopeFlush);
+        Assert.Throws<ValidationDataLeakageException>(() => boundaryPrimary.ThrowPrimary());
+
+        var auditOnly = new ValidationTrainingFailureAggregate();
+        auditOnly.ObserveDispatchInfo(flushDispatch, ValidationTrainingFailurePhase.TrialScopeFlush);
+        Assert.Throws<ValidationAccessEvidencePersistenceException>(() => auditOnly.ThrowPrimary());
+    }
+
+    [Fact]
+    public void BodyHelperStackOrigin_RemainsInStackTrace_AfterThrowPrimary()
+    {
+        var bodyDispatch = CaptureDispatchFromNamedBodyHelper();
+        var flushDispatch = ExceptionDispatchInfo.Capture(AuditException());
+
+        var aggregate = new ValidationTrainingFailureAggregate();
+        aggregate.ObserveDispatchInfo(bodyDispatch, ValidationTrainingFailurePhase.TrialBody);
+        aggregate.ObserveDispatchInfo(flushDispatch, ValidationTrainingFailurePhase.TrialScopeFlush);
+
+        _ = Assert.Throws<ValidationAccessEvidencePersistenceException>(() => aggregate.ThrowPrimary());
+
+        var bodyRecord = aggregate.AllFailures.Single(f => f.Code == ValidationTrainingFailureCodes.TrialExecutionFailed);
+        Assert.Contains(nameof(ThrowFromNamedBodyHelper), bodyRecord.DispatchInfo!.SourceException.StackTrace);
+    }
+
+    [Fact]
+    public void FlushHelperStackOrigin_RemainsInStackTrace_WhenFlushIsPrimary()
+    {
+        var flushDispatch = CaptureDispatchFromNamedFlushHelper();
+
+        var aggregate = new ValidationTrainingFailureAggregate();
+        aggregate.ObserveDispatchInfo(flushDispatch, ValidationTrainingFailurePhase.TrialScopeFlush);
+
+        var thrown = Assert.Throws<ValidationAccessEvidencePersistenceException>(() => aggregate.ThrowPrimary());
+        Assert.Contains(nameof(ThrowFromNamedFlushHelper), thrown.StackTrace);
+    }
+
+    private static ExceptionDispatchInfo CaptureDispatchFromNamedBodyHelper()
+    {
+        try
+        {
+            ThrowFromNamedBodyHelper();
+            throw new InvalidOperationException("unreachable");
+        }
+        catch (Exception ex)
+        {
+            return ExceptionDispatchInfo.Capture(ex);
+        }
+    }
+
+    private static ExceptionDispatchInfo CaptureDispatchFromNamedFlushHelper()
+    {
+        try
+        {
+            ThrowFromNamedFlushHelper();
+            throw new InvalidOperationException("unreachable");
+        }
+        catch (Exception ex)
+        {
+            return ExceptionDispatchInfo.Capture(ex);
+        }
+    }
+
+    private static void ThrowFromNamedBodyHelper() =>
+        throw new InvalidOperationException("named body helper failure");
+
+    private static void ThrowFromNamedFlushHelper()
+    {
+        var eventId = Guid.NewGuid();
+        throw new ValidationAccessEvidencePersistenceException(new ValidationAccessBatchPersistResult
+        {
+            RequestedEventIds = [eventId],
+            MissingEventIds = [eventId],
+            CommitStatus = ValidationAccessBatchCommitStatus.FailedPermanent,
+            VerificationStatus = ValidationAccessBatchVerificationStatus.FailedPermanent,
+            RecoveryStatus = ValidationAccessBatchRecoveryStatus.RetryExhausted,
+            CompletedAtUtc = FixedUtc
+        });
     }
 
     private static ValidationDataLeakageException BoundaryException() =>

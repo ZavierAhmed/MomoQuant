@@ -32,7 +32,8 @@ public enum ValidationTrainingFailurePhase
     ExperimentStatusPersistence,
     OperationStatusSync,
     LeaseHeartbeat,
-    LeaseRelease
+    LeaseRelease,
+    ScopeDisposal
 }
 
 public sealed class ValidationTrainingFailureRecord
@@ -47,16 +48,21 @@ public sealed class ValidationTrainingFailureRecord
     public bool IsQualificationBlocking { get; init; }
 
     [JsonIgnore]
-    public string LogicalIdentity => $"{(int)Precedence}:{Code}:{Phase}";
+    public ExceptionDispatchInfo? DispatchInfo { get; init; }
+
+    /// <summary>Stable logical identity: precedence + code (phase is metadata, not identity).</summary>
+    [JsonIgnore]
+    public string LogicalIdentity => $"{(int)Precedence}:{Code}";
 
     public static ValidationTrainingFailureRecord FromException(
         Exception exception,
         ValidationTrainingFailurePhase phase,
         string? userSafeMessage = null,
-        DateTime? occurredAtUtc = null)
+        DateTime? occurredAtUtc = null,
+        ExceptionDispatchInfo? dispatchInfo = null)
     {
         ArgumentNullException.ThrowIfNull(exception);
-        var (code, category, precedence, blocking, safeMessage) = MapException(exception, userSafeMessage);
+        var (code, category, precedence, blocking, safeMessage) = MapException(exception, phase, userSafeMessage);
         return new ValidationTrainingFailureRecord
         {
             Code = code,
@@ -66,14 +72,17 @@ public sealed class ValidationTrainingFailureRecord
             UserSafeMessage = safeMessage,
             ExceptionType = exception.GetType().Name,
             OccurredAtUtc = occurredAtUtc ?? DateTime.UtcNow,
-            IsQualificationBlocking = blocking
+            IsQualificationBlocking = blocking,
+            DispatchInfo = dispatchInfo ?? ExceptionDispatchInfo.Capture(exception)
         };
     }
 
     internal static (string Code, ValidationTrainingFailureCategory Category, ValidationTrainingFailurePrecedence Precedence, bool Blocking, string SafeMessage) MapException(
         Exception exception,
+        ValidationTrainingFailurePhase phase,
         string? userSafeMessage)
     {
+        // Explicit typed failures always win over phase heuristics.
         switch (exception)
         {
             case ValidationTrainingBoundaryException boundary:
@@ -101,34 +110,94 @@ public sealed class ValidationTrainingFailureRecord
                     userSafeMessage ?? identity.SafeMessage);
             case ValidationAuditExecutionException audit:
                 return (
-                    audit.ErrorCode,
+                    string.IsNullOrWhiteSpace(audit.ErrorCode)
+                        ? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed
+                        : audit.ErrorCode,
                     ValidationTrainingFailureCategory.AuditDurability,
                     ValidationTrainingFailurePrecedence.AuditDurability,
                     true,
-                    userSafeMessage ?? audit.Message);
+                    userSafeMessage ?? ValidationTrainingFailureHandler.UserSafeAuditPersistenceMessage);
             case ValidationTrainingInsufficientWarmupException warmup:
                 return (
                     ValidationTrainingFailureCodes.InsufficientWarmup,
                     ValidationTrainingFailureCategory.TrialExecution,
                     ValidationTrainingFailurePrecedence.TrialExecution,
                     true,
-                    userSafeMessage ?? $"Insufficient warm-up candles (available={warmup.AvailableWarmupCandleCount}, required={warmup.RequiredWarmupCandleCount}).");
-            case OperationCanceledException:
-                return (
-                    ValidationTrainingFailureCodes.TrainingCleanupFailed,
-                    ValidationTrainingFailureCategory.Cleanup,
-                    ValidationTrainingFailurePrecedence.Cleanup,
-                    false,
-                    userSafeMessage ?? "Training operation was cancelled.");
-            default:
-                return (
-                    ValidationTrainingFailureCodes.TrialExecutionFailed,
-                    ValidationTrainingFailureCategory.TrialExecution,
-                    ValidationTrainingFailurePrecedence.TrialExecution,
-                    false,
-                    userSafeMessage ?? "Validation training trial execution failed.");
+                    userSafeMessage
+                    ?? $"Insufficient warm-up candles (available={warmup.AvailableWarmupCandleCount}, required={warmup.RequiredWarmupCandleCount}).");
         }
+
+        // Cancellation retains phase-aware semantics (not always cleanup).
+        if (exception is OperationCanceledException)
+        {
+            return ClassifyByPhase(
+                phase,
+                userSafeMessage ?? "Training operation was cancelled.",
+                cancellation: true);
+        }
+
+        return ClassifyByPhase(
+            phase,
+            userSafeMessage ?? DefaultSafeMessageForPhase(phase),
+            cancellation: false);
     }
+
+    private static (string Code, ValidationTrainingFailureCategory Category, ValidationTrainingFailurePrecedence Precedence, bool Blocking, string SafeMessage) ClassifyByPhase(
+        ValidationTrainingFailurePhase phase,
+        string safeMessage,
+        bool cancellation)
+    {
+        if (IsAuditDurabilityPhase(phase))
+        {
+            return (
+                ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
+                ValidationTrainingFailureCategory.AuditDurability,
+                ValidationTrainingFailurePrecedence.AuditDurability,
+                true,
+                safeMessage);
+        }
+
+        if (IsCleanupPhase(phase))
+        {
+            return (
+                ValidationTrainingFailureCodes.TrainingCleanupFailed,
+                ValidationTrainingFailureCategory.Cleanup,
+                ValidationTrainingFailurePrecedence.Cleanup,
+                false,
+                safeMessage);
+        }
+
+        // TrialBody (and any unspecified non-cleanup phase) => trial execution.
+        return (
+            cancellation
+                ? ValidationTrainingFailureCodes.TrialExecutionFailed
+                : ValidationTrainingFailureCodes.TrialExecutionFailed,
+            ValidationTrainingFailureCategory.TrialExecution,
+            ValidationTrainingFailurePrecedence.TrialExecution,
+            false,
+            safeMessage);
+    }
+
+    public static bool IsAuditDurabilityPhase(ValidationTrainingFailurePhase phase) =>
+        phase is ValidationTrainingFailurePhase.TrialScopeFlush
+            or ValidationTrainingFailurePhase.OuterScopeFlush
+            or ValidationTrainingFailurePhase.AuditFinalization
+            or ValidationTrainingFailurePhase.CompletenessVerification;
+
+    public static bool IsCleanupPhase(ValidationTrainingFailurePhase phase) =>
+        phase is ValidationTrainingFailurePhase.TrialStatusPersistence
+            or ValidationTrainingFailurePhase.ExperimentStatusPersistence
+            or ValidationTrainingFailurePhase.OperationStatusSync
+            or ValidationTrainingFailurePhase.LeaseHeartbeat
+            or ValidationTrainingFailurePhase.LeaseRelease
+            or ValidationTrainingFailurePhase.ScopeDisposal;
+
+    private static string DefaultSafeMessageForPhase(ValidationTrainingFailurePhase phase) =>
+        IsCleanupPhase(phase)
+            ? ValidationTrainingFailureHandler.UserSafeCleanupMessage
+            : IsAuditDurabilityPhase(phase)
+                ? ValidationTrainingFailureHandler.UserSafeAuditPersistenceMessage
+                : "Validation training trial execution failed.";
 }
 
 public sealed class ValidationTrainingFailureAggregate
@@ -157,6 +226,8 @@ public sealed class ValidationTrainingFailureAggregate
 
     public bool IsQualificationBlocking => _failures.Any(f => f.IsQualificationBlocking);
 
+    public bool HasAnyFailure => _failures.Count > 0;
+
     public void Observe(
         Exception exception,
         ValidationTrainingFailurePhase phase,
@@ -164,8 +235,7 @@ public sealed class ValidationTrainingFailureAggregate
         DateTime? occurredAtUtc = null)
     {
         ArgumentNullException.ThrowIfNull(exception);
-        var record = ValidationTrainingFailureRecord.FromException(exception, phase, userSafeMessage, occurredAtUtc);
-        Observe(record);
+        Observe(ValidationTrainingFailureRecord.FromException(exception, phase, userSafeMessage, occurredAtUtc));
     }
 
     public void Observe(ValidationTrainingFailureRecord record)
@@ -185,7 +255,11 @@ public sealed class ValidationTrainingFailureAggregate
         string? userSafeMessage = null)
     {
         ArgumentNullException.ThrowIfNull(dispatchInfo);
-        Observe(dispatchInfo.SourceException, phase, userSafeMessage);
+        Observe(ValidationTrainingFailureRecord.FromException(
+            dispatchInfo.SourceException,
+            phase,
+            userSafeMessage,
+            dispatchInfo: dispatchInfo));
     }
 
     public void MergeFrom(ValidationTrainingFailureAggregate? other)
@@ -201,46 +275,40 @@ public sealed class ValidationTrainingFailureAggregate
         }
     }
 
-    public void MergeFromExistingJson(string? failureReasonsJson, string? diagnosticsJson = null)
+    public void MergeFromExistingJson(string? failureReasonsJson)
     {
         foreach (var record in ValidationTrainingFailureJson.ParseRecords(failureReasonsJson))
         {
             Observe(record);
         }
-
-        foreach (var record in ValidationTrainingFailureJson.ParseDiagnosticRecords(diagnosticsJson))
-        {
-            Observe(record);
-        }
     }
 
-    public ExceptionDispatchInfo? SelectPrimaryDispatchInfo(
-        ExceptionDispatchInfo? bodyException,
-        ExceptionDispatchInfo? flushException,
-        ExceptionDispatchInfo? cleanupException = null)
-    {
-        var primary = PrimaryFailure;
-        if (primary is null)
-        {
-            return bodyException ?? flushException ?? cleanupException;
-        }
+    /// <summary>Rethrows the exception belonging to the selected primary record.</summary>
+    public ExceptionDispatchInfo? SelectPrimaryDispatchInfo() =>
+        PrimaryFailure?.DispatchInfo;
 
-        return primary.Category switch
-        {
-            ValidationTrainingFailureCategory.Boundary => bodyException ?? flushException ?? cleanupException,
-            ValidationTrainingFailureCategory.AuditDurability => flushException ?? bodyException ?? cleanupException,
-            ValidationTrainingFailureCategory.TrialExecution => bodyException ?? flushException ?? cleanupException,
-            _ => cleanupException ?? flushException ?? bodyException
-        };
-    }
-
-    public void ThrowPrimary(ExceptionDispatchInfo? bodyException, ExceptionDispatchInfo? flushException, ExceptionDispatchInfo? cleanupException = null)
+    public void ThrowPrimary()
     {
-        var dispatch = SelectPrimaryDispatchInfo(bodyException, flushException, cleanupException);
+        var dispatch = SelectPrimaryDispatchInfo();
         if (dispatch is not null)
         {
             dispatch.Throw();
         }
+    }
+
+    [Obsolete("Use ThrowPrimary() which rethrows the DispatchInfo associated with the primary record.")]
+    public void ThrowPrimary(
+        ExceptionDispatchInfo? bodyException,
+        ExceptionDispatchInfo? flushException,
+        ExceptionDispatchInfo? cleanupException = null)
+    {
+        var primary = SelectPrimaryDispatchInfo();
+        if (primary is not null)
+        {
+            primary.Throw();
+        }
+
+        (bodyException ?? flushException ?? cleanupException)?.Throw();
     }
 }
 
@@ -308,8 +376,8 @@ public static class ValidationTrainingFailureJson
         }
         catch
         {
-            return new[]
-            {
+            return
+            [
                 new ValidationTrainingFailureRecord
                 {
                     Code = ValidationTrainingFailureCodes.TrainingCleanupFailed,
@@ -320,79 +388,44 @@ public static class ValidationTrainingFailureJson
                     OccurredAtUtc = DateTime.UtcNow,
                     IsQualificationBlocking = true
                 }
-            };
-        }
-    }
-
-    public static IReadOnlyList<ValidationTrainingFailureRecord> ParseDiagnosticRecords(string? diagnosticsJson)
-    {
-        if (string.IsNullOrWhiteSpace(diagnosticsJson))
-        {
-            return Array.Empty<ValidationTrainingFailureRecord>();
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(diagnosticsJson);
-            if (doc.RootElement.ValueKind != JsonValueKind.Array)
-            {
-                return Array.Empty<ValidationTrainingFailureRecord>();
-            }
-
-            var list = new List<ValidationTrainingFailureRecord>();
-            foreach (var element in doc.RootElement.EnumerateArray())
-            {
-                if (element.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                var code = element.TryGetProperty("code", out var codeEl) ? codeEl.GetString() : null;
-                if (string.IsNullOrWhiteSpace(code))
-                {
-                    continue;
-                }
-
-                list.Add(LegacyCodeToRecord(code, element.TryGetProperty("message", out var msgEl) ? msgEl.GetString() : null));
-            }
-
-            return list;
-        }
-        catch
-        {
-            return Array.Empty<ValidationTrainingFailureRecord>();
+            ];
         }
     }
 
     private static ValidationTrainingFailureRecord LegacyCodeToRecord(string code, string? message = null)
     {
-        var (category, precedence, blocking, safeMessage) = code switch
+        var (category, precedence, blocking, safeMessage, phase) = code switch
         {
             ValidationTrainingFailureCodes.ValidationDataLeakage => (
                 ValidationTrainingFailureCategory.Boundary,
                 ValidationTrainingFailurePrecedence.Boundary,
                 true,
-                message ?? ValidationTrainingFailureHandler.UserSafeLeakageMessage),
+                message ?? ValidationTrainingFailureHandler.UserSafeLeakageMessage,
+                ValidationTrainingFailurePhase.TrialBody),
             ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed => (
                 ValidationTrainingFailureCategory.AuditDurability,
                 ValidationTrainingFailurePrecedence.AuditDurability,
                 true,
-                message ?? ValidationTrainingFailureHandler.UserSafeAuditPersistenceMessage),
+                message ?? ValidationTrainingFailureHandler.UserSafeAuditPersistenceMessage,
+                ValidationTrainingFailurePhase.AuditFinalization),
             ValidationTrainingFailureCodes.InsufficientWarmup => (
                 ValidationTrainingFailureCategory.TrialExecution,
                 ValidationTrainingFailurePrecedence.TrialExecution,
                 true,
-                message ?? "Insufficient warm-up candles for training."),
+                message ?? "Insufficient warm-up candles for training.",
+                ValidationTrainingFailurePhase.TrialBody),
             ValidationTrainingFailureCodes.TrainingCleanupFailed => (
                 ValidationTrainingFailureCategory.Cleanup,
                 ValidationTrainingFailurePrecedence.Cleanup,
                 false,
-                message ?? "Training cleanup failed."),
+                message ?? ValidationTrainingFailureHandler.UserSafeCleanupMessage,
+                ValidationTrainingFailurePhase.LeaseRelease),
             _ => (
                 ValidationTrainingFailureCategory.TrialExecution,
                 ValidationTrainingFailurePrecedence.TrialExecution,
                 false,
-                message ?? "Validation training failed.")
+                message ?? "Validation training failed.",
+                ValidationTrainingFailurePhase.TrialBody)
         };
 
         return new ValidationTrainingFailureRecord
@@ -400,7 +433,7 @@ public static class ValidationTrainingFailureJson
             Code = code,
             Category = category,
             Precedence = precedence,
-            Phase = ValidationTrainingFailurePhase.ExperimentStatusPersistence,
+            Phase = phase,
             UserSafeMessage = safeMessage,
             OccurredAtUtc = DateTime.UtcNow,
             IsQualificationBlocking = blocking
@@ -415,13 +448,24 @@ public static class ValidationTrainingFailurePersistence
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    public static ValidationTrainingFailureAggregate MergeExisting(
-        string? failureReasonsJson,
-        string? diagnosticsJson = null)
+    /// <summary>
+    /// Merges only authoritative <see cref="ValidationExperiment.FailureReasonsJson"/>.
+    /// DiagnosticsJson is a presentation channel and must not seed the aggregate.
+    /// </summary>
+    public static ValidationTrainingFailureAggregate MergeExisting(string? failureReasonsJson)
     {
         var aggregate = new ValidationTrainingFailureAggregate();
-        aggregate.MergeFromExistingJson(failureReasonsJson, diagnosticsJson);
+        aggregate.MergeFromExistingJson(failureReasonsJson);
         return aggregate;
+    }
+
+    [Obsolete("DiagnosticsJson must not seed the authoritative aggregate. Use MergeExisting(failureReasonsJson).")]
+    public static ValidationTrainingFailureAggregate MergeExisting(
+        string? failureReasonsJson,
+        string? diagnosticsJson)
+    {
+        _ = diagnosticsJson;
+        return MergeExisting(failureReasonsJson);
     }
 
     public static void ApplyToExperiment(ValidationExperiment experiment, ValidationTrainingFailureAggregate aggregate)
@@ -429,13 +473,20 @@ public static class ValidationTrainingFailurePersistence
         ArgumentNullException.ThrowIfNull(experiment);
         ArgumentNullException.ThrowIfNull(aggregate);
 
-        var merged = MergeExisting(experiment.FailureReasonsJson, experiment.DiagnosticsJson);
+        var wasIneligible = experiment.IsQualificationCapable == false;
+        var merged = MergeExisting(experiment.FailureReasonsJson);
         merged.MergeFrom(aggregate);
 
         var ordered = merged.AllFailures;
         experiment.PrimaryFailureReason = ordered.FirstOrDefault()?.Code;
         experiment.FailureReasonsJson = ValidationTrainingFailureJson.SerializeRecords(ordered);
-        experiment.IsQualificationCapable = !merged.IsQualificationBlocking;
+
+        // Any durable failure (including cleanup-only) leaves the experiment non-qualified.
+        // Never flip an already-ineligible experiment back to capable.
+        if (wasIneligible || merged.HasAnyFailure || merged.IsQualificationBlocking)
+        {
+            experiment.IsQualificationCapable = false;
+        }
 
         foreach (var failure in ordered)
         {

@@ -74,47 +74,52 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
             CorrelationId = Guid.NewGuid().ToString("N")
         };
 
-        using var execAmbient = _executionContextAccessor.Enter(bootstrapContext);
-        await using var scope = await _scopeFactory.CreateAsync(scopeRequest, cancellationToken);
-        scope.CorrelationId = bootstrapContext.CorrelationId;
-
-        if (scopeRequest.BoundAuditExecutionId is Guid boundAuditId)
-        {
-            if (scopeRequest.BoundScopeExecutionId is not Guid boundScope
-                || scope.ScopeExecutionId != boundScope)
-            {
-                throw new ValidationAuditExecutionIdentityMismatchException(
-                    "Created training scope ScopeExecutionId does not match the bound durable audit identity.",
-                    expectedAuditExecutionId: boundAuditId,
-                    actualAuditExecutionId: boundAuditId,
-                    expectedScopeExecutionId: scopeRequest.BoundScopeExecutionId,
-                    actualScopeExecutionId: scope.ScopeExecutionId,
-                    expectedExecutionToken: scopeRequest.BoundExecutionToken,
-                    actualExecutionToken: scopeRequest.BoundExecutionToken);
-            }
-        }
-
-        using var ambient = ValidationTrainingCandleScopeAmbient.Enter(scope);
+        IDisposable? execAmbient = null;
+        IValidationTrainingCandleScope? scope = null;
+        IDisposable? ambient = null;
         IDisposable? auditAmbient = null;
-        if (scopeRequest.BoundAuditExecutionId is Guid auditId
-            && scopeRequest.BoundScopeExecutionId is Guid scopeId
-            && !string.IsNullOrWhiteSpace(scopeRequest.BoundExecutionToken))
-        {
-            auditAmbient = ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
-            {
-                AuditExecutionId = auditId,
-                ScopeExecutionId = scopeId,
-                ExecutionToken = scopeRequest.BoundExecutionToken!,
-                AttemptNumber = scopeRequest.BoundAttemptNumber ?? 0,
-                ValidationExperimentId = experiment.Id
-            });
-        }
-
         ExceptionDispatchInfo? bodyException = null;
         ExceptionDispatchInfo? flushException = null;
+        ExceptionDispatchInfo? disposalException = null;
         var flushAttempted = false;
+
         try
         {
+            execAmbient = _executionContextAccessor.Enter(bootstrapContext);
+            scope = await _scopeFactory.CreateAsync(scopeRequest, cancellationToken);
+            scope.CorrelationId = bootstrapContext.CorrelationId;
+
+            if (scopeRequest.BoundAuditExecutionId is Guid boundAuditId)
+            {
+                if (scopeRequest.BoundScopeExecutionId is not Guid boundScope
+                    || scope.ScopeExecutionId != boundScope)
+                {
+                    throw new ValidationAuditExecutionIdentityMismatchException(
+                        "Created training scope ScopeExecutionId does not match the bound durable audit identity.",
+                        expectedAuditExecutionId: boundAuditId,
+                        actualAuditExecutionId: boundAuditId,
+                        expectedScopeExecutionId: scopeRequest.BoundScopeExecutionId,
+                        actualScopeExecutionId: scope.ScopeExecutionId,
+                        expectedExecutionToken: scopeRequest.BoundExecutionToken,
+                        actualExecutionToken: scopeRequest.BoundExecutionToken);
+                }
+            }
+
+            ambient = ValidationTrainingCandleScopeAmbient.Enter(scope);
+            if (scopeRequest.BoundAuditExecutionId is Guid auditId
+                && scopeRequest.BoundScopeExecutionId is Guid scopeId
+                && !string.IsNullOrWhiteSpace(scopeRequest.BoundExecutionToken))
+            {
+                auditAmbient = ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
+                {
+                    AuditExecutionId = auditId,
+                    ScopeExecutionId = scopeId,
+                    ExecutionToken = scopeRequest.BoundExecutionToken!,
+                    AttemptNumber = scopeRequest.BoundAttemptNumber ?? 0,
+                    ValidationExperimentId = experiment.Id
+                });
+            }
+
             try
             {
                 await body(scope);
@@ -136,13 +141,28 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
         }
         finally
         {
-            auditAmbient?.Dispose();
+            CaptureDispose(ref disposalException, () => auditAmbient?.Dispose());
+            CaptureDispose(ref disposalException, () => ambient?.Dispose());
+            if (scope is not null)
+            {
+                try
+                {
+                    await scope.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    disposalException ??= ExceptionDispatchInfo.Capture(ex);
+                }
+            }
+
+            CaptureDispose(ref disposalException, () => execAmbient?.Dispose());
         }
 
         return new ValidationTrainingScopeExecutionResult
         {
             BodyException = bodyException,
             FlushException = flushException,
+            DisposalException = disposalException,
             BodyPhase = ValidationTrainingFailurePhase.TrialBody,
             FlushPhase = ValidationTrainingFailurePhase.OuterScopeFlush,
             FlushAttempted = flushAttempted
@@ -192,5 +212,17 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
             FlushPhase = ValidationTrainingFailurePhase.TrialScopeFlush,
             FlushAttempted = flushAttempted
         };
+    }
+
+    private static void CaptureDispose(ref ExceptionDispatchInfo? disposalException, Action dispose)
+    {
+        try
+        {
+            dispose();
+        }
+        catch (Exception ex)
+        {
+            disposalException ??= ExceptionDispatchInfo.Capture(ex);
+        }
     }
 }

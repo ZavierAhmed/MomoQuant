@@ -56,10 +56,8 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
     public const string UserSafeAuditPersistenceMessage =
         "Validation candle access audit evidence could not be confirmed as durable. Training stopped without ranking, selection, or freeze.";
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
+    public const string UserSafeCleanupMessage =
+        "Validation training cleanup failed after the primary failure was recorded. Ranking, selection, and qualification remain blocked.";
 
     private readonly IValidationCandleAccessRecorder _recorder;
     private readonly IValidationCandleAccessAuditRepository _audits;
@@ -282,9 +280,7 @@ public sealed class ValidationTrainingFailureHandler : IValidationTrainingFailur
         ValidationExperiment experiment,
         ValidationTrainingFailureAggregate? observedFailures)
     {
-        var aggregate = ValidationTrainingFailurePersistence.MergeExisting(
-            experiment.FailureReasonsJson,
-            experiment.DiagnosticsJson);
+        var aggregate = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
         aggregate.MergeFrom(observedFailures);
         return aggregate;
     }

@@ -6,12 +6,14 @@ public sealed class ValidationTrainingScopeExecutionResult
 {
     public ExceptionDispatchInfo? BodyException { get; init; }
     public ExceptionDispatchInfo? FlushException { get; init; }
+    public ExceptionDispatchInfo? DisposalException { get; init; }
     public ValidationTrainingFailurePhase BodyPhase { get; init; } = ValidationTrainingFailurePhase.TrialBody;
     public ValidationTrainingFailurePhase FlushPhase { get; init; } = ValidationTrainingFailurePhase.TrialScopeFlush;
     public bool FlushAttempted { get; init; }
     public bool BodySucceeded => BodyException is null;
     public bool FlushSucceeded => !FlushAttempted || FlushException is null;
-    public bool IsSuccess => BodySucceeded && FlushSucceeded;
+    public bool DisposalSucceeded => DisposalException is null;
+    public bool IsSuccess => BodySucceeded && FlushSucceeded && DisposalSucceeded;
 
     public ValidationTrainingFailureAggregate ToFailureAggregate()
     {
@@ -26,6 +28,11 @@ public sealed class ValidationTrainingScopeExecutionResult
             aggregate.ObserveDispatchInfo(FlushException, FlushPhase);
         }
 
+        if (DisposalException is not null)
+        {
+            aggregate.ObserveDispatchInfo(DisposalException, ValidationTrainingFailurePhase.ScopeDisposal);
+        }
+
         return aggregate;
     }
 
@@ -36,6 +43,6 @@ public sealed class ValidationTrainingScopeExecutionResult
             return;
         }
 
-        ToFailureAggregate().ThrowPrimary(BodyException, FlushException);
+        ToFailureAggregate().ThrowPrimary();
     }
 }

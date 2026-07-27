@@ -38,10 +38,12 @@ public sealed class Milestone230E2C2OrchestrationTests
             var experiment = await scope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>()
                 .GetByIdAsync(id);
             Assert.NotNull(experiment);
-            E2C2FailureReasonHelpers.AssertPrimaryAndOrderedCodes(
+            E2C2FailureReasonHelpers.AssertExactFailureReasons(
                 experiment!,
                 ValidationTrainingFailureCodes.ValidationDataLeakage,
                 ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+            E2C2FailureReasonHelpers.AssertNoMirroredDiagnosticDuplicates(experiment!);
+            E2C2FailureReasonHelpers.AssertNoSensitiveMessages(experiment!, result.ErrorMessage);
             Assert.Equal(ValidationExperimentStatus.Failed, experiment!.Status);
             Assert.Equal("LeakageDetected", experiment.CurrentStage);
             Assert.False(experiment.IsQualificationCapable);
@@ -88,10 +90,12 @@ public sealed class Milestone230E2C2OrchestrationTests
             var experiment = await scope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>()
                 .GetByIdAsync(id);
             Assert.NotNull(experiment);
-            E2C2FailureReasonHelpers.AssertPrimaryAndOrderedCodes(
+            E2C2FailureReasonHelpers.AssertExactFailureReasons(
                 experiment!,
                 ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
                 ValidationTrainingFailureCodes.TrialExecutionFailed);
+            E2C2FailureReasonHelpers.AssertNoMirroredDiagnosticDuplicates(experiment!);
+            E2C2FailureReasonHelpers.AssertNoSensitiveMessages(experiment!, result.ErrorMessage);
             Assert.Equal(ValidationExperimentStatus.Failed, experiment!.Status);
             Assert.False(experiment.IsQualificationCapable);
 
@@ -136,8 +140,12 @@ public sealed class Milestone230E2C2OrchestrationTests
             var experiment = await scope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>()
                 .GetByIdAsync(id);
             Assert.NotNull(experiment);
-            Assert.Equal(ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed, experiment!.PrimaryFailureReason);
-            Assert.Equal(ValidationExperimentStatus.Failed, experiment.Status);
+            E2C2FailureReasonHelpers.AssertPrimaryAndOrderedCodes(
+                experiment!,
+                ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+            E2C2FailureReasonHelpers.AssertNoMirroredDiagnosticDuplicates(experiment!);
+            E2C2FailureReasonHelpers.AssertNoSensitiveMessages(experiment!, result.ErrorMessage);
+            Assert.Equal(ValidationExperimentStatus.Failed, experiment!.Status);
             Assert.False(experiment.IsQualificationCapable);
             Assert.NotEqual(ValidationExperimentStatus.TrainingCompleted, experiment.Status);
 
@@ -177,11 +185,13 @@ public sealed class Milestone230E2C2OrchestrationTests
             var experiment = await scope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>()
                 .GetByIdAsync(id);
             Assert.NotNull(experiment);
-            Assert.Equal(ValidationTrainingFailureCodes.ValidationDataLeakage, experiment!.PrimaryFailureReason);
-            Assert.Contains(
-                E2C2FailureReasonHelpers.ParseRecords(experiment.FailureReasonsJson),
-                r => r.Code == ValidationTrainingFailureCodes.ValidationDataLeakage);
-            Assert.Equal(ValidationExperimentStatus.Failed, experiment.Status);
+            E2C2FailureReasonHelpers.AssertExactFailureReasons(
+                experiment!,
+                ValidationTrainingFailureCodes.ValidationDataLeakage,
+                ValidationTrainingFailureCodes.TrainingCleanupFailed);
+            E2C2FailureReasonHelpers.AssertNoMirroredDiagnosticDuplicates(experiment!);
+            E2C2FailureReasonHelpers.AssertNoSensitiveMessages(experiment!, result.ErrorMessage);
+            Assert.Equal(ValidationExperimentStatus.Failed, experiment!.Status);
             Assert.False(experiment.IsQualificationCapable);
         }
         finally
@@ -210,25 +220,19 @@ public sealed class Milestone230E2C2OrchestrationTests
             await using var scope = factory.Services.CreateAsyncScope();
             var lab = scope.ServiceProvider.GetRequiredService<IValidationLabService>();
 
-            ServiceResult<ValidationExperimentDto> result;
-            try
-            {
-                result = await lab.RunTrainingAsync(id);
-            }
-            catch (OperationCanceledException)
-            {
-                result = ServiceResult<ValidationExperimentDto>.Fail("lease release failed");
-            }
-
+            var result = await lab.RunTrainingAsync(id);
             Assert.False(result.Succeeded);
 
             var experiment = await scope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>()
                 .GetByIdAsync(id);
             Assert.NotNull(experiment);
-            Assert.Equal(
+            E2C2FailureReasonHelpers.AssertExactFailureReasons(
+                experiment!,
                 ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
-                experiment!.PrimaryFailureReason);
-            Assert.Equal(ValidationExperimentStatus.Failed, experiment.Status);
+                ValidationTrainingFailureCodes.TrainingCleanupFailed);
+            E2C2FailureReasonHelpers.AssertNoMirroredDiagnosticDuplicates(experiment!);
+            E2C2FailureReasonHelpers.AssertNoSensitiveMessages(experiment!, result.ErrorMessage);
+            Assert.Equal(ValidationExperimentStatus.Failed, experiment!.Status);
             Assert.False(experiment.IsQualificationCapable);
         }
         finally
@@ -256,29 +260,63 @@ public sealed class Milestone230E2C2OrchestrationTests
             await using var scope = factory.Services.CreateAsyncScope();
             var lab = scope.ServiceProvider.GetRequiredService<IValidationLabService>();
 
-            ServiceResult<ValidationExperimentDto> result;
-            try
-            {
-                result = await lab.RunTrainingAsync(id);
-            }
-            catch (OperationCanceledException)
-            {
-                result = ServiceResult<ValidationExperimentDto>.Fail("lease release failed");
-            }
-
-            Assert.False(result.Succeeded);
+            var result = await lab.RunTrainingAsync(id);
 
             var experiment = await scope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>()
                 .GetByIdAsync(id);
             Assert.NotNull(experiment);
+            E2C2FailureReasonHelpers.AssertExactFailureReasons(
+                experiment!,
+                ValidationTrainingFailureCodes.TrialExecutionFailed,
+                ValidationTrainingFailureCodes.TrainingCleanupFailed);
+            E2C2FailureReasonHelpers.AssertNoMirroredDiagnosticDuplicates(experiment!);
+            E2C2FailureReasonHelpers.AssertNoSensitiveMessages(experiment!, result.ErrorMessage);
+            Assert.False(experiment!.IsQualificationCapable);
 
             var trial = (await scope.ServiceProvider.GetRequiredService<IValidationParameterTrialRepository>()
                 .GetByExperimentIdAsync(id)).FirstOrDefault();
-            if (trial is not null)
+            Assert.NotNull(trial);
+            Assert.Equal(ValidationTrialStatus.Failed, trial!.Status);
+            Assert.False(string.IsNullOrWhiteSpace(trial.ErrorMessage));
+            E2C2FailureReasonHelpers.AssertNoSensitiveMessages(experiment, trial.ErrorMessage);
+        }
+        finally
+        {
+            if (experimentId is long eid)
             {
-                Assert.Equal(ValidationTrialStatus.Failed, trial.Status);
-                Assert.False(string.IsNullOrWhiteSpace(trial.ErrorMessage));
+                await E2C2ExperimentFactory.CleanupExperimentAsync(factory, eid);
             }
+        }
+    }
+
+    [Fact]
+    public async Task CleanupOnly_LeaseReleaseFailure_BlocksQualification()
+    {
+        await using var factory = new E2C2OrchestrationFactory();
+        factory.Controls.RunnerMode = E2C2RunnerMode.AllowedComplete;
+        factory.Controls.FailLeaseRelease = true;
+        long? experimentId = null;
+
+        try
+        {
+            var (id, _) = await E2C2ExperimentFactory.CreatePreparedSingleTrialExperimentAsync(factory, "cleanup-only");
+            experimentId = id;
+
+            await using var scope = factory.Services.CreateAsyncScope();
+            var lab = scope.ServiceProvider.GetRequiredService<IValidationLabService>();
+
+            var result = await lab.RunTrainingAsync(id);
+
+            var experiment = await scope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>()
+                .GetByIdAsync(id);
+            Assert.NotNull(experiment);
+            E2C2FailureReasonHelpers.AssertExactFailureReasons(
+                experiment!,
+                ValidationTrainingFailureCodes.TrainingCleanupFailed);
+            E2C2FailureReasonHelpers.AssertNoMirroredDiagnosticDuplicates(experiment!);
+            E2C2FailureReasonHelpers.AssertNoSensitiveMessages(experiment!, result.ErrorMessage);
+            Assert.False(experiment!.IsQualificationCapable);
+            Assert.Equal(ValidationTrainingFailureCodes.TrainingCleanupFailed, experiment.PrimaryFailureReason);
         }
         finally
         {
@@ -335,6 +373,7 @@ public sealed class Milestone230E2C2OrchestrationTests
                 experiment!,
                 ValidationTrainingFailureCodes.ValidationDataLeakage,
                 ValidationTrainingFailureCodes.InsufficientWarmup);
+            E2C2FailureReasonHelpers.AssertNoMirroredDiagnosticDuplicates(experiment!);
         }
         finally
         {
@@ -369,26 +408,96 @@ public sealed class Milestone230E2C2OrchestrationTests
 
             var firstReasons = E2C2FailureReasonHelpers.ParseRecords(experiment.FailureReasonsJson);
             Assert.NotEmpty(firstReasons);
+            var firstIdentities = firstReasons.Select(r => r.LogicalIdentity).ToArray();
+            var firstCodes = firstReasons.Select(r => r.Code).ToArray();
 
-            var resume = await lab.ResumeTrainingAsync(id);
-            if (resume.Succeeded)
-            {
-                experiment = await scope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>()
-                    .GetByIdAsync(id);
-                Assert.NotNull(experiment);
-                var afterResume = E2C2FailureReasonHelpers.ParseRecords(experiment!.FailureReasonsJson);
-                Assert.Equal(firstReasons.Count, afterResume.Count);
-                return;
-            }
+            _ = await lab.ResumeTrainingAsync(id);
 
             experiment = await scope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>()
                 .GetByIdAsync(id);
             Assert.NotNull(experiment);
             var secondReasons = E2C2FailureReasonHelpers.ParseRecords(experiment!.FailureReasonsJson);
-            Assert.True(secondReasons.Count >= firstReasons.Count);
-            Assert.Equal(
-                firstReasons.Select(r => r.LogicalIdentity).Distinct(),
-                secondReasons.Take(firstReasons.Count).Select(r => r.LogicalIdentity));
+            Assert.Equal(firstReasons.Count, secondReasons.Count);
+            Assert.Equal(firstIdentities, secondReasons.Select(r => r.LogicalIdentity).ToArray());
+            Assert.Equal(firstCodes, secondReasons.Select(r => r.Code).ToArray());
+        }
+        finally
+        {
+            if (experimentId is long eid)
+            {
+                await E2C2ExperimentFactory.CleanupExperimentAsync(factory, eid);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task IncompleteFinalization_PersistsAuditDurabilityAndBlocksQualification()
+    {
+        await using var factory = new E2C2OrchestrationFactory();
+        factory.Controls.RunnerMode = E2C2RunnerMode.AllowedComplete;
+        factory.Controls.FailAuditFinalizationIncomplete = true;
+        long? experimentId = null;
+
+        try
+        {
+            var (id, _) = await E2C2ExperimentFactory.CreatePreparedSingleTrialExperimentAsync(factory, "incomplete-finalize");
+            experimentId = id;
+
+            await using var scope = factory.Services.CreateAsyncScope();
+            var lab = scope.ServiceProvider.GetRequiredService<IValidationLabService>();
+            var result = await lab.RunTrainingAsync(id);
+
+            Assert.False(result.Succeeded);
+            Assert.Equal(ValidationAuditCompletenessCode.FinalSequenceMissing.ToString(), result.ErrorField);
+
+            var experiment = await scope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>()
+                .GetByIdAsync(id);
+            Assert.NotNull(experiment);
+            Assert.Equal(ValidationAuditCompletenessCode.FinalSequenceMissing.ToString(), experiment!.PrimaryFailureReason);
+            Assert.Single(E2C2FailureReasonHelpers.ParseRecords(experiment.FailureReasonsJson));
+            E2C2FailureReasonHelpers.AssertNoMirroredDiagnosticDuplicates(experiment);
+            E2C2FailureReasonHelpers.AssertNoSensitiveMessages(experiment, result.ErrorMessage);
+            Assert.False(experiment.IsQualificationCapable);
+            Assert.Equal(ValidationExperimentStatus.Failed, experiment.Status);
+        }
+        finally
+        {
+            if (experimentId is long eid)
+            {
+                await E2C2ExperimentFactory.CleanupExperimentAsync(factory, eid);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task IncompleteCompletenessVerification_PersistsAuditDurabilityAndBlocksQualification()
+    {
+        await using var factory = new E2C2OrchestrationFactory();
+        factory.Controls.RunnerMode = E2C2RunnerMode.AllowedComplete;
+        factory.Controls.FailCompletenessVerification = true;
+        long? experimentId = null;
+
+        try
+        {
+            var (id, _) = await E2C2ExperimentFactory.CreatePreparedSingleTrialExperimentAsync(factory, "incomplete-completeness");
+            experimentId = id;
+
+            await using var scope = factory.Services.CreateAsyncScope();
+            var lab = scope.ServiceProvider.GetRequiredService<IValidationLabService>();
+            var result = await lab.RunTrainingAsync(id);
+
+            Assert.False(result.Succeeded);
+            Assert.Equal(ValidationAuditCompletenessCode.SequenceGap.ToString(), result.ErrorField);
+
+            var experiment = await scope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>()
+                .GetByIdAsync(id);
+            Assert.NotNull(experiment);
+            Assert.Equal(ValidationAuditCompletenessCode.SequenceGap.ToString(), experiment!.PrimaryFailureReason);
+            Assert.Single(E2C2FailureReasonHelpers.ParseRecords(experiment.FailureReasonsJson));
+            E2C2FailureReasonHelpers.AssertNoMirroredDiagnosticDuplicates(experiment);
+            E2C2FailureReasonHelpers.AssertNoSensitiveMessages(experiment, result.ErrorMessage);
+            Assert.False(experiment.IsQualificationCapable);
+            Assert.Equal(ValidationExperimentStatus.Failed, experiment.Status);
         }
         finally
         {
