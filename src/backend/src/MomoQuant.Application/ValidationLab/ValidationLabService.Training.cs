@@ -257,19 +257,80 @@ public sealed partial class ValidationLabService
                     }
 
                     // Recover / supersede incomplete authoritative audit before access.
-                    var ensureResult = await EnsureAuthoritativeAuditExecutionAsync(
-                        experiment, trial, leaseOwner, isResume, cancellationToken);
+                    // Explicit AuditDurability boundary — must not fall into TrialBody handling.
+                    AuthoritativeAuditExecutionEnsureResult ensureResult;
+                    try
+                    {
+                        ensureResult = await EnsureAuthoritativeAuditExecutionAsync(
+                            experiment, trial, leaseOwner, isResume, cancellationToken);
+                    }
+                    catch (ValidationAuditCompletenessVerificationException ensureCompletenessEx)
+                    {
+                        result = await ApplyCleanupOutcomeToResultAsync(
+                            experiment,
+                            leaseOwner,
+                            await FailFinalizationThroughAggregateAsync(
+                                experiment,
+                                trial,
+                                ensureCompletenessEx,
+                                ValidationTrainingFailurePhase.CompletenessVerification,
+                                leaseOwner,
+                                cancellationToken),
+                            cancellationToken);
+                        break;
+                    }
+                    catch (Exception ensureEx)
+                    {
+                        result = await ApplyCleanupOutcomeToResultAsync(
+                            experiment,
+                            leaseOwner,
+                            await FailFinalizationThroughAggregateAsync(
+                                experiment,
+                                trial,
+                                ensureEx,
+                                ValidationTrainingFailurePhase.AuditFinalization,
+                                leaseOwner,
+                                cancellationToken),
+                            cancellationToken);
+                        break;
+                    }
+
                     var auditExecution = ensureResult.Execution;
 
                     if (ensureResult.FailClosed)
                     {
-                        var revalidationFailure = await ApplyCompletedTrialAuditRevalidationFailureAsync(
-                            experiment,
-                            trial,
-                            ensureResult.CompletenessCode,
-                            $"Completed audit execution failed verifier revalidation: {ensureResult.CompletenessCode?.ToString() ?? "FailClosed"}.",
-                            leaseOwner,
-                            cancellationToken);
+                        ServiceResult<ValidationExperimentDto>? revalidationFailure;
+                        try
+                        {
+                            revalidationFailure = await ApplyCompletedTrialAuditRevalidationFailureAsync(
+                                experiment,
+                                trial,
+                                ensureResult.CompletenessCode,
+                                $"Completed audit execution failed verifier revalidation: {ensureResult.CompletenessCode?.ToString() ?? "FailClosed"}.",
+                                leaseOwner,
+                                cancellationToken);
+                        }
+                        catch (ValidationAuditCompletenessVerificationException revalidationCompletenessEx)
+                        {
+                            revalidationFailure = await FailFinalizationThroughAggregateAsync(
+                                experiment,
+                                trial,
+                                revalidationCompletenessEx,
+                                ValidationTrainingFailurePhase.CompletenessVerification,
+                                leaseOwner,
+                                cancellationToken);
+                        }
+                        catch (Exception revalidationEx)
+                        {
+                            revalidationFailure = await FailFinalizationThroughAggregateAsync(
+                                experiment,
+                                trial,
+                                revalidationEx,
+                                ValidationTrainingFailurePhase.CompletenessVerification,
+                                leaseOwner,
+                                cancellationToken);
+                        }
+
                         result = await ApplyCleanupOutcomeToResultAsync(
                             experiment,
                             leaseOwner,
@@ -283,14 +344,39 @@ public sealed partial class ValidationLabService
 
                     if (ensureResult.VerifiedFinalizationOnly || ensureResult.FinalizationOnly)
                     {
-                        var finalizationOnlyFailure = await FinalizeTrialAuditWithVerifierAsync(
-                            experiment,
-                            trial,
-                            combo,
-                            fingerprint,
-                            auditExecution,
-                            leaseOwner,
-                            cancellationToken);
+                        ServiceResult<ValidationExperimentDto>? finalizationOnlyFailure;
+                        try
+                        {
+                            finalizationOnlyFailure = await FinalizeTrialAuditWithVerifierAsync(
+                                experiment,
+                                trial,
+                                combo,
+                                fingerprint,
+                                auditExecution,
+                                leaseOwner,
+                                cancellationToken);
+                        }
+                        catch (ValidationAuditCompletenessVerificationException finalizationCompletenessEx)
+                        {
+                            finalizationOnlyFailure = await FailFinalizationThroughAggregateAsync(
+                                experiment,
+                                trial,
+                                finalizationCompletenessEx,
+                                ValidationTrainingFailurePhase.CompletenessVerification,
+                                leaseOwner,
+                                cancellationToken);
+                        }
+                        catch (Exception finalizationEx)
+                        {
+                            finalizationOnlyFailure = await FailFinalizationThroughAggregateAsync(
+                                experiment,
+                                trial,
+                                finalizationEx,
+                                ValidationTrainingFailurePhase.AuditFinalization,
+                                leaseOwner,
+                                cancellationToken);
+                        }
+
                         if (finalizationOnlyFailure is not null)
                         {
                             result = await ApplyCleanupOutcomeToResultAsync(
@@ -315,13 +401,38 @@ public sealed partial class ValidationLabService
 
                     if (auditExecution.Status == ValidationAuditExecutionStatus.Completed)
                     {
-                        var completedReentryFailure = await ApplyCompletedTrialAuditRevalidationFailureAsync(
-                            experiment,
-                            trial,
-                            null,
-                            "Completed audit execution cannot re-enter StrategyLab training scope.",
-                            leaseOwner,
-                            cancellationToken);
+                        ServiceResult<ValidationExperimentDto>? completedReentryFailure;
+                        try
+                        {
+                            completedReentryFailure = await ApplyCompletedTrialAuditRevalidationFailureAsync(
+                                experiment,
+                                trial,
+                                null,
+                                "Completed audit execution cannot re-enter StrategyLab training scope.",
+                                leaseOwner,
+                                cancellationToken);
+                        }
+                        catch (ValidationAuditCompletenessVerificationException completedCompletenessEx)
+                        {
+                            completedReentryFailure = await FailFinalizationThroughAggregateAsync(
+                                experiment,
+                                trial,
+                                completedCompletenessEx,
+                                ValidationTrainingFailurePhase.CompletenessVerification,
+                                leaseOwner,
+                                cancellationToken);
+                        }
+                        catch (Exception completedEx)
+                        {
+                            completedReentryFailure = await FailFinalizationThroughAggregateAsync(
+                                experiment,
+                                trial,
+                                completedEx,
+                                ValidationTrainingFailurePhase.CompletenessVerification,
+                                leaseOwner,
+                                cancellationToken);
+                        }
+
                         result = await ApplyCleanupOutcomeToResultAsync(
                             experiment,
                             leaseOwner,
@@ -787,15 +898,11 @@ public sealed partial class ValidationLabService
                 experiment.CurrentStage = "TrainingInterrupted";
             }
 
-            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
-            experiment.UpdatedAtUtc = DateTime.UtcNow;
-            await _experiments.UpdateAsync(experiment, cancellationToken);
-            return await ApplyCleanupOutcomeToResultAsync(
+            return await PersistAggregateSafelyAndReleaseAsync(
                 experiment,
                 leaseOwner,
-                ServiceResult<ValidationExperimentDto>.Fail(
-                    aggregate.PrimaryFailure?.UserSafeMessage ?? incomingPrimary.UserSafeMessage,
-                    aggregate.PrimaryFailure?.Code ?? incomingPrimary.Code),
+                aggregate,
+                incomingPrimary.UserSafeMessage,
                 cancellationToken);
         }
         catch (Exception ex)
@@ -816,6 +923,46 @@ public sealed partial class ValidationLabService
                 experiment.CurrentStage = "Training";
             }
 
+            return await PersistAggregateSafelyAndReleaseAsync(
+                experiment,
+                leaseOwner,
+                aggregate,
+                "Validation training failed.",
+                cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Bounded failure persistence then exactly one authoritative lease cleanup.
+    /// Persistence exceptions are observed as ExperimentStatusPersistence and never bypass release.
+    /// </summary>
+    private async Task<ServiceResult<ValidationExperimentDto>> PersistAggregateSafelyAndReleaseAsync(
+        ValidationExperiment experiment,
+        string leaseOwner,
+        ValidationTrainingFailureAggregate aggregate,
+        string fallbackUserSafeMessage,
+        CancellationToken cancellationToken)
+    {
+        ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
+        experiment.UpdatedAtUtc = DateTime.UtcNow;
+        try
+        {
+            await ValidationTrainingDbRetry.ExecuteAsync(
+                    () => _experiments.UpdateAsync(experiment, cancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception persistEx)
+        {
+            aggregate.Observe(persistEx, ValidationTrainingFailurePhase.ExperimentStatusPersistence);
+            var primary = aggregate.PrimaryFailure;
+            if (primary is not null)
+            {
+                experiment.ErrorMessage = primary.UserSafeMessage;
+                experiment.PrimaryFailureReason = primary.Code;
+            }
+
+            experiment.IsQualificationCapable = false;
             ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
             experiment.UpdatedAtUtc = DateTime.UtcNow;
             try
@@ -825,32 +972,20 @@ public sealed partial class ValidationLabService
                         cancellationToken)
                     .ConfigureAwait(false);
             }
-            catch (Exception persistEx)
+            catch
             {
-                aggregate.Observe(persistEx, ValidationTrainingFailurePhase.ExperimentStatusPersistence);
-                ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, aggregate);
-                experiment.UpdatedAtUtc = DateTime.UtcNow;
-                try
-                {
-                    await ValidationTrainingDbRetry.ExecuteAsync(
-                            () => _experiments.UpdateAsync(experiment, cancellationToken),
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Bounded best-effort — retain in-memory aggregate; never leak raw persistence details.
-                }
+                // Bounded best-effort — retain in-memory aggregate; never leak raw persistence details.
             }
-
-            return await ApplyCleanupOutcomeToResultAsync(
-                experiment,
-                leaseOwner,
-                ServiceResult<ValidationExperimentDto>.Fail(
-                    aggregate.PrimaryFailure?.UserSafeMessage ?? "Validation training failed.",
-                    aggregate.PrimaryFailure?.Code),
-                cancellationToken);
         }
+
+        var finalPrimary = aggregate.PrimaryFailure;
+        return await ApplyCleanupOutcomeToResultAsync(
+            experiment,
+            leaseOwner,
+            ServiceResult<ValidationExperimentDto>.Fail(
+                finalPrimary?.UserSafeMessage ?? fallbackUserSafeMessage,
+                finalPrimary?.Code),
+            cancellationToken);
     }
 
     private async Task<ServiceResult<ValidationExperimentDto>?> HeartbeatOrFailAsync(
@@ -1813,10 +1948,37 @@ public sealed partial class ValidationLabService
                 cancellationToken);
         }
 
-        trial = await _trials.GetByExperimentAndFingerprintAsync(
-            experiment.Id, fingerprint, cancellationToken) ?? trial;
-        auditExecution = await _auditExecutions.GetByAuditExecutionIdAsync(
-            auditExecution.AuditExecutionId, cancellationToken) ?? auditExecution;
+        try
+        {
+            trial = await _trials.GetByExperimentAndFingerprintAsync(
+                experiment.Id, fingerprint, cancellationToken) ?? trial;
+        }
+        catch (Exception reloadTrialEx)
+        {
+            return await FailFinalizationThroughAggregateAsync(
+                experiment,
+                trial,
+                reloadTrialEx,
+                ValidationTrainingFailurePhase.AuditFinalization,
+                leaseOwner,
+                cancellationToken);
+        }
+
+        try
+        {
+            auditExecution = await _auditExecutions.GetByAuditExecutionIdAsync(
+                auditExecution.AuditExecutionId, cancellationToken) ?? auditExecution;
+        }
+        catch (Exception reloadExecutionEx)
+        {
+            return await FailFinalizationThroughAggregateAsync(
+                experiment,
+                trial,
+                reloadExecutionEx,
+                ValidationTrainingFailurePhase.AuditFinalization,
+                leaseOwner,
+                cancellationToken);
+        }
 
         if (!completion.IsComplete)
         {

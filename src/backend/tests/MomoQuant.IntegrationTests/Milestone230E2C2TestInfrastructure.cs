@@ -47,6 +47,11 @@ public sealed class E2C2SeamControls
     public HashSet<ValidationTrialStatus> FailTrialUpdateForStatuses { get; } = [];
     public HashSet<string> FailExperimentUpdateForStages { get; } = new(StringComparer.Ordinal);
     public bool FailExperimentUpdateWhenCleanupReasonPresent { get; set; }
+    public int FailExperimentUpdateTransientCount { get; set; }
+    public bool ThrowOnAuditRecovery { get; set; }
+    public bool ArmTrialFingerprintGetFailureAfterFinalizer { get; set; }
+    public bool ArmAuditExecutionGetFailureAfterFinalizer { get; set; }
+    public bool AuditFinalizerInvoked { get; set; }
     private int _runnerInvocationCount;
 
     public int RunnerInvocationCount => Volatile.Read(ref _runnerInvocationCount);
@@ -71,7 +76,26 @@ public sealed class E2C2SeamControls
         FailTrialUpdateForStatuses.Clear();
         FailExperimentUpdateForStages.Clear();
         FailExperimentUpdateWhenCleanupReasonPresent = false;
+        FailExperimentUpdateTransientCount = 0;
+        ThrowOnAuditRecovery = false;
+        ArmTrialFingerprintGetFailureAfterFinalizer = false;
+        ArmAuditExecutionGetFailureAfterFinalizer = false;
+        AuditFinalizerInvoked = false;
         Volatile.Write(ref _runnerInvocationCount, 0);
+    }
+}
+
+/// <summary>
+/// Exception recognized by <see cref="ValidationTrainingDbRetry.IsTransient"/> via MySQL error Number.
+/// </summary>
+internal sealed class E2C2TransientDatabaseException : Exception
+{
+    public int Number { get; }
+
+    public E2C2TransientDatabaseException(string message = "E2C2 simulated deadlock", int number = 1213)
+        : base(message)
+    {
+        Number = number;
     }
 }
 
@@ -262,6 +286,20 @@ public sealed class E2C2OrchestrationFactory : MomoQuantWebApplicationFactory
             {
                 var inner = ActivatorUtilities.CreateInstance<MomoQuant.Persistence.Repositories.ValidationParameterTrialRepository>(sp);
                 return new E2C2TrialRepositoryDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
+            });
+
+            services.RemoveAll<IValidationAuditExecutionRepository>();
+            services.AddScoped<IValidationAuditExecutionRepository>(sp =>
+            {
+                var inner = ActivatorUtilities.CreateInstance<MomoQuant.Persistence.Repositories.ValidationAuditExecutionRepository>(sp);
+                return new E2C2AuditExecutionRepositoryDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
+            });
+
+            services.RemoveAll<IValidationAuditExecutionRecoveryService>();
+            services.AddScoped<IValidationAuditExecutionRecoveryService>(sp =>
+            {
+                var inner = ActivatorUtilities.CreateInstance<ValidationAuditExecutionRecoveryService>(sp);
+                return new E2C2AuditRecoveryDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
             });
         });
     }
@@ -735,6 +773,7 @@ internal sealed class E2C2FinalizerDecorator : IValidationAuditExecutionFinalize
 
         if (_controls.FailAuditFinalizationIncomplete)
         {
+            _controls.AuditFinalizerInvoked = true;
             return new ValidationAuditExecutionCompletionResult
             {
                 AuditExecutionId = auditExecutionId,
@@ -745,7 +784,9 @@ internal sealed class E2C2FinalizerDecorator : IValidationAuditExecutionFinalize
             };
         }
 
-        return await _inner.CompleteAsync(auditExecutionId, finalExpectedSequence, cancellationToken);
+        var result = await _inner.CompleteAsync(auditExecutionId, finalExpectedSequence, cancellationToken);
+        _controls.AuditFinalizerInvoked = true;
+        return result;
     }
 }
 
@@ -868,6 +909,12 @@ internal sealed class E2C2ExperimentRepositoryDecorator : IValidationExperimentR
 
     public Task UpdateAsync(ValidationExperiment experiment, CancellationToken cancellationToken = default)
     {
+        if (_controls.FailExperimentUpdateTransientCount > 0)
+        {
+            _controls.FailExperimentUpdateTransientCount--;
+            throw new E2C2TransientDatabaseException();
+        }
+
         if (_controls.FailExperimentUpdateCount > 0)
         {
             _controls.FailExperimentUpdateCount--;
@@ -914,8 +961,16 @@ internal sealed class E2C2TrialRepositoryDecorator : IValidationParameterTrialRe
     public Task<ValidationParameterTrial?> GetByExperimentAndFingerprintAsync(
         long experimentId,
         string parameterFingerprint,
-        CancellationToken cancellationToken = default) =>
-        _inner.GetByExperimentAndFingerprintAsync(experimentId, parameterFingerprint, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        if (_controls.ArmTrialFingerprintGetFailureAfterFinalizer && _controls.AuditFinalizerInvoked)
+        {
+            _controls.ArmTrialFingerprintGetFailureAfterFinalizer = false;
+            throw new InvalidOperationException("E2C2 simulated trial fingerprint reload failure.");
+        }
+
+        return _inner.GetByExperimentAndFingerprintAsync(experimentId, parameterFingerprint, cancellationToken);
+    }
 
     public Task AddAsync(ValidationParameterTrial trial, CancellationToken cancellationToken = default) =>
         _inner.AddAsync(trial, cancellationToken);
@@ -940,5 +995,81 @@ internal sealed class E2C2TrialRepositoryDecorator : IValidationParameterTrialRe
         }
 
         return _inner.UpdateAsync(trial, cancellationToken);
+    }
+}
+
+internal sealed class E2C2AuditExecutionRepositoryDecorator : IValidationAuditExecutionRepository
+{
+    private readonly IValidationAuditExecutionRepository _inner;
+    private readonly E2C2SeamControls _controls;
+
+    public E2C2AuditExecutionRepositoryDecorator(
+        IValidationAuditExecutionRepository inner,
+        E2C2SeamControls controls)
+    {
+        _inner = inner;
+        _controls = controls;
+    }
+
+    public Task<ValidationAuditExecution?> GetByAuditExecutionIdAsync(
+        Guid auditExecutionId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_controls.ArmAuditExecutionGetFailureAfterFinalizer && _controls.AuditFinalizerInvoked)
+        {
+            _controls.ArmAuditExecutionGetFailureAfterFinalizer = false;
+            throw new InvalidOperationException("E2C2 simulated audit execution reload failure.");
+        }
+
+        return _inner.GetByAuditExecutionIdAsync(auditExecutionId, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<ValidationAuditExecution>> GetByTrialIdAsync(
+        long validationTrialId,
+        CancellationToken cancellationToken = default) =>
+        _inner.GetByTrialIdAsync(validationTrialId, cancellationToken);
+
+    public Task<IReadOnlyList<ValidationAuditExecution>> GetActiveByTrialIdAsync(
+        long validationTrialId,
+        CancellationToken cancellationToken = default) =>
+        _inner.GetActiveByTrialIdAsync(validationTrialId, cancellationToken);
+
+    public Task AddAsync(ValidationAuditExecution execution, CancellationToken cancellationToken = default) =>
+        _inner.AddAsync(execution, cancellationToken);
+
+    public Task UpdateAsync(ValidationAuditExecution execution, CancellationToken cancellationToken = default) =>
+        _inner.UpdateAsync(execution, cancellationToken);
+
+    public Task<ValidationAuditExecution> CreateAndAssignTrialAuthoritativeAsync(
+        ValidationAuditExecution execution,
+        ValidationParameterTrial trial,
+        CancellationToken cancellationToken = default) =>
+        _inner.CreateAndAssignTrialAuthoritativeAsync(execution, trial, cancellationToken);
+}
+
+internal sealed class E2C2AuditRecoveryDecorator : IValidationAuditExecutionRecoveryService
+{
+    private readonly IValidationAuditExecutionRecoveryService _inner;
+    private readonly E2C2SeamControls _controls;
+
+    public E2C2AuditRecoveryDecorator(
+        IValidationAuditExecutionRecoveryService inner,
+        E2C2SeamControls controls)
+    {
+        _inner = inner;
+        _controls = controls;
+    }
+
+    public Task<ValidationAuditExecutionRecoveryResult> RecoverAsync(
+        Guid auditExecutionId,
+        ValidationAuditExecutionRecoveryRequest? request = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (_controls.ThrowOnAuditRecovery)
+        {
+            throw new InvalidOperationException("E2C2 simulated audit recovery service failure.");
+        }
+
+        return _inner.RecoverAsync(auditExecutionId, request, cancellationToken);
     }
 }
