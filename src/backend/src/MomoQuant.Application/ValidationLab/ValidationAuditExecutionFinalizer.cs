@@ -82,13 +82,30 @@ public sealed class ValidationAuditExecutionFinalizer : IValidationAuditExecutio
 
             if (execution.Status == ValidationAuditExecutionStatus.Completed)
             {
+                var completedBatches = (await _batches.GetByAuditExecutionIdAsync(execution.AuditExecutionId, cancellationToken)
+                    .ConfigureAwait(false)).ToList();
+                var completedAccess = await _accessAudits.GetByExperimentIdAsync(execution.ValidationExperimentId, cancellationToken)
+                    .ConfigureAwait(false);
+                var completedScopeRows = completedAccess
+                    .Where(r => r.ScopeExecutionId == execution.ScopeExecutionId)
+                    .ToList();
+                var completedTrials = await _trials.GetByExperimentIdAsync(execution.ValidationExperimentId, cancellationToken)
+                    .ConfigureAwait(false);
+                var completedTrial = completedTrials.FirstOrDefault(t => t.Id == execution.ValidationTrialId);
+                var completedCompleteness = completedTrial is null
+                    ? ValidationAuditCompletenessResult.ExecutionMissing()
+                    : _verifier.Verify(completedTrial, execution, completedBatches, completedScopeRows);
+
                 result = new ValidationAuditExecutionCompletionResult
                 {
                     AuditExecutionId = execution.AuditExecutionId,
-                    IsComplete = true,
-                    CompletionCode = ValidationAuditCompletenessCode.Complete,
+                    IsComplete = completedCompleteness.IsComplete,
+                    CompletionCode = completedCompleteness.CompletionCode,
                     FinalExpectedSequence = execution.FinalExpectedSequence ?? finalExpectedSequence,
-                    FinalPayloadSetHash = execution.FinalPayloadSetHash
+                    FinalPayloadSetHash = execution.FinalPayloadSetHash,
+                    FailureCode = completedCompleteness.IsComplete
+                        ? null
+                        : completedCompleteness.CompletionCode.ToString()
                 };
                 return;
             }
@@ -203,21 +220,44 @@ public sealed class ValidationAuditExecutionFinalizer : IValidationAuditExecutio
 
             trial.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
             await _trials.UpdateAsync(trial, cancellationToken).ConfigureAwait(false);
-
-            result = new ValidationAuditExecutionCompletionResult
-            {
-                AuditExecutionId = execution.AuditExecutionId,
-                IsComplete = true,
-                CompletionCode = ValidationAuditCompletenessCode.Complete,
-                FinalExpectedSequence = finalExpectedSequence,
-                FinalPayloadSetHash = execution.FinalPayloadSetHash
-            };
         }, cancellationToken).ConfigureAwait(false);
 
-        return result
+        if (result is not null)
+        {
+            return result;
+        }
+
+        // Success path: terminal writes committed — reload and verify before returning.
+        var reloadedExecution = await _executions.GetByAuditExecutionIdAsync(auditExecutionId, cancellationToken)
+            .ConfigureAwait(false)
             ?? throw new ValidationAuditExecutionException(
-                "VALIDATION_AUDIT_COMPLETION_FAILED",
-                "Audit completion produced no result.");
+                "VALIDATION_AUDIT_EXECUTION_MISSING",
+                $"Audit execution {auditExecutionId} was not found after completion.");
+
+        var reloadedBatches = (await _batches.GetByAuditExecutionIdAsync(reloadedExecution.AuditExecutionId, cancellationToken)
+            .ConfigureAwait(false)).ToList();
+        var reloadedAccess = await _accessAudits.GetByExperimentIdAsync(reloadedExecution.ValidationExperimentId, cancellationToken)
+            .ConfigureAwait(false);
+        var reloadedScopeRows = reloadedAccess
+            .Where(r => r.ScopeExecutionId == reloadedExecution.ScopeExecutionId)
+            .ToList();
+        var reloadedTrials = await _trials.GetByExperimentIdAsync(reloadedExecution.ValidationExperimentId, cancellationToken)
+            .ConfigureAwait(false);
+        var reloadedTrial = reloadedTrials.FirstOrDefault(t => t.Id == reloadedExecution.ValidationTrialId);
+
+        var verified = reloadedTrial is null
+            ? ValidationAuditCompletenessResult.ExecutionMissing()
+            : _verifier.Verify(reloadedTrial, reloadedExecution, reloadedBatches, reloadedScopeRows);
+
+        return new ValidationAuditExecutionCompletionResult
+        {
+            AuditExecutionId = reloadedExecution.AuditExecutionId,
+            IsComplete = verified.IsComplete,
+            CompletionCode = verified.CompletionCode,
+            FinalExpectedSequence = reloadedExecution.FinalExpectedSequence ?? finalExpectedSequence,
+            FinalPayloadSetHash = reloadedExecution.FinalPayloadSetHash,
+            FailureCode = verified.IsComplete ? null : verified.CompletionCode.ToString()
+        };
     }
 }
 

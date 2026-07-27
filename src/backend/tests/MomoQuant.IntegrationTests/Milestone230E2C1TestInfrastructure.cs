@@ -210,10 +210,12 @@ internal sealed class FakeTrainingCandleScope : IValidationTrainingCandleScope
         long experimentId,
         Guid scopeExecutionId,
         long? trialId,
-        IEnumerable<ValidationCandleAccessRecord> records)
+        IEnumerable<ValidationCandleAccessRecord> records,
+        Guid? boundAuditExecutionId = null)
     {
         ValidationExperimentId = experimentId;
         ScopeExecutionId = scopeExecutionId;
+        BoundAuditExecutionId = boundAuditExecutionId;
         ActiveTrialId = trialId;
         _log = records.ToList();
         var now = DateTime.UtcNow;
@@ -239,6 +241,7 @@ internal sealed class FakeTrainingCandleScope : IValidationTrainingCandleScope
     }
 
     public Guid ScopeExecutionId { get; }
+    public Guid? BoundAuditExecutionId { get; }
     public string? CorrelationId { get; set; }
     public long? ActiveTrialId { get; set; }
     public int? ActiveTrialNumber { get; set; }

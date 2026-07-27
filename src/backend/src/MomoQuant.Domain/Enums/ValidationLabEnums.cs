@@ -365,7 +365,13 @@ public enum ValidationAuditRecoveryDecision
     SupersedeAndRerun = 3,
     FailClosed = 4,
     AlreadyCompleted = 5,
-    ConflictDetected = 6
+    ConflictDetected = 6,
+
+    /// <summary>
+    /// Computation and manifested evidence are complete; only durable finalizer may run.
+    /// No new strategy candle access or StrategyLabRunner execution.
+    /// </summary>
+    FinalizationOnlyRecovery = 7
 }
 
 /// <summary>Milestone 23.0E2C1 — authoritative audit-completeness verifier codes.</summary>

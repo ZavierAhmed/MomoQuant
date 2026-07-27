@@ -5,21 +5,6 @@ using MomoQuant.Domain.ValidationLab;
 
 namespace MomoQuant.Application.ValidationLab;
 
-public sealed class ValidationAuditExecutionRecoveryResult
-{
-    public Guid AuditExecutionId { get; init; }
-    public ValidationAuditExecutionStatus PreviousStatus { get; init; }
-    public ValidationAuditRecoveryDecision RecoveryDecision { get; init; }
-    public int ConfirmedBatchCount { get; init; }
-    public int UnresolvedBatchCount { get; init; }
-    public long RecoveredLastConfirmedSequence { get; init; }
-    public long? FinalExpectedSequence { get; init; }
-    public bool CanContinueSameExecution { get; init; }
-    public bool MustRerunTrial { get; init; }
-    public bool IsComplete { get; init; }
-    public string? FailureCode { get; init; }
-}
-
 public interface IValidationAuditExecutionRecoveryService
 {
     Task<ValidationAuditExecutionRecoveryResult> RecoverAsync(
@@ -27,7 +12,7 @@ public interface IValidationAuditExecutionRecoveryService
         CancellationToken cancellationToken = default);
 }
 
-/// <summary>Restart recovery for durable audit executions (WP6 rules A–E).</summary>
+/// <summary>Restart recovery for durable audit executions (WP6 rules A–E, E2C1B contiguous cursor).</summary>
 public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditExecutionRecoveryService
 {
     private readonly IValidationAuditExecutionRepository _executions;
@@ -66,56 +51,51 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
         var previousStatus = execution.Status;
         if (execution.Status == ValidationAuditExecutionStatus.Completed)
         {
-            return new ValidationAuditExecutionRecoveryResult
-            {
-                AuditExecutionId = execution.AuditExecutionId,
-                PreviousStatus = previousStatus,
-                RecoveryDecision = ValidationAuditRecoveryDecision.AlreadyCompleted,
-                ConfirmedBatchCount = 0,
-                UnresolvedBatchCount = 0,
-                RecoveredLastConfirmedSequence = execution.LastConfirmedSequence,
-                FinalExpectedSequence = execution.FinalExpectedSequence,
-                CanContinueSameExecution = false,
-                MustRerunTrial = false,
-                IsComplete = true
-            };
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.AlreadyCompleted,
+                confirmedBatchCount: 0,
+                unresolvedBatchCount: 0,
+                prefix: new ValidationAuditContiguousSequenceCalculator.ContiguousPrefixResult(
+                    execution.LastConfirmedSequence,
+                    execution.ConfirmedEventCount,
+                    null,
+                    false),
+                requiresStrategyLab: false,
+                isComplete: true);
         }
 
         if (execution.Status == ValidationAuditExecutionStatus.Superseded)
         {
-            return new ValidationAuditExecutionRecoveryResult
-            {
-                AuditExecutionId = execution.AuditExecutionId,
-                PreviousStatus = previousStatus,
-                RecoveryDecision = ValidationAuditRecoveryDecision.FailClosed,
-                RecoveredLastConfirmedSequence = execution.LastConfirmedSequence,
-                FinalExpectedSequence = execution.FinalExpectedSequence,
-                CanContinueSameExecution = false,
-                MustRerunTrial = true,
-                IsComplete = false,
-                FailureCode = "VALIDATION_AUDIT_ALREADY_SUPERSEDED"
-            };
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.FailClosed,
+                confirmedBatchCount: 0,
+                unresolvedBatchCount: 0,
+                prefix: PrefixFromExecution(execution),
+                requiresStrategyLab: true,
+                isComplete: false,
+                failureCode: "VALIDATION_AUDIT_ALREADY_SUPERSEDED",
+                mustRerun: true);
         }
 
-        // Rule E — multiple active executions fail closed.
         var active = await _executions.GetActiveByTrialIdAsync(execution.ValidationTrialId, cancellationToken)
             .ConfigureAwait(false);
         if (active.Count > 1)
         {
-            return new ValidationAuditExecutionRecoveryResult
-            {
-                AuditExecutionId = execution.AuditExecutionId,
-                PreviousStatus = previousStatus,
-                RecoveryDecision = ValidationAuditRecoveryDecision.ConflictDetected,
-                ConfirmedBatchCount = 0,
-                UnresolvedBatchCount = 0,
-                RecoveredLastConfirmedSequence = execution.LastConfirmedSequence,
-                FinalExpectedSequence = execution.FinalExpectedSequence,
-                CanContinueSameExecution = false,
-                MustRerunTrial = true,
-                IsComplete = false,
-                FailureCode = "VALIDATION_AUDIT_MULTIPLE_ACTIVE_EXECUTIONS"
-            };
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.ConflictDetected,
+                confirmedBatchCount: 0,
+                unresolvedBatchCount: 0,
+                prefix: PrefixFromExecution(execution),
+                requiresStrategyLab: true,
+                isComplete: false,
+                failureCode: "VALIDATION_AUDIT_MULTIPLE_ACTIVE_EXECUTIONS",
+                mustRerun: true);
         }
 
         var batches = (await _batches.GetByAuditExecutionIdAsync(execution.AuditExecutionId, cancellationToken)
@@ -127,10 +107,29 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
         var trials = await _trials.GetByExperimentIdAsync(execution.ValidationExperimentId, cancellationToken)
             .ConfigureAwait(false);
         var trial = trials.FirstOrDefault(t => t.Id == execution.ValidationTrialId);
+        var requiresStrategyLab = TrialRequiresStrategyLabExecution(trial);
 
-        // Rule D — crash before first flush: execution exists, no batch manifest.
+        // Rule D — crash before first flush (not a brand-new execution awaiting first access).
         if (batches.Count == 0)
         {
+            if (execution.Status == ValidationAuditExecutionStatus.InProgress
+                && execution.RecoveryStatus == ValidationAuditRecoveryStatus.None
+                && execution.LastConfirmedSequence == 0
+                && previousStatus is not ValidationAuditExecutionStatus.RecoveryRequired)
+            {
+                return BuildResult(
+                    execution,
+                    previousStatus,
+                    ValidationAuditRecoveryDecision.NoRecoveryNeeded,
+                    confirmedBatchCount: 0,
+                    unresolvedBatchCount: 0,
+                    prefix: new ValidationAuditContiguousSequenceCalculator.ContiguousPrefixResult(0, 0, 1, false),
+                    requiresStrategyLab: TrialRequiresStrategyLabExecution(trial),
+                    isComplete: false,
+                    canContinue: false,
+                    mustRerun: false);
+            }
+
             await MarkRecoveryRequiredAsync(
                 execution,
                 trial,
@@ -138,25 +137,21 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
                 ValidationAuditRecoveryStatus.RestartRecoveryPending,
                 cancellationToken).ConfigureAwait(false);
 
-            return new ValidationAuditExecutionRecoveryResult
-            {
-                AuditExecutionId = execution.AuditExecutionId,
-                PreviousStatus = previousStatus,
-                RecoveryDecision = ValidationAuditRecoveryDecision.SupersedeAndRerun,
-                ConfirmedBatchCount = 0,
-                UnresolvedBatchCount = 0,
-                RecoveredLastConfirmedSequence = 0,
-                FinalExpectedSequence = execution.FinalExpectedSequence,
-                CanContinueSameExecution = false,
-                MustRerunTrial = true,
-                IsComplete = false,
-                FailureCode = "PROCESS_INTERRUPTED_BEFORE_FLUSH"
-            };
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.SupersedeAndRerun,
+                confirmedBatchCount: 0,
+                unresolvedBatchCount: 0,
+                prefix: new ValidationAuditContiguousSequenceCalculator.ContiguousPrefixResult(0, 0, 1, false),
+                requiresStrategyLab: true,
+                isComplete: false,
+                failureCode: "PROCESS_INTERRUPTED_BEFORE_FLUSH",
+                mustRerun: true);
         }
 
         var confirmedCount = 0;
         var unresolvedCount = 0;
-        long recoveredLast = execution.LastConfirmedSequence;
         var now = DateTime.UtcNow;
 
         await _uow.ExecuteInTransactionAsync(async () =>
@@ -166,7 +161,6 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
                 if (batch.Status == ValidationAuditBatchStatus.Confirmed)
                 {
                     confirmedCount++;
-                    recoveredLast = Math.Max(recoveredLast, batch.LastSequence);
                     continue;
                 }
 
@@ -181,7 +175,9 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
                 var allConfirmed = true;
                 for (var i = 0; i < ids.Count; i++)
                 {
-                    var row = scopeRows.FirstOrDefault(r => r.AccessEventId == ids[i]);
+                    var seq = batch.FirstSequence + i;
+                    var row = scopeRows.FirstOrDefault(r =>
+                        r.AccessEventId == ids[i] && r.ScopeSequenceNumber == seq);
                     if (row is null
                         || string.IsNullOrWhiteSpace(row.AccessPayloadHash)
                         || !string.Equals(row.AccessPayloadHash, hashes[i], StringComparison.OrdinalIgnoreCase))
@@ -193,7 +189,6 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
 
                 if (allConfirmed)
                 {
-                    // Rule B — crash after event commit before cursor: confirm batch + advance.
                     batch.Status = ValidationAuditBatchStatus.Confirmed;
                     batch.ConfirmedAtUtc = now;
                     batch.UpdatedAtUtc = now;
@@ -201,33 +196,38 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
                     batch.RowVersion++;
                     await _batches.UpdateAsync(batch, cancellationToken).ConfigureAwait(false);
                     confirmedCount++;
-                    recoveredLast = Math.Max(recoveredLast, batch.LastSequence);
                 }
                 else
                 {
-                    // Rule A — manifest exists but events missing / unrecoverable from hash alone.
                     unresolvedCount++;
                 }
             }
 
-            execution.LastConfirmedSequence = recoveredLast;
-            execution.ConfirmedEventCount = (int)recoveredLast;
+            // Recompute contiguous prefix from confirmed batches — never MAX(LastSequence).
+            var prefix = ComputeContiguousPrefixFromBatches(
+                batches.Where(b => b.Status == ValidationAuditBatchStatus.Confirmed).ToList(),
+                scopeRows);
+
+            execution.LastConfirmedSequence = prefix.LastConfirmedSequence;
+            execution.ConfirmedEventCount = prefix.ConfirmedEventCount;
             execution.UpdatedAtUtc = now;
             execution.RowVersion++;
 
-            if (unresolvedCount > 0 && confirmedCount == 0 && recoveredLast == 0)
+            if (unresolvedCount > 0 && prefix.LastConfirmedSequence == 0)
             {
                 execution.Status = ValidationAuditExecutionStatus.RecoveryRequired;
                 execution.RecoveryStatus = ValidationAuditRecoveryStatus.RestartRecoveryPending;
                 execution.FailureCode = "AUDIT_EVENT_PAYLOAD_UNRECOVERABLE";
             }
-            else if (unresolvedCount > 0)
+            else if (prefix.HasGap || unresolvedCount > 0)
             {
                 execution.Status = ValidationAuditExecutionStatus.RecoveryRequired;
                 execution.RecoveryStatus = ValidationAuditRecoveryStatus.RestartRecoveryPending;
-                execution.FailureCode = "AUDIT_MANIFEST_INCOMPLETE";
+                execution.FailureCode = prefix.HasGap
+                    ? "AUDIT_SEQUENCE_GAP"
+                    : "AUDIT_MANIFEST_INCOMPLETE";
             }
-            else
+            else if (prefix.LastConfirmedSequence > 0)
             {
                 execution.Status = ValidationAuditExecutionStatus.EventsConfirmed;
                 execution.RecoveryStatus = ValidationAuditRecoveryStatus.RecoveredFromConfirmedBatch;
@@ -235,14 +235,13 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
 
             await _executions.UpdateAsync(execution, cancellationToken).ConfigureAwait(false);
 
-            if (trial is not null && unresolvedCount > 0)
+            if (trial is not null && (unresolvedCount > 0 || prefix.HasGap))
             {
                 trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
                 await _trials.UpdateAsync(trial, cancellationToken).ConfigureAwait(false);
             }
         }, cancellationToken).ConfigureAwait(false);
 
-        // Reload for completeness (Rule C).
         execution = await _executions.GetByAuditExecutionIdAsync(auditExecutionId, cancellationToken)
             .ConfigureAwait(false) ?? execution;
         batches = (await _batches.GetByAuditExecutionIdAsync(execution.AuditExecutionId, cancellationToken)
@@ -252,112 +251,193 @@ public sealed class ValidationAuditExecutionRecoveryService : IValidationAuditEx
             .Where(r => r.ScopeExecutionId == execution.ScopeExecutionId)
             .ToList();
 
+        var contiguousPrefix = ComputeContiguousPrefixFromBatches(
+            batches.Where(b => b.Status == ValidationAuditBatchStatus.Confirmed).ToList(),
+            scopeRows);
+
         if (trial is null)
         {
-            return new ValidationAuditExecutionRecoveryResult
-            {
-                AuditExecutionId = execution.AuditExecutionId,
-                PreviousStatus = previousStatus,
-                RecoveryDecision = ValidationAuditRecoveryDecision.FailClosed,
-                ConfirmedBatchCount = confirmedCount,
-                UnresolvedBatchCount = unresolvedCount,
-                RecoveredLastConfirmedSequence = recoveredLast,
-                FinalExpectedSequence = execution.FinalExpectedSequence,
-                CanContinueSameExecution = false,
-                MustRerunTrial = true,
-                IsComplete = false,
-                FailureCode = "VALIDATION_AUDIT_TRIAL_MISSING"
-            };
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.FailClosed,
+                confirmedCount,
+                unresolvedCount,
+                contiguousPrefix,
+                requiresStrategyLab: true,
+                isComplete: false,
+                failureCode: "VALIDATION_AUDIT_TRIAL_MISSING",
+                mustRerun: true);
         }
 
         var completeness = _verifier.Verify(trial, execution, batches, scopeRows);
         if (completeness.IsComplete)
         {
-            return new ValidationAuditExecutionRecoveryResult
-            {
-                AuditExecutionId = execution.AuditExecutionId,
-                PreviousStatus = previousStatus,
-                RecoveryDecision = ValidationAuditRecoveryDecision.AlreadyCompleted,
-                ConfirmedBatchCount = confirmedCount,
-                UnresolvedBatchCount = 0,
-                RecoveredLastConfirmedSequence = recoveredLast,
-                FinalExpectedSequence = execution.FinalExpectedSequence,
-                CanContinueSameExecution = false,
-                MustRerunTrial = false,
-                IsComplete = true
-            };
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.AlreadyCompleted,
+                confirmedCount,
+                unresolvedCount,
+                contiguousPrefix,
+                requiresStrategyLab: false,
+                isComplete: true);
         }
 
-        if (unresolvedCount > 0 && confirmedCount == 0)
+        if (unresolvedCount > 0 && contiguousPrefix.LastConfirmedSequence == 0)
         {
-            return new ValidationAuditExecutionRecoveryResult
-            {
-                AuditExecutionId = execution.AuditExecutionId,
-                PreviousStatus = previousStatus,
-                RecoveryDecision = ValidationAuditRecoveryDecision.SupersedeAndRerun,
-                ConfirmedBatchCount = confirmedCount,
-                UnresolvedBatchCount = unresolvedCount,
-                RecoveredLastConfirmedSequence = recoveredLast,
-                FinalExpectedSequence = execution.FinalExpectedSequence,
-                CanContinueSameExecution = false,
-                MustRerunTrial = true,
-                IsComplete = false,
-                FailureCode = execution.FailureCode ?? "AUDIT_EVENT_PAYLOAD_UNRECOVERABLE"
-            };
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.SupersedeAndRerun,
+                confirmedCount,
+                unresolvedCount,
+                contiguousPrefix,
+                requiresStrategyLab: true,
+                isComplete: false,
+                failureCode: execution.FailureCode ?? "AUDIT_EVENT_PAYLOAD_UNRECOVERABLE",
+                mustRerun: true);
+        }
+
+        if (contiguousPrefix.HasGap)
+        {
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.SupersedeAndRerun,
+                confirmedCount,
+                unresolvedCount,
+                contiguousPrefix,
+                requiresStrategyLab: true,
+                isComplete: false,
+                failureCode: "AUDIT_SEQUENCE_GAP",
+                mustRerun: true);
         }
 
         if (unresolvedCount > 0)
         {
-            return new ValidationAuditExecutionRecoveryResult
-            {
-                AuditExecutionId = execution.AuditExecutionId,
-                PreviousStatus = previousStatus,
-                RecoveryDecision = ValidationAuditRecoveryDecision.ResumePendingManifest,
-                ConfirmedBatchCount = confirmedCount,
-                UnresolvedBatchCount = unresolvedCount,
-                RecoveredLastConfirmedSequence = recoveredLast,
-                FinalExpectedSequence = execution.FinalExpectedSequence,
-                CanContinueSameExecution = false,
-                MustRerunTrial = true,
-                IsComplete = false,
-                FailureCode = execution.FailureCode ?? "AUDIT_MANIFEST_INCOMPLETE"
-            };
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.SupersedeAndRerun,
+                confirmedCount,
+                unresolvedCount,
+                contiguousPrefix,
+                requiresStrategyLab: true,
+                isComplete: false,
+                failureCode: execution.FailureCode ?? "AUDIT_MANIFEST_INCOMPLETE",
+                mustRerun: true);
         }
 
-        // Rule C — all batches confirmed / unresolvedCount==0.
-        // Missing terminal marker is incomplete, NOT a supersede/rerun trigger.
-        if (execution.FinalExpectedSequence is null)
+        // Contiguous evidence recovered — decide FinalizationOnly vs Supersede based on StrategyLab need.
+        if (!requiresStrategyLab
+            && contiguousPrefix.LastConfirmedSequence > 0
+            && execution.FinalExpectedSequence is null)
         {
-            return new ValidationAuditExecutionRecoveryResult
-            {
-                AuditExecutionId = execution.AuditExecutionId,
-                PreviousStatus = previousStatus,
-                RecoveryDecision = ValidationAuditRecoveryDecision.ConfirmedCommittedBatch,
-                ConfirmedBatchCount = confirmedCount,
-                UnresolvedBatchCount = 0,
-                RecoveredLastConfirmedSequence = recoveredLast,
-                FinalExpectedSequence = null,
-                CanContinueSameExecution = true,
-                MustRerunTrial = false,
-                IsComplete = false,
-                FailureCode = "FINAL_SEQUENCE_NOT_DECLARED"
-            };
+            return BuildResult(
+                execution,
+                previousStatus,
+                ValidationAuditRecoveryDecision.FinalizationOnlyRecovery,
+                confirmedCount,
+                unresolvedCount,
+                contiguousPrefix,
+                requiresStrategyLab: false,
+                isComplete: false,
+                failureCode: "FINAL_SEQUENCE_NOT_DECLARED",
+                canContinue: true,
+                mustRerun: false);
         }
 
-        return new ValidationAuditExecutionRecoveryResult
+        // Strategy work must execute again under a new superseding execution.
+        return BuildResult(
+            execution,
+            previousStatus,
+            ValidationAuditRecoveryDecision.SupersedeAndRerun,
+            confirmedCount,
+            unresolvedCount,
+            contiguousPrefix,
+            requiresStrategyLab: true,
+            isComplete: false,
+            failureCode: requiresStrategyLab
+                ? "STRATEGY_LAB_RERUN_REQUIRED"
+                : "PREVIOUS_EXECUTION_NOT_TERMINAL",
+            mustRerun: true);
+    }
+
+    private static ValidationAuditContiguousSequenceCalculator.ContiguousPrefixResult ComputeContiguousPrefixFromBatches(
+        IReadOnlyList<ValidationAuditBatch> confirmedBatches,
+        IReadOnlyList<ValidationCandleAccessAudit> scopeRows)
+    {
+        var confirmedSequences = new HashSet<long>();
+        foreach (var batch in confirmedBatches)
+        {
+            var ids = ParseGuidArray(batch.ExpectedEventIdsJson);
+            var hashes = ParseStringArray(batch.ExpectedPayloadHashesJson);
+            for (var i = 0; i < ids.Count; i++)
+            {
+                var seq = batch.FirstSequence + i;
+                var row = scopeRows.FirstOrDefault(r =>
+                    r.AccessEventId == ids[i] && r.ScopeSequenceNumber == seq);
+                if (row is not null
+                    && !string.IsNullOrWhiteSpace(row.AccessPayloadHash)
+                    && string.Equals(row.AccessPayloadHash, hashes[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    confirmedSequences.Add(seq);
+                }
+            }
+        }
+
+        return ValidationAuditContiguousSequenceCalculator.ComputeFromConfirmedSequences(confirmedSequences);
+    }
+
+    private static bool TrialRequiresStrategyLabExecution(ValidationParameterTrial? trial)
+    {
+        if (trial is null)
+        {
+            return true;
+        }
+
+        if (trial.StrategyLabRunId is null)
+        {
+            return true;
+        }
+
+        return string.Equals(trial.GuardrailDecision, "NotEvaluated", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ValidationAuditContiguousSequenceCalculator.ContiguousPrefixResult PrefixFromExecution(
+        ValidationAuditExecution execution) =>
+        new(execution.LastConfirmedSequence, execution.ConfirmedEventCount, null, false);
+
+    private static ValidationAuditExecutionRecoveryResult BuildResult(
+        ValidationAuditExecution execution,
+        ValidationAuditExecutionStatus previousStatus,
+        ValidationAuditRecoveryDecision decision,
+        int confirmedBatchCount,
+        int unresolvedBatchCount,
+        ValidationAuditContiguousSequenceCalculator.ContiguousPrefixResult prefix,
+        bool requiresStrategyLab,
+        bool isComplete,
+        string? failureCode = null,
+        bool canContinue = false,
+        bool mustRerun = false) =>
+        new()
         {
             AuditExecutionId = execution.AuditExecutionId,
             PreviousStatus = previousStatus,
-            RecoveryDecision = ValidationAuditRecoveryDecision.ConfirmedCommittedBatch,
-            ConfirmedBatchCount = confirmedCount,
-            UnresolvedBatchCount = 0,
-            RecoveredLastConfirmedSequence = recoveredLast,
+            RecoveryDecision = decision,
+            ConfirmedBatchCount = confirmedBatchCount,
+            UnresolvedBatchCount = unresolvedBatchCount,
+            RecoveredLastConfirmedSequence = prefix.LastConfirmedSequence,
+            RecoveredConfirmedEventCount = prefix.ConfirmedEventCount,
+            FirstMissingSequence = prefix.FirstMissingSequence,
             FinalExpectedSequence = execution.FinalExpectedSequence,
-            CanContinueSameExecution = true,
-            MustRerunTrial = false,
-            IsComplete = completeness.IsComplete
+            CanContinueSameExecution = canContinue && decision == ValidationAuditRecoveryDecision.FinalizationOnlyRecovery,
+            MustRerunTrial = mustRerun,
+            RequiresStrategyLabExecution = requiresStrategyLab,
+            IsComplete = isComplete,
+            FailureCode = failureCode
         };
-    }
 
     private async Task MarkRecoveryRequiredAsync(
         ValidationAuditExecution execution,

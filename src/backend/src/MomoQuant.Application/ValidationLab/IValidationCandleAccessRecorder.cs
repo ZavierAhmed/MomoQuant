@@ -76,6 +76,14 @@ public sealed class ValidationCandleAccessRecorder : IValidationCandleAccessReco
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            if (scope.BoundAuditExecutionId is not null)
+            {
+                var boundExecution = await ResolveBoundDurableExecutionAsync(scope, cancellationToken)
+                    .ConfigureAwait(false);
+                return await FlushWithDurableAuditAsync(scope, state, boundExecution, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             var durable = await TryResolveDurableExecutionAsync(scope, cancellationToken).ConfigureAwait(false);
             if (durable is not null)
             {
@@ -89,6 +97,74 @@ public sealed class ValidationCandleAccessRecorder : IValidationCandleAccessReco
         {
             state.Gate.Release();
         }
+    }
+
+    private async Task<ValidationAuditExecution> ResolveBoundDurableExecutionAsync(
+        IValidationTrainingCandleScope scope,
+        CancellationToken cancellationToken)
+    {
+        if (_executions is null || _batches is null || _uow is null || _hasher is null)
+        {
+            throw new ValidationAuditExecutionException(
+                "VALIDATION_AUDIT_DURABLE_PATH_UNAVAILABLE",
+                "Bound E2C1 audit execution requires durable audit dependencies.");
+        }
+
+        var boundId = scope.BoundAuditExecutionId
+            ?? throw new ValidationAuditExecutionException(
+                "VALIDATION_AUDIT_BOUND_EXECUTION_MISSING",
+                "Bound audit execution id is required for this scope.");
+
+        var ambient = ValidationAuditExecutionAmbient.CurrentValue;
+        if (ambient is null)
+        {
+            throw new ValidationAuditExecutionException(
+                "VALIDATION_AUDIT_AMBIENT_MISSING",
+                "Bound E2C1 scope requires an active audit execution ambient context.");
+        }
+
+        if (ambient.AuditExecutionId != boundId)
+        {
+            throw new ValidationAuditExecutionIdentityMismatchException(
+                "Ambient audit execution does not match the bound scope audit execution.",
+                expectedAuditExecutionId: boundId,
+                actualAuditExecutionId: ambient.AuditExecutionId);
+        }
+
+        var execution = await _executions.GetByAuditExecutionIdAsync(boundId, cancellationToken)
+            .ConfigureAwait(false);
+        if (execution is null)
+        {
+            throw new ValidationAuditExecutionException(
+                "VALIDATION_AUDIT_EXECUTION_MISSING",
+                $"Durable audit execution {boundId} was not found.");
+        }
+
+        if (scope.ActiveTrialId is long trialId && _trials is not null)
+        {
+            var trials = await _trials.GetByExperimentIdAsync(scope.ValidationExperimentId, cancellationToken)
+                .ConfigureAwait(false);
+            var trial = trials.FirstOrDefault(t => t.Id == trialId);
+            if (trial?.AuthoritativeAuditExecutionId is not Guid authoritative
+                || authoritative != boundId)
+            {
+                throw new ValidationAuditExecutionException(
+                    "VALIDATION_AUDIT_TRIAL_LINK_MISSING",
+                    "Trial authoritative audit execution link is missing or does not match the bound scope.");
+            }
+        }
+
+        if (!string.Equals(ambient.ExecutionToken, execution.ExecutionToken, StringComparison.Ordinal))
+        {
+            throw new ValidationAuditExecutionIdentityMismatchException(
+                "Execution token does not match the durable audit execution.",
+                expectedAuditExecutionId: execution.AuditExecutionId,
+                actualAuditExecutionId: ambient.AuditExecutionId,
+                expectedExecutionToken: execution.ExecutionToken,
+                actualExecutionToken: ambient.ExecutionToken);
+        }
+
+        return execution;
     }
 
     private async Task<ValidationAuditExecution?> TryResolveDurableExecutionAsync(

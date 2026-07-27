@@ -156,7 +156,8 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
                 partition,
                 warmup,
                 evaluation,
-                scopeExecutionId: request.BoundScopeExecutionId);
+                scopeExecutionId: request.BoundScopeExecutionId,
+                boundAuditExecutionId: request.BoundAuditExecutionId);
         }
     }
 

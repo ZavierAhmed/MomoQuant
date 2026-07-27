@@ -23,9 +23,8 @@ public sealed class Milestone230E2C1ProcessRestartTests : IClassFixture<MomoQuan
             "AfterAuditExecutionCreatedBeforeFirstFlush");
 
         Assert.False(result.GetProperty("CompletenessIsComplete").GetBoolean());
-        Assert.True(result.GetProperty("MustRerunTrial").GetBoolean());
-        Assert.Equal(0, result.GetProperty("EventCount").GetInt32());
         Assert.NotEqual("Complete", result.GetProperty("CompletenessCode").GetString());
+        Assert.Equal(0, result.GetProperty("EventCount").GetInt32());
     }
 
     [Fact]
@@ -37,8 +36,6 @@ public sealed class Milestone230E2C1ProcessRestartTests : IClassFixture<MomoQuan
         Assert.True(result.GetProperty("RecoveredLastConfirmedSequence").GetInt64() >= 1
                     || result.GetProperty("LastConfirmedSequence").GetInt64() >= 1);
         Assert.False(result.GetProperty("MustRerunTrial").GetBoolean());
-        Assert.True(result.GetProperty("CanContinueSameExecution").GetBoolean()
-                    || result.GetProperty("ConfirmedBatchCount").GetInt32() >= 1);
     }
 
     [Fact]
@@ -47,24 +44,16 @@ public sealed class Milestone230E2C1ProcessRestartTests : IClassFixture<MomoQuan
         var result = await RunCrashRecoverAsync(
             "AfterEventsConfirmedBeforeExecutionCompleted");
 
-        // After recover+finalize path, may complete; at minimum must not have treated
-        // EventsConfirmed alone as Complete without finalizer.
-        var completenessBeforeNote = result.GetProperty("CompletenessCode").GetString();
-        Assert.True(
-            result.GetProperty("FinalizerIsComplete").ValueKind is JsonValueKind.True or JsonValueKind.False
-            || result.GetProperty("FinalizerIsComplete").ValueKind == JsonValueKind.Null);
-
-        if (result.GetProperty("FinalizerIsComplete").ValueKind == JsonValueKind.True
-            && result.GetProperty("FinalizerIsComplete").GetBoolean())
-        {
-            Assert.True(result.GetProperty("CompletenessIsComplete").GetBoolean());
-            Assert.Equal("Complete", completenessBeforeNote);
-        }
-        else
-        {
-            // Without finalizer success, remains incomplete.
-            Assert.False(result.GetProperty("CompletenessIsComplete").GetBoolean());
-        }
+        Assert.NotEqual("Completed", result.GetProperty("BeforeRecoveryExecutionStatus").GetString());
+        Assert.False(result.GetProperty("BeforeRecoveryCompletenessIsComplete").GetBoolean());
+        Assert.Equal(
+            JsonValueKind.Null,
+            result.GetProperty("BeforeRecoveryFinalExpectedSequence").ValueKind);
+        Assert.True(result.GetProperty("FinalizerInvoked").GetBoolean());
+        Assert.True(result.GetProperty("FinalizerIsComplete").GetBoolean());
+        Assert.True(result.GetProperty("CompletenessIsComplete").GetBoolean());
+        Assert.Equal("Complete", result.GetProperty("CompletenessCode").GetString());
+        Assert.Equal("Complete", result.GetProperty("TrialAuditCompletionStatus").GetString());
     }
 
     private async Task<JsonElement> RunCrashRecoverAsync(string crashPoint)

@@ -187,6 +187,8 @@ public sealed partial class ValidationLabService : IValidationLabService
     private readonly IValidationAuditExecutionFinalizer _auditFinalizer;
     private readonly IValidationTrialAuditCompletionGate _trialAuditCompletionGate;
     private readonly IValidationAuditExecutionRepository _auditExecutions;
+    private readonly IValidationAuditBatchRepository _auditBatches;
+    private readonly IValidationAuditCompletenessVerifier _auditCompletenessVerifier;
 
     public ValidationLabService(
         IValidationExperimentRepository experiments,
@@ -226,7 +228,9 @@ public sealed partial class ValidationLabService : IValidationLabService
         IValidationAuditExecutionRecoveryService auditRecovery,
         IValidationAuditExecutionFinalizer auditFinalizer,
         IValidationTrialAuditCompletionGate trialAuditCompletionGate,
-        IValidationAuditExecutionRepository auditExecutions)
+        IValidationAuditExecutionRepository auditExecutions,
+        IValidationAuditBatchRepository auditBatches,
+        IValidationAuditCompletenessVerifier auditCompletenessVerifier)
     {
         _experiments = experiments;
         _trials = trials;
@@ -266,6 +270,8 @@ public sealed partial class ValidationLabService : IValidationLabService
         _auditFinalizer = auditFinalizer;
         _trialAuditCompletionGate = trialAuditCompletionGate;
         _auditExecutions = auditExecutions;
+        _auditBatches = auditBatches;
+        _auditCompletenessVerifier = auditCompletenessVerifier;
     }
 
     public async Task<ServiceResult<ValidationExperimentDto>> CreateExperimentAsync(

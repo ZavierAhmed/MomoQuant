@@ -311,9 +311,9 @@ public sealed class Milestone230E2C1IntegrationTests : IClassFixture<MomoQuantWe
             var recovery = scope2.ServiceProvider.GetRequiredService<IValidationAuditExecutionRecoveryService>();
             var result = await recovery.RecoverAsync(auditId);
 
-            Assert.False(result.MustRerunTrial);
-            Assert.True(result.CanContinueSameExecution || result.RecoveredLastConfirmedSequence >= 1);
             Assert.True(result.RecoveredLastConfirmedSequence >= 1);
+            Assert.Equal(ValidationAuditRecoveryDecision.SupersedeAndRerun, result.RecoveryDecision);
+            Assert.True(result.MustRerunTrial);
 
             var loaded = await scope2.ServiceProvider.GetRequiredService<IValidationAuditExecutionRepository>()
                 .GetByAuditExecutionIdAsync(auditId);
@@ -411,9 +411,9 @@ public sealed class Milestone230E2C1IntegrationTests : IClassFixture<MomoQuantWe
             await executions.CreateAndAssignTrialAuthoritativeAsync(execution, trial);
 
             var result = await recovery.RecoverAsync(execution.AuditExecutionId);
-            Assert.True(result.MustRerunTrial);
+            Assert.False(result.MustRerunTrial);
+            Assert.Equal(ValidationAuditRecoveryDecision.NoRecoveryNeeded, result.RecoveryDecision);
             Assert.False(result.IsComplete);
-            Assert.Equal("PROCESS_INTERRUPTED_BEFORE_FLUSH", result.FailureCode);
 
             var loaded = await executions.GetByAuditExecutionIdAsync(execution.AuditExecutionId);
             var completeness = verifier.Verify(trial, loaded, [], []);
@@ -489,9 +489,8 @@ public sealed class Milestone230E2C1IntegrationTests : IClassFixture<MomoQuantWe
             var recovery = scope2.ServiceProvider.GetRequiredService<IValidationAuditExecutionRecoveryService>();
             var result = await recovery.RecoverAsync(auditId);
 
-            Assert.False(result.MustRerunTrial);
             Assert.True(result.RecoveredLastConfirmedSequence >= 1);
-            Assert.True(result.CanContinueSameExecution || result.ConfirmedBatchCount >= 1);
+            Assert.True(result.ConfirmedBatchCount >= 1);
             Assert.False(result.IsComplete);
 
             var loaded = await scope2.ServiceProvider.GetRequiredService<IValidationAuditExecutionRepository>()
@@ -535,6 +534,11 @@ public sealed class Milestone230E2C1IntegrationTests : IClassFixture<MomoQuantWe
 
             Assert.Null(execution.FinalExpectedSequence);
             Assert.Equal(ValidationAuditExecutionStatus.EventsConfirmed, execution.Status);
+
+            trial.StrategyLabRunId = 1;
+            trial.GuardrailDecision = "Qualified";
+            await scope.ServiceProvider.GetRequiredService<IValidationParameterTrialRepository>()
+                .UpdateAsync(trial);
 
             var result = await recovery.RecoverAsync(execution.AuditExecutionId);
             Assert.False(result.IsComplete);
@@ -1079,6 +1083,364 @@ public sealed class Milestone230E2C1IntegrationTests : IClassFixture<MomoQuantWe
     }
 
     [Fact]
+    public async Task Recovery_ConfirmedBatchesWithGap_DoesNotAdvancePastGap()
+    {
+        long experimentId = 0;
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var recovery = scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRecoveryService>();
+        var executions = scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRepository>();
+
+        try
+        {
+            var (experiment, trial) = await E2C1AuditFixtures.CreateExperimentAndTrialAsync(db, "gap-rec");
+            experimentId = experiment.Id;
+            var execution = E2C1AuditFixtures.NewExecution(experiment, trial);
+            await executions.CreateAndAssignTrialAuthoritativeAsync(execution, trial);
+
+            await SeedConfirmedSequenceBatchAsync(
+                scope.ServiceProvider, experiment, execution, batchNumber: 1, sequence: 1, label: "Gap1");
+            await SeedConfirmedSequenceBatchAsync(
+                scope.ServiceProvider, experiment, execution, batchNumber: 2, sequence: 3, label: "Gap3");
+
+            execution.LastConfirmedSequence = 3;
+            execution.ConfirmedEventCount = 3;
+            execution.Status = ValidationAuditExecutionStatus.EventsConfirmed;
+            await executions.UpdateAsync(execution);
+
+            var result = await recovery.RecoverAsync(execution.AuditExecutionId);
+            Assert.True(result.MustRerunTrial);
+            Assert.Equal(2, result.FirstMissingSequence);
+            Assert.Equal(1, result.RecoveredLastConfirmedSequence);
+            Assert.Equal(1, result.RecoveredConfirmedEventCount);
+
+            var loaded = await executions.GetByAuditExecutionIdAsync(execution.AuditExecutionId);
+            Assert.Equal(1, loaded!.LastConfirmedSequence);
+            Assert.Equal(1, loaded.ConfirmedEventCount);
+            Assert.Equal(ValidationAuditExecutionStatus.RecoveryRequired, loaded.Status);
+            _ = trial;
+        }
+        finally
+        {
+            if (experimentId > 0)
+            {
+                await E2C1AuditFixtures.CleanupAsync(_factory, experimentId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Recovery_LaterConfirmedBatchBeforeEarlierBatch_DoesNotAdvanceCursor()
+    {
+        long experimentId = 0;
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var recovery = scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRecoveryService>();
+        var executions = scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRepository>();
+        var batches = scope.ServiceProvider.GetRequiredService<IValidationAuditBatchRepository>();
+
+        try
+        {
+            var (experiment, trial) = await E2C1AuditFixtures.CreateExperimentAndTrialAsync(db, "order-rec");
+            experimentId = experiment.Id;
+            var execution = E2C1AuditFixtures.NewExecution(experiment, trial);
+            await executions.CreateAndAssignTrialAuthoritativeAsync(execution, trial);
+
+            await SeedConfirmedSequenceBatchAsync(
+                scope.ServiceProvider, experiment, execution, batchNumber: 2, sequence: 2, label: "Later2");
+
+            var eventId1 = Guid.NewGuid();
+            var hash1 = new string('A', 64);
+            var entries1 = new[]
+            {
+                new ValidationAuditPayloadSetEntry(1, eventId1, hash1, ValidationAccessPayloadContractVersions.Current)
+            };
+            var setHash1 = _hasher.ComputeSetHash(entries1);
+            var (ids1, hashes1) = _hasher.BuildManifestJsons(entries1);
+            var batch1 = new ValidationAuditBatch
+            {
+                AuditBatchId = Guid.NewGuid(),
+                AuditExecutionId = execution.AuditExecutionId,
+                BatchNumber = 1,
+                FirstSequence = 1,
+                LastSequence = 1,
+                ExpectedEventCount = 1,
+                ExpectedEventIdsJson = ids1,
+                ExpectedPayloadHashesJson = hashes1,
+                ExpectedPayloadSetHash = setHash1,
+                Status = ValidationAuditBatchStatus.Created,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+                AuditBatchContractVersion = ValidationAuditBatch.ContractVersionV1,
+                RowVersion = 1
+            };
+            await batches.AddAsync(batch1);
+            // Sequence-1 event row intentionally absent — later batch must not advance cursor.
+
+            var result = await recovery.RecoverAsync(execution.AuditExecutionId);
+            Assert.Equal(0, result.RecoveredLastConfirmedSequence);
+            Assert.Equal(1, result.FirstMissingSequence);
+
+            var loaded = await executions.GetByAuditExecutionIdAsync(execution.AuditExecutionId);
+            Assert.Equal(0, loaded!.LastConfirmedSequence);
+            _ = trial;
+        }
+        finally
+        {
+            if (experimentId > 0)
+            {
+                await E2C1AuditFixtures.CleanupAsync(_factory, experimentId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task CompletedExecution_MissingEventRow_CannotCompleteTrialOnResume()
+    {
+        long experimentId = 0;
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var recovery = scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRecoveryService>();
+        var finalizer = scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionFinalizer>();
+        var verifier = scope.ServiceProvider.GetRequiredService<IValidationAuditCompletenessVerifier>();
+        var audits = scope.ServiceProvider.GetRequiredService<IValidationCandleAccessAuditRepository>();
+
+        try
+        {
+            var (experiment, trial, execution, batch) = await SeedConfirmedBatchAsync(
+                scope.ServiceProvider, db, "miss-ev", markCompleted: false);
+            experimentId = experiment.Id;
+
+            var rows = await audits.GetByExperimentIdAsync(experiment.Id);
+            var row = rows.Single(r => r.ScopeExecutionId == execution.ScopeExecutionId);
+            await db.ValidationCandleAccessAudits
+                .Where(a => a.AccessEventId == row.AccessEventId)
+                .ExecuteDeleteAsync();
+
+            execution.FinalExpectedSequence = 1;
+            execution.ExpectedEventCount = 1;
+            execution.FinalPayloadSetHash = batch.ExpectedPayloadSetHash;
+            execution.Status = ValidationAuditExecutionStatus.EventsConfirmed;
+            await scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRepository>()
+                .UpdateAsync(execution);
+
+            var recoveryResult = await recovery.RecoverAsync(execution.AuditExecutionId);
+            Assert.False(recoveryResult.IsComplete);
+
+            var completeResult = await finalizer.CompleteAsync(execution.AuditExecutionId, 1);
+            Assert.False(completeResult.IsComplete);
+            Assert.Equal(ValidationAuditCompletenessCode.EventMissing, completeResult.CompletionCode);
+
+            var loadedExec = await scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRepository>()
+                .GetByAuditExecutionIdAsync(execution.AuditExecutionId);
+            var batchList = await scope.ServiceProvider.GetRequiredService<IValidationAuditBatchRepository>()
+                .GetByAuditExecutionIdAsync(execution.AuditExecutionId);
+            var remainingRows = await audits.GetByExperimentIdAsync(experiment.Id);
+            var completeness = verifier.Verify(trial, loadedExec, batchList, remainingRows);
+            Assert.False(completeness.IsComplete);
+            Assert.NotEqual(ValidationAuditCompletionStatus.Complete, trial.AuditCompletionStatus);
+        }
+        finally
+        {
+            if (experimentId > 0)
+            {
+                await E2C1AuditFixtures.CleanupAsync(_factory, experimentId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task RestartAfterConfirmedBatch_RequiredRerunCreatesNewExecutionAndSequenceOne()
+    {
+        long experimentId = 0;
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var recovery = scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRecoveryService>();
+        var supersession = scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionSupersessionService>();
+        var executions = scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRepository>();
+        var recorder = scope.ServiceProvider.GetRequiredService<IValidationCandleAccessRecorder>();
+
+        try
+        {
+            var (experiment, trial, execution, _) = await SeedConfirmedBatchAsync(
+                scope.ServiceProvider, db, "rerun-new", markCompleted: false);
+            experimentId = experiment.Id;
+
+            var recoveryResult = await recovery.RecoverAsync(execution.AuditExecutionId);
+            Assert.True(recoveryResult.MustRerunTrial);
+
+            var superseded = await supersession.SupersedeForRerunAsync(
+                execution.AuditExecutionId,
+                Guid.NewGuid().ToString("N"),
+                recoveryResult.FailureCode ?? "STRATEGY_LAB_RERUN_REQUIRED");
+
+            Assert.Equal(2, superseded.AttemptNumber);
+            Assert.Equal(0, superseded.LastConfirmedSequence);
+            Assert.Equal(ValidationAuditExecutionStatus.InProgress, superseded.Status);
+
+            using var ambient = ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
+            {
+                AuditExecutionId = superseded.AuditExecutionId,
+                ScopeExecutionId = superseded.ScopeExecutionId,
+                ExecutionToken = superseded.ExecutionToken,
+                AttemptNumber = superseded.AttemptNumber,
+                ValidationExperimentId = experiment.Id,
+                ValidationTrialId = trial.Id
+            });
+
+            var trainingScope = new FakeTrainingCandleScope(
+                experiment.Id,
+                superseded.ScopeExecutionId,
+                trial.Id,
+                [
+                    new ValidationCandleAccessRecord
+                    {
+                        AccessEventId = Guid.NewGuid(),
+                        ScopeExecutionId = superseded.ScopeExecutionId,
+                        ScopeSequenceNumber = 1,
+                        ValidationExperimentId = experiment.Id,
+                        TrialId = trial.Id,
+                        TrialNumber = 1,
+                        CallerComponent = "E2C1B",
+                        AccessPurpose = ValidationCandleAccessPurpose.EvaluationRange,
+                        DatasetPartition = "Training",
+                        CandleContentFingerprint = "RERUN0001",
+                        AccessedAtUtc = DateTime.UtcNow,
+                        ReturnedCandleCount = 1,
+                        RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion
+                    }
+                ],
+                boundAuditExecutionId: superseded.AuditExecutionId);
+
+            await recorder.FlushAsync(trainingScope);
+
+            var reloaded = await executions.GetByAuditExecutionIdAsync(superseded.AuditExecutionId);
+            Assert.Equal(1, reloaded!.LastConfirmedSequence);
+            Assert.Equal(1, reloaded.ConfirmedEventCount);
+        }
+        finally
+        {
+            if (experimentId > 0)
+            {
+                await E2C1AuditFixtures.CleanupAsync(_factory, experimentId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task TenThousandCandle_Materialization_UsesBoundedAuditWrites()
+    {
+        long experimentId = 0;
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var executions = scope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRepository>();
+        var recorder = scope.ServiceProvider.GetRequiredService<IValidationCandleAccessRecorder>();
+
+        try
+        {
+            var (experiment, trial) = await E2C1AuditFixtures.CreateExperimentAndTrialAsync(db, "10k-bounded");
+            experimentId = experiment.Id;
+            var execution = E2C1AuditFixtures.NewExecution(experiment, trial);
+            await executions.CreateAndAssignTrialAuthoritativeAsync(execution, trial);
+
+            var scopeId = execution.ScopeExecutionId;
+            var now = DateTime.UtcNow;
+            var records = new[]
+            {
+                new ValidationCandleAccessRecord
+                {
+                    AccessEventId = Guid.NewGuid(),
+                    ScopeExecutionId = scopeId,
+                    ScopeSequenceNumber = 1,
+                    ValidationExperimentId = experiment.Id,
+                    TrialId = trial.Id,
+                    TrialNumber = 1,
+                    CallerComponent = "E2C1B.10K",
+                    AccessPurpose = ValidationCandleAccessPurpose.WarmupLoad,
+                    DatasetPartition = "Warmup",
+                    RequestedCandleCount = 200,
+                    ReturnedCandleCount = 200,
+                    CandleContentFingerprint = "10K-WARM",
+                    AccessedAtUtc = now,
+                    RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion
+                },
+                new ValidationCandleAccessRecord
+                {
+                    AccessEventId = Guid.NewGuid(),
+                    ScopeExecutionId = scopeId,
+                    ScopeSequenceNumber = 2,
+                    ValidationExperimentId = experiment.Id,
+                    TrialId = trial.Id,
+                    TrialNumber = 1,
+                    CallerComponent = "E2C1B.10K",
+                    AccessPurpose = ValidationCandleAccessPurpose.EvaluationRange,
+                    DatasetPartition = "Evaluation",
+                    RequestedCandleCount = 10_000,
+                    ReturnedCandleCount = 10_000,
+                    CandleContentFingerprint = "10K-EVAL",
+                    AccessedAtUtc = now,
+                    RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion
+                },
+                new ValidationCandleAccessRecord
+                {
+                    AccessEventId = Guid.NewGuid(),
+                    ScopeExecutionId = scopeId,
+                    ScopeSequenceNumber = 3,
+                    ValidationExperimentId = experiment.Id,
+                    TrialId = trial.Id,
+                    TrialNumber = 1,
+                    CallerComponent = "E2C1B.10K",
+                    AccessPurpose = ValidationCandleAccessPurpose.EvaluationRange,
+                    DatasetPartition = "Combined",
+                    RequestedCandleCount = 10_200,
+                    ReturnedCandleCount = 10_200,
+                    CandleContentFingerprint = "10K-COMB",
+                    AccessedAtUtc = now,
+                    RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion
+                }
+            };
+
+            using var ambient = ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
+            {
+                AuditExecutionId = execution.AuditExecutionId,
+                ScopeExecutionId = execution.ScopeExecutionId,
+                ExecutionToken = execution.ExecutionToken,
+                AttemptNumber = execution.AttemptNumber,
+                ValidationExperimentId = experiment.Id,
+                ValidationTrialId = trial.Id
+            });
+
+            var trainingScope = new FakeTrainingCandleScope(
+                experiment.Id,
+                scopeId,
+                trial.Id,
+                records,
+                boundAuditExecutionId: execution.AuditExecutionId);
+
+            await recorder.FlushAsync(trainingScope);
+
+            var executionCount = await db.ValidationAuditExecutions
+                .CountAsync(e => e.ValidationTrialId == trial.Id);
+            var batchCount = await db.ValidationAuditBatches
+                .CountAsync(b => b.AuditExecutionId == execution.AuditExecutionId);
+            var eventCount = await db.ValidationCandleAccessAudits
+                .CountAsync(a => a.ValidationExperimentId == experiment.Id
+                                 && a.ScopeExecutionId == scopeId);
+
+            Assert.Equal(1, executionCount);
+            Assert.Equal(1, batchCount);
+            Assert.Equal(3, eventCount);
+        }
+        finally
+        {
+            if (experimentId > 0)
+            {
+                await E2C1AuditFixtures.CleanupAsync(_factory, experimentId);
+            }
+        }
+    }
+
+    [Fact]
     public async Task FixtureCleanup()
     {
         long experimentId = 0;
@@ -1165,6 +1527,52 @@ public sealed class Milestone230E2C1IntegrationTests : IClassFixture<MomoQuantWe
 
         await sp.GetRequiredService<IValidationAuditExecutionRepository>().UpdateAsync(execution);
         return (experiment, trial, execution, batch);
+    }
+
+    private async Task SeedConfirmedSequenceBatchAsync(
+        IServiceProvider sp,
+        ValidationExperiment experiment,
+        ValidationAuditExecution execution,
+        int batchNumber,
+        long sequence,
+        string label)
+    {
+        var eventId = Guid.NewGuid();
+        var access = E2BAuditFixtures.NewAudit(experiment.Id, eventId, execution.ScopeExecutionId, sequence, label);
+        var canonicalizer = new ValidationAccessPayloadCanonicalizer();
+        var hash = canonicalizer.ComputeSha256(access);
+        access.AccessPayloadHash = hash;
+        access.AccessPayloadContractVersion = ValidationAccessPayloadContractVersions.Current;
+
+        var entries = new[]
+        {
+            new ValidationAuditPayloadSetEntry(
+                sequence, eventId, hash, ValidationAccessPayloadContractVersions.Current)
+        };
+        var setHash = _hasher.ComputeSetHash(entries);
+        var (ids, hashes) = _hasher.BuildManifestJsons(entries);
+
+        var batch = new ValidationAuditBatch
+        {
+            AuditBatchId = Guid.NewGuid(),
+            AuditExecutionId = execution.AuditExecutionId,
+            BatchNumber = batchNumber,
+            FirstSequence = sequence,
+            LastSequence = sequence,
+            ExpectedEventCount = 1,
+            ExpectedEventIdsJson = ids,
+            ExpectedPayloadHashesJson = hashes,
+            ExpectedPayloadSetHash = setHash,
+            Status = ValidationAuditBatchStatus.Confirmed,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            ConfirmedAtUtc = DateTime.UtcNow,
+            AuditBatchContractVersion = ValidationAuditBatch.ContractVersionV1,
+            RowVersion = 1
+        };
+        await sp.GetRequiredService<IValidationAuditBatchRepository>().AddAsync(batch);
+        await sp.GetRequiredService<IValidationCandleAccessAuditRepository>()
+            .AddRangeIdempotentByAccessEventIdAsync([access]);
     }
 }
 

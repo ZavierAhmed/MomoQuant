@@ -220,8 +220,23 @@ public sealed partial class ValidationLabService
                     await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
 
                     // Recover / supersede incomplete authoritative audit before access.
-                    var auditExecution = await EnsureAuthoritativeAuditExecutionAsync(
+                    var ensureResult = await EnsureAuthoritativeAuditExecutionAsync(
                         experiment, trial, leaseOwner, cancellationToken);
+                    var auditExecution = ensureResult.Execution;
+
+                    if (ensureResult.FinalizationOnly)
+                    {
+                        await FinalizeTrialAuditWithVerifierAsync(
+                            experiment,
+                            trial,
+                            combo,
+                            fingerprint,
+                            auditExecution,
+                            cancellationToken);
+                        await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
+                        await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
+                        continue;
+                    }
 
                     var trialScopeRequest = new ValidationTrainingCandleScopeRequest
                     {
@@ -361,22 +376,30 @@ public sealed partial class ValidationLabService
                                         return;
                                     }
 
-                                    if (completion.IsComplete
-                                        && auditExecution.Status == ValidationAuditExecutionStatus.Completed
-                                        && trial.AuditCompletionStatus == ValidationAuditCompletionStatus.Complete)
+                                    if (!completion.IsComplete)
                                     {
-                                        var completeness = new ValidationAuditCompletenessResult
-                                        {
-                                            AuditExecutionId = auditExecution.AuditExecutionId,
-                                            IsAuthoritative = true,
-                                            IsTerminal = true,
-                                            IsComplete = true,
-                                            FinalExpectedSequence = auditExecution.FinalExpectedSequence,
-                                            LastConfirmedSequence = auditExecution.LastConfirmedSequence,
-                                            ExpectedEventCount = auditExecution.ExpectedEventCount,
-                                            ConfirmedEventCount = auditExecution.ConfirmedEventCount,
-                                            CompletionCode = ValidationAuditCompletenessCode.Complete
-                                        };
+                                        trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
+                                        trial.ErrorMessage =
+                                            $"Audit finalization failed: {completion.FailureCode ?? completion.CompletionCode.ToString()}.";
+                                        trial.CompletedAtUtc = DateTime.UtcNow;
+                                        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+                                        await ValidationTrainingDbRetry.ExecuteAsync(
+                                            () => _trials.UpdateAsync(trial, cancellationToken));
+                                        return;
+                                    }
+
+                                    var batches = await _auditBatches.GetByAuditExecutionIdAsync(
+                                        auditExecution.AuditExecutionId, cancellationToken);
+                                    var accessRows = (await _candleAccessAudits.GetByExperimentIdAsync(
+                                        experiment.Id, cancellationToken))
+                                        .Where(r => r.ScopeExecutionId == auditExecution.ScopeExecutionId)
+                                        .ToList();
+                                    var completeness = _auditCompletenessVerifier.Verify(
+                                        trial, auditExecution, batches, accessRows);
+
+                                    if (_trialAuditCompletionGate.CanMarkTrialCompleted(
+                                            trial, auditExecution, completeness))
+                                    {
                                         _trialAuditCompletionGate.ApplyCompletedStatus(
                                             trial, auditExecution, completeness);
                                     }
@@ -384,7 +407,7 @@ public sealed partial class ValidationLabService
                                     {
                                         trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
                                         trial.ErrorMessage =
-                                            $"Audit finalization failed: {completion.FailureCode ?? completion.CompletionCode.ToString()}.";
+                                            $"Audit completeness verification failed: {completeness.CompletionCode}.";
                                         trial.CompletedAtUtc = DateTime.UtcNow;
                                         trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
                                     }
@@ -798,9 +821,9 @@ public sealed partial class ValidationLabService
 
     /// <summary>
     /// Ensures the trial has an active authoritative durable audit execution before candle access.
-    /// Recovers/supersedes incomplete prior attempts as needed (WP6/WP10).
+    /// Recovers/supersedes incomplete prior attempts as needed (WP6/WP10, E2C1B).
     /// </summary>
-    private async Task<ValidationAuditExecution> EnsureAuthoritativeAuditExecutionAsync(
+    private async Task<AuthoritativeAuditExecutionEnsureResult> EnsureAuthoritativeAuditExecutionAsync(
         ValidationExperiment experiment,
         ValidationParameterTrial trial,
         string leaseOwner,
@@ -813,7 +836,6 @@ public sealed partial class ValidationLabService
             {
                 EnsureKnownAuditContractVersion(existing);
 
-                // Completed execution is authoritative — sync trial audit status if drifted; never create a second execution.
                 if (existing.Status == ValidationAuditExecutionStatus.Completed)
                 {
                     if (trial.AuditCompletionStatus != ValidationAuditCompletionStatus.Complete)
@@ -822,7 +844,7 @@ public sealed partial class ValidationLabService
                         await _trials.UpdateAsync(trial, cancellationToken).ConfigureAwait(false);
                     }
 
-                    return existing;
+                    return new AuthoritativeAuditExecutionEnsureResult { Execution = existing };
                 }
 
                 if (existing.Status is ValidationAuditExecutionStatus.InProgress
@@ -833,30 +855,48 @@ public sealed partial class ValidationLabService
                     or ValidationAuditExecutionStatus.Failed)
                 {
                     var recovery = await _auditRecovery.RecoverAsync(existing.AuditExecutionId, cancellationToken);
-                    if (recovery.CanContinueSameExecution && !recovery.MustRerunTrial)
+
+                    if (recovery.RecoveryDecision == ValidationAuditRecoveryDecision.FinalizationOnlyRecovery)
                     {
-                        return await _auditExecutions.GetByAuditExecutionIdAsync(
-                            existing.AuditExecutionId, cancellationToken)
-                            ?? existing;
+                        existing = await _auditExecutions.GetByAuditExecutionIdAsync(
+                            existing.AuditExecutionId, cancellationToken) ?? existing;
+                        return new AuthoritativeAuditExecutionEnsureResult
+                        {
+                            Execution = existing,
+                            FinalizationOnly = true,
+                            RecoveryDecision = recovery.RecoveryDecision
+                        };
                     }
 
                     if (recovery.MustRerunTrial
-                        && existing.Status != ValidationAuditExecutionStatus.Completed
-                        && existing.Status != ValidationAuditExecutionStatus.Superseded)
+                        || recovery.RequiresStrategyLabExecution
+                        || recovery.RecoveryDecision == ValidationAuditRecoveryDecision.SupersedeAndRerun)
                     {
-                        // Reload — recovery may have marked RecoveryRequired.
                         existing = await _auditExecutions.GetByAuditExecutionIdAsync(
                             existing.AuditExecutionId, cancellationToken) ?? existing;
                         if (existing.Status != ValidationAuditExecutionStatus.Superseded
                             && existing.Status != ValidationAuditExecutionStatus.Completed)
                         {
-                            return await _auditSupersession.SupersedeForRerunAsync(
+                            var superseded = await _auditSupersession.SupersedeForRerunAsync(
                                 existing.AuditExecutionId,
                                 newExecutionToken: Guid.NewGuid().ToString("N"),
                                 reasonCode: recovery.FailureCode ?? "PREVIOUS_EXECUTION_NOT_TERMINAL",
                                 leaseOwner: leaseOwner,
                                 cancellationToken: cancellationToken);
+                            return new AuthoritativeAuditExecutionEnsureResult
+                            {
+                                Execution = superseded,
+                                RecoveryDecision = ValidationAuditRecoveryDecision.SupersedeAndRerun
+                            };
                         }
+                    }
+
+                    if (recovery.RecoveryDecision == ValidationAuditRecoveryDecision.NoRecoveryNeeded
+                        || recovery.RecoveryDecision == ValidationAuditRecoveryDecision.ConfirmedCommittedBatch)
+                    {
+                        existing = await _auditExecutions.GetByAuditExecutionIdAsync(
+                            existing.AuditExecutionId, cancellationToken) ?? existing;
+                        return new AuthoritativeAuditExecutionEnsureResult { Execution = existing };
                     }
 
                     if (existing.Status is ValidationAuditExecutionStatus.InProgress
@@ -864,19 +904,84 @@ public sealed partial class ValidationLabService
                         or ValidationAuditExecutionStatus.FlushManifested
                         or ValidationAuditExecutionStatus.EventsConfirmed)
                     {
-                        return existing;
+                        return new AuthoritativeAuditExecutionEnsureResult { Execution = existing };
                     }
                 }
             }
         }
 
         var token = Guid.NewGuid().ToString("N");
-        return await _auditExecutionFactory.CreateForTrialAsync(
+        var created = await _auditExecutionFactory.CreateForTrialAsync(
             experiment,
             trial,
             leaseOwner,
             token,
             cancellationToken);
+        return new AuthoritativeAuditExecutionEnsureResult { Execution = created };
+    }
+
+    private async Task FinalizeTrialAuditWithVerifierAsync(
+        ValidationExperiment experiment,
+        ValidationParameterTrial trial,
+        IReadOnlyDictionary<string, string> combo,
+        string fingerprint,
+        ValidationAuditExecution auditExecution,
+        CancellationToken cancellationToken)
+    {
+        var finalExpected = auditExecution.LastConfirmedSequence;
+        if (finalExpected <= 0)
+        {
+            trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
+            trial.ErrorMessage = "Finalization-only recovery requires a positive confirmed sequence.";
+            trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+            await _trials.UpdateAsync(trial, cancellationToken);
+            return;
+        }
+
+        var completion = await _auditFinalizer.CompleteAsync(
+            auditExecution.AuditExecutionId,
+            finalExpected,
+            cancellationToken);
+
+        trial = await _trials.GetByExperimentAndFingerprintAsync(
+            experiment.Id, fingerprint, cancellationToken) ?? trial;
+        auditExecution = await _auditExecutions.GetByAuditExecutionIdAsync(
+            auditExecution.AuditExecutionId, cancellationToken) ?? auditExecution;
+
+        if (!completion.IsComplete)
+        {
+            trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
+            trial.ErrorMessage =
+                $"Audit finalization failed: {completion.FailureCode ?? completion.CompletionCode.ToString()}.";
+            trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+            await _trials.UpdateAsync(trial, cancellationToken);
+            return;
+        }
+
+        var batches = await _auditBatches.GetByAuditExecutionIdAsync(
+            auditExecution.AuditExecutionId, cancellationToken);
+        var accessRows = (await _candleAccessAudits.GetByExperimentIdAsync(experiment.Id, cancellationToken))
+            .Where(r => r.ScopeExecutionId == auditExecution.ScopeExecutionId)
+            .ToList();
+        var completeness = _auditCompletenessVerifier.Verify(trial, auditExecution, batches, accessRows);
+
+        var metricsPassed = string.Equals(trial.GuardrailDecision, "Passed", StringComparison.OrdinalIgnoreCase)
+                            && trial.Status != ValidationTrialStatus.GuardrailRejected
+                            && trial.Status != ValidationTrialStatus.Failed;
+
+        if (metricsPassed
+            && _trialAuditCompletionGate.CanMarkTrialCompleted(trial, auditExecution, completeness))
+        {
+            _trialAuditCompletionGate.ApplyCompletedStatus(trial, auditExecution, completeness);
+        }
+        else if (metricsPassed)
+        {
+            trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
+            trial.ErrorMessage = $"Audit completeness verification failed: {completeness.CompletionCode}.";
+            trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+        }
+
+        await _trials.UpdateAsync(trial, cancellationToken);
     }
 
     private static void EnsureKnownAuditContractVersion(ValidationAuditExecution execution)

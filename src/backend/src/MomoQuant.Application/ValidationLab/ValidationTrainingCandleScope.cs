@@ -59,6 +59,9 @@ public interface IValidationTrainingCandleScope : IValidationSegmentCandleSource
     /// <summary>Stable id for this scope instance; shared by all access events logged here.</summary>
     Guid ScopeExecutionId { get; }
 
+    /// <summary>When set, flush must use the durable audit path and never fall back to legacy.</summary>
+    Guid? BoundAuditExecutionId { get; }
+
     /// <summary>Optional correlation id propagated onto access evidence.</summary>
     string? CorrelationId { get; set; }
 
@@ -175,6 +178,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
 
         ValidationExperimentId = validationExperimentId;
         ScopeExecutionId = scopeExecutionId ?? Guid.NewGuid();
+        BoundAuditExecutionId = null;
         SegmentStartUtc = start;
         ValidationBoundaryUtc = boundary;
         SegmentEndExclusiveUtc = boundary;
@@ -205,7 +209,8 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         ValidationCandlePartitionMetadata partition,
         IReadOnlyList<Candle> warmupCandles,
         IReadOnlyList<Candle> evaluationCandles,
-        Guid? scopeExecutionId = null)
+        Guid? scopeExecutionId = null,
+        Guid? boundAuditExecutionId = null)
     {
         ArgumentNullException.ThrowIfNull(partition);
         ArgumentNullException.ThrowIfNull(warmupCandles);
@@ -213,6 +218,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
 
         ValidationExperimentId = partition.ValidationExperimentId;
         ScopeExecutionId = scopeExecutionId ?? Guid.NewGuid();
+        BoundAuditExecutionId = boundAuditExecutionId;
         Partition = partition;
         SegmentStartUtc = DateTime.SpecifyKind(partition.TrainingEvaluationStartUtc, DateTimeKind.Utc);
         ValidationBoundaryUtc = DateTime.SpecifyKind(partition.ValidationBoundaryUtc, DateTimeKind.Utc);
@@ -512,6 +518,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
     }
 
     public Guid ScopeExecutionId { get; }
+    public Guid? BoundAuditExecutionId { get; }
     public string? CorrelationId { get; set; }
     public long ValidationExperimentId { get; }
     public DateTime SegmentStartUtc { get; }

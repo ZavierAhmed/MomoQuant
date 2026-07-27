@@ -203,9 +203,20 @@ public static class Program
             return Fail($"Audit execution {options.FixtureId} not found for recovery.");
         }
 
+        var batchListBefore = await batches.GetByAuditExecutionIdAsync(execution.AuditExecutionId);
+        var accessRowsBefore = (await audits.GetByExperimentIdAsync(execution.ValidationExperimentId))
+            .Where(r => r.ScopeExecutionId == execution.ScopeExecutionId)
+            .ToList();
+        var trialListBefore = await trials.GetByExperimentIdAsync(execution.ValidationExperimentId);
+        var trialBefore = trialListBefore.First(t => t.Id == execution.ValidationTrialId);
+        var completenessBefore = verifier.Verify(trialBefore, execution, batchListBefore, accessRowsBefore);
+        var beforeRecoveryExecutionStatus = execution.Status;
+        var beforeRecoveryFinalExpectedSequence = execution.FinalExpectedSequence;
+
         var recoveryResult = await recovery.RecoverAsync(execution.AuditExecutionId);
         execution = await executions.GetByAuditExecutionIdAsync(options.FixtureId) ?? execution;
 
+        var finalizerInvoked = false;
         ValidationAuditExecutionCompletionResult? completeResult = null;
         if (options.CrashPoint == "AfterEventsConfirmedBeforeExecutionCompleted"
             && recoveryResult.CanContinueSameExecution
@@ -213,7 +224,7 @@ public static class Program
             && execution.FinalExpectedSequence is null
             && execution.LastConfirmedSequence > 0)
         {
-            // Recover path may declare final sequence and complete when evidence is present.
+            finalizerInvoked = true;
             completeResult = await finalizer.CompleteAsync(
                 execution.AuditExecutionId,
                 execution.LastConfirmedSequence);
@@ -232,6 +243,10 @@ public static class Program
         {
             FixtureId = options.FixtureId,
             CrashPoint = options.CrashPoint,
+            BeforeRecoveryExecutionStatus = beforeRecoveryExecutionStatus.ToString(),
+            BeforeRecoveryCompletenessIsComplete = completenessBefore.IsComplete,
+            BeforeRecoveryCompletenessCode = completenessBefore.CompletionCode.ToString(),
+            BeforeRecoveryFinalExpectedSequence = beforeRecoveryFinalExpectedSequence,
             ExecutionStatus = execution.Status.ToString(),
             LastConfirmedSequence = execution.LastConfirmedSequence,
             FinalExpectedSequence = execution.FinalExpectedSequence,
@@ -247,6 +262,7 @@ public static class Program
             RecoveryFailureCode = recoveryResult.FailureCode,
             CompletenessCode = completeness.CompletionCode.ToString(),
             CompletenessIsComplete = completeness.IsComplete,
+            FinalizerInvoked = finalizerInvoked,
             FinalizerIsComplete = completeResult?.IsComplete,
             FinalizerCode = completeResult?.CompletionCode.ToString(),
             TrialAuditCompletionStatus = trial.AuditCompletionStatus.ToString()
@@ -329,7 +345,9 @@ public static class Program
             ParameterFingerprint = $"fp-{fixtureId:N}"[..Math.Min(64, $"fp-{fixtureId:N}".Length)],
             Status = ValidationTrialStatus.Running,
             StartedAtUtc = now,
-            AuditCompletionStatus = ValidationAuditCompletionStatus.NotEvaluated
+            AuditCompletionStatus = ValidationAuditCompletionStatus.NotEvaluated,
+            StrategyLabRunId = 1,
+            GuardrailDecision = "Qualified"
         };
         db.ValidationParameterTrials.Add(trialNew);
         await db.SaveChangesAsync();
