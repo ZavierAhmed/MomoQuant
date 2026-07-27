@@ -12,29 +12,28 @@ using MomoQuant.Application.ValidationLab.Dtos;
 using MomoQuant.Application.ValidationLab.Synthetic;
 using MomoQuant.Domain.Constants;
 using MomoQuant.Domain.Enums;
-using MomoQuant.Domain.StrategyLab;
 using MomoQuant.Domain.ValidationLab;
 using MomoQuant.Persistence;
 
 namespace MomoQuant.IntegrationTests;
 
 /// <summary>
-/// Milestone 23.0E2C1C — resume orchestration with completed audit executions must not
-/// re-enter StrategyLabRunner when verification-only or fail-closed paths apply.
+/// Milestone 23.0E2C1D — completed-trial revalidation on experiment resume must not skip
+/// or trust prior Completed status without verifier proof.
 /// </summary>
 [Collection("Integration")]
-public sealed class Milestone230E2C1COrchestrationTests
+public sealed class Milestone230E2C1DOrchestrationTests
 {
     [Fact]
-    public async Task ResumeTrial_WithCompletedAuditExecutionAndMissingEvent_FailsClosedWithoutRunner()
+    public async Task ResumeExperiment_WithAlreadyCompletedTrialAndCorruptCompletedAudit_FailsClosed()
     {
-        await using var factory = new E2C1COrchestrationFactory();
+        await using var factory = new E2C1DOrchestrationFactory();
         long? experimentId = null;
         Guid auditExecutionId = Guid.Empty;
 
         try
         {
-            var (id, combo) = await CreatePreparedSingleTrialExperimentAsync(factory, "missing-ev");
+            var (id, combo) = await CreatePreparedSingleTrialExperimentAsync(factory, "completed-corrupt");
             experimentId = id;
 
             await using (var seedScope = factory.Services.CreateAsyncScope())
@@ -51,15 +50,25 @@ public sealed class Milestone230E2C1COrchestrationTests
                     TrialNumber = 1,
                     ParameterSnapshotJson = JsonSerializer.Serialize(combo),
                     ParameterFingerprint = fingerprint,
-                    Status = ValidationTrialStatus.Interrupted,
+                    Status = ValidationTrialStatus.Completed,
                     GuardrailDecision = "Passed",
+                    TrialRankEligibility = ValidationTrialRankEligibility.Eligible,
+                    Rank = 1,
+                    TrainingScore = 1.25m,
                     StrategyLabRunId = 1,
-                    StartedAtUtc = DateTime.UtcNow
+                    StartedAtUtc = DateTime.UtcNow.AddHours(-1),
+                    CompletedAtUtc = DateTime.UtcNow
                 });
 
-                var (experiment, trial, execution, _) = await SeedCompletedAuditAsync(
-                    sp, db, id, fingerprint, "missing-ev");
+                var (_, trial, execution, _) = await SeedCompletedAuditAsync(
+                    sp, db, id, fingerprint, "completed-corrupt");
                 auditExecutionId = execution.AuditExecutionId;
+
+                trial.Status = ValidationTrialStatus.Completed;
+                trial.Rank = 1;
+                trial.TrialRankEligibility = ValidationTrialRankEligibility.Eligible;
+                trial.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete;
+                await trials.UpdateAsync(trial);
 
                 var rows = await sp.GetRequiredService<IValidationCandleAccessAuditRepository>()
                     .GetByExperimentIdAsync(id);
@@ -72,20 +81,10 @@ public sealed class Milestone230E2C1COrchestrationTests
                     ?? throw new InvalidOperationException("Experiment missing.");
                 experimentEntity.Status = ValidationExperimentStatus.TrainingInterrupted;
                 experimentEntity.CurrentStage = "TrainingInterrupted";
+                experimentEntity.SelectedTrialId = trial.Id;
+                experimentEntity.SelectedTrialNumber = trial.TrialNumber;
                 experimentEntity.UpdatedAtUtc = DateTime.UtcNow;
                 await experiments.UpdateAsync(experimentEntity);
-                _ = trial;
-            }
-
-            var batchCountBefore = 0;
-            var accessCountBefore = 0;
-            await using (var beforeScope = factory.Services.CreateAsyncScope())
-            {
-                var sp = beforeScope.ServiceProvider;
-                batchCountBefore = (await sp.GetRequiredService<IValidationAuditBatchRepository>()
-                    .GetByAuditExecutionIdAsync(auditExecutionId)).Count;
-                accessCountBefore = (await sp.GetRequiredService<IValidationCandleAccessAuditRepository>()
-                    .GetByExperimentIdAsync(id)).Count;
             }
 
             await using (var resumeScope = factory.Services.CreateAsyncScope())
@@ -98,20 +97,14 @@ public sealed class Milestone230E2C1COrchestrationTests
             await using (var assertScope = factory.Services.CreateAsyncScope())
             {
                 var sp = assertScope.ServiceProvider;
-                var runner = sp.GetRequiredService<TrackingStrategyLabRunner>();
+                var runner = sp.GetRequiredService<Milestone230E2C1COrchestrationTests.TrackingStrategyLabRunner>();
                 Assert.Equal(0, runner.InvocationCount);
-
-                var batchCountAfter = (await sp.GetRequiredService<IValidationAuditBatchRepository>()
-                    .GetByAuditExecutionIdAsync(auditExecutionId)).Count;
-                Assert.Equal(batchCountBefore, batchCountAfter);
-
-                var accessCountAfter = (await sp.GetRequiredService<IValidationCandleAccessAuditRepository>()
-                    .GetByExperimentIdAsync(id)).Count;
-                Assert.Equal(accessCountBefore, accessCountAfter);
 
                 var trial = (await sp.GetRequiredService<IValidationParameterTrialRepository>()
                     .GetByExperimentIdAsync(id)).Single();
                 Assert.NotEqual(ValidationTrialStatus.Completed, trial.Status);
+                Assert.Null(trial.Rank);
+                Assert.Equal(ValidationTrialRankEligibility.Ineligible, trial.TrialRankEligibility);
                 Assert.NotEqual(ValidationAuditCompletionStatus.Complete, trial.AuditCompletionStatus);
 
                 var execution = await sp.GetRequiredService<IValidationAuditExecutionRepository>()
@@ -126,7 +119,14 @@ public sealed class Milestone230E2C1COrchestrationTests
 
                 var experiment = await sp.GetRequiredService<IValidationExperimentRepository>().GetByIdAsync(id);
                 Assert.NotEqual(ValidationExperimentStatus.TrainingCompleted, experiment!.Status);
-                Assert.NotEqual(ValidationTrialRankEligibility.Eligible, trial.TrialRankEligibility);
+                Assert.Null(experiment.SelectedTrialId);
+
+                var trialList = await sp.GetRequiredService<IValidationParameterTrialRepository>()
+                    .GetByExperimentIdAsync(id);
+                var selection = sp.GetRequiredService<IValidationTrainingSelectionService>()
+                    .FinalizeTrainingSelection(experiment, trialList);
+                Assert.Null(selection.SelectedTrial);
+                Assert.Equal(0, selection.Population.EligibleTrialCount);
             }
         }
         finally
@@ -136,149 +136,6 @@ public sealed class Milestone230E2C1COrchestrationTests
                 await CleanupExperimentAsync(factory, eid);
             }
         }
-    }
-
-    [Fact]
-    public async Task ResumeTrial_WithValidCompletedAuditExecution_UsesVerificationOnly()
-    {
-        await using var factory = new E2C1COrchestrationFactory();
-        long? experimentId = null;
-        Guid auditExecutionId = Guid.Empty;
-
-        try
-        {
-            var (id, combo) = await CreatePreparedSingleTrialExperimentAsync(factory, "valid-ev");
-            experimentId = id;
-
-            await using (var seedScope = factory.Services.CreateAsyncScope())
-            {
-                var sp = seedScope.ServiceProvider;
-                var db = sp.GetRequiredService<MomoQuantDbContext>();
-                var trials = sp.GetRequiredService<IValidationParameterTrialRepository>();
-                var experiments = sp.GetRequiredService<IValidationExperimentRepository>();
-
-                var fingerprint = ValidationLabService.ParameterFingerprint(combo);
-                await trials.AddAsync(new ValidationParameterTrial
-                {
-                    ValidationExperimentId = id,
-                    TrialNumber = 1,
-                    ParameterSnapshotJson = JsonSerializer.Serialize(combo),
-                    ParameterFingerprint = fingerprint,
-                    Status = ValidationTrialStatus.Interrupted,
-                    GuardrailDecision = "Passed",
-                    StrategyLabRunId = 1,
-                    StartedAtUtc = DateTime.UtcNow
-                });
-
-                var (_, trial, execution, _) = await SeedCompletedAuditAsync(
-                    sp, db, id, fingerprint, "valid-ev");
-                auditExecutionId = execution.AuditExecutionId;
-
-                var experimentEntity = await experiments.GetByIdAsync(id)
-                    ?? throw new InvalidOperationException("Experiment missing.");
-                experimentEntity.Status = ValidationExperimentStatus.TrainingInterrupted;
-                experimentEntity.CurrentStage = "TrainingInterrupted";
-                experimentEntity.UpdatedAtUtc = DateTime.UtcNow;
-                await experiments.UpdateAsync(experimentEntity);
-                _ = trial;
-            }
-
-            var batchCountBefore = 0;
-            var accessCountBefore = 0;
-            await using (var beforeScope = factory.Services.CreateAsyncScope())
-            {
-                var sp = beforeScope.ServiceProvider;
-                batchCountBefore = (await sp.GetRequiredService<IValidationAuditBatchRepository>()
-                    .GetByAuditExecutionIdAsync(auditExecutionId)).Count;
-                accessCountBefore = (await sp.GetRequiredService<IValidationCandleAccessAuditRepository>()
-                    .GetByExperimentIdAsync(id)).Count;
-            }
-
-            await using (var resumeScope = factory.Services.CreateAsyncScope())
-            {
-                var lab = resumeScope.ServiceProvider.GetRequiredService<IValidationLabService>();
-                var result = await lab.ResumeTrainingAsync(id);
-                Assert.True(result.Succeeded, result.ErrorMessage);
-            }
-
-            await using (var assertScope = factory.Services.CreateAsyncScope())
-            {
-                var sp = assertScope.ServiceProvider;
-                var runner = sp.GetRequiredService<TrackingStrategyLabRunner>();
-                Assert.Equal(0, runner.InvocationCount);
-
-                var batchCountAfter = (await sp.GetRequiredService<IValidationAuditBatchRepository>()
-                    .GetByAuditExecutionIdAsync(auditExecutionId)).Count;
-                Assert.Equal(batchCountBefore, batchCountAfter);
-
-                var accessCountAfter = (await sp.GetRequiredService<IValidationCandleAccessAuditRepository>()
-                    .GetByExperimentIdAsync(id)).Count;
-                Assert.Equal(accessCountBefore, accessCountAfter);
-
-                var trial = (await sp.GetRequiredService<IValidationParameterTrialRepository>()
-                    .GetByExperimentIdAsync(id)).Single();
-                Assert.Equal(ValidationAuditCompletionStatus.Complete, trial.AuditCompletionStatus);
-
-                var execution = await sp.GetRequiredService<IValidationAuditExecutionRepository>()
-                    .GetByAuditExecutionIdAsync(auditExecutionId);
-                Assert.Equal(ValidationAuditExecutionStatus.Completed, execution!.Status);
-            }
-        }
-        finally
-        {
-            if (experimentId is long eid)
-            {
-                await CleanupExperimentAsync(factory, eid);
-            }
-        }
-    }
-
-    [Fact]
-    public void NoProductionPath_InvokesStrategyLabRunner_WithCompletedAuditExecution()
-    {
-        var trainingPath = ResolveTrainingSourcePath();
-        var source = File.ReadAllText(trainingPath);
-
-        Assert.Contains("ensureResult.VerifiedFinalizationOnly || ensureResult.FinalizationOnly", source, StringComparison.Ordinal);
-        Assert.Contains("ensureResult.FailClosed", source, StringComparison.Ordinal);
-        Assert.Contains("auditExecution.Status == ValidationAuditExecutionStatus.Completed", source, StringComparison.Ordinal);
-        Assert.Contains("Completed audit execution cannot re-enter StrategyLab training scope.", source, StringComparison.Ordinal);
-
-        var verifiedIdx = source.IndexOf("ensureResult.VerifiedFinalizationOnly", StringComparison.Ordinal);
-        var failClosedIdx = source.IndexOf("ensureResult.FailClosed", StringComparison.Ordinal);
-        var completedGuardIdx = source.IndexOf(
-            "auditExecution.Status == ValidationAuditExecutionStatus.Completed",
-            StringComparison.Ordinal);
-        var trialScopeIdx = source.IndexOf(
-            "BoundAuditExecutionId = auditExecution.AuditExecutionId",
-            StringComparison.Ordinal);
-        Assert.True(verifiedIdx >= 0 && verifiedIdx < trialScopeIdx);
-        Assert.True(failClosedIdx >= 0 && failClosedIdx < trialScopeIdx);
-        Assert.True(completedGuardIdx >= 0 && completedGuardIdx < trialScopeIdx);
-        Assert.DoesNotContain(
-            "trial.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete",
-            source[(source.IndexOf("existing.Status == ValidationAuditExecutionStatus.Completed", StringComparison.Ordinal)..Math.Min(source.Length, source.IndexOf("existing.Status == ValidationAuditExecutionStatus.Completed", StringComparison.Ordinal) + 1200))],
-            StringComparison.Ordinal);
-    }
-
-    private static string ResolveTrainingSourcePath()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            var candidate = Path.Combine(
-                dir.FullName,
-                "src", "backend", "src", "MomoQuant.Application", "ValidationLab",
-                "ValidationLabService.Training.cs");
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            dir = dir.Parent;
-        }
-
-        throw new FileNotFoundException("ValidationLabService.Training.cs not found.");
     }
 
     private static async Task<(long ExperimentId, IReadOnlyDictionary<string, string> Combo)> CreatePreparedSingleTrialExperimentAsync(
@@ -313,7 +170,7 @@ public sealed class Milestone230E2C1COrchestrationTests
         var start = end.AddDays(-14);
         var create = await lab.CreateExperimentAsync(new CreateValidationExperimentRequest
         {
-            Name = $"VL-E2C1C {suffix} {Guid.NewGuid():N}",
+            Name = $"VL-E2C1D {suffix} {Guid.NewGuid():N}",
             ExperimentType = ValidationExperimentType.TrainingSearchHoldoutValidation,
             StrategyCode = StrategyCodes.PriceStructureBreakoutRetest,
             StrategyVersion = "1.0.0",
@@ -367,14 +224,8 @@ public sealed class Milestone230E2C1COrchestrationTests
             throw new InvalidOperationException(prepare.ErrorMessage ?? "Prepare failed.");
         }
 
-        var combos = BuildSingleTrialCombo(definitions);
-        return (create.Data.Id, combos);
-    }
-
-    private static IReadOnlyDictionary<string, string> BuildSingleTrialCombo(IStrategyParameterDefinitionProvider definitions)
-    {
-        var grid = ValidationLab224AIntegrityOrchestrationFixture.BuildThreeTrialGrid(definitions);
-        return grid[0];
+        var combos = ValidationLab224AIntegrityOrchestrationFixture.BuildThreeTrialGrid(definitions);
+        return (create.Data.Id, combos[0]);
     }
 
     private static async Task<(
@@ -488,7 +339,7 @@ public sealed class Milestone230E2C1COrchestrationTests
             .ExecuteDeleteAsync();
     }
 
-    private sealed class E2C1COrchestrationFactory : MomoQuantWebApplicationFactory
+    private sealed class E2C1DOrchestrationFactory : MomoQuantWebApplicationFactory
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -496,29 +347,10 @@ public sealed class Milestone230E2C1COrchestrationTests
             builder.ConfigureTestServices(services =>
             {
                 services.RemoveAll<IStrategyLabRunner>();
-                services.AddSingleton<TrackingStrategyLabRunner>();
-                services.AddScoped<IStrategyLabRunner>(sp => sp.GetRequiredService<TrackingStrategyLabRunner>());
+                services.AddSingleton<Milestone230E2C1COrchestrationTests.TrackingStrategyLabRunner>();
+                services.AddScoped<IStrategyLabRunner>(sp =>
+                    sp.GetRequiredService<Milestone230E2C1COrchestrationTests.TrackingStrategyLabRunner>());
             });
-        }
-    }
-
-    public sealed class TrackingStrategyLabRunner : IStrategyLabRunner
-    {
-        public int InvocationCount { get; private set; }
-
-        public Task ExecuteAsync(long runId, CancellationToken cancellationToken = default)
-        {
-            InvocationCount++;
-            return Task.CompletedTask;
-        }
-
-        public Task ExecuteAsync(
-            long runId,
-            StrategyLabExecutionContext executionContext,
-            CancellationToken cancellationToken = default)
-        {
-            InvocationCount++;
-            return Task.CompletedTask;
         }
     }
 }

@@ -8,6 +8,7 @@ using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.ValidationLab;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
+using MomoQuant.Domain.StrategyLab;
 using MomoQuant.Domain.ValidationLab;
 using MomoQuant.Persistence;
 using MomoQuant.Persistence.Repositories;
@@ -94,15 +95,58 @@ public static class Program
         int? inMemoryAccessCountBeforeCrash = null;
         if (options.CrashPoint == "AfterAuditExecutionCreatedBeforeFirstFlush")
         {
-            var segmentStart = now.AddDays(-2);
-            var boundary = now;
-            var trainingScope = new HarnessBoundTrainingScope(
-                fixture.Experiment.Id,
-                execution.ScopeExecutionId,
-                execution.AuditExecutionId,
-                fixture.Trial.Id,
-                segmentStart,
-                boundary);
+            const int requiredWarmup = 5;
+            const int evalCandles = 10;
+            var evalStart = new DateTime(2044, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var evalEnd = evalStart.AddMinutes(evalCandles * 15);
+            var boundary = evalEnd.AddMinutes(30);
+
+            var symbol = await db.Symbols.AsNoTracking()
+                .OrderBy(s => s.Id)
+                .FirstOrDefaultAsync();
+            if (symbol is null)
+            {
+                return Fail("Harness requires at least one symbol in the test database.");
+            }
+
+            fixture.Experiment.ExchangeId = symbol.ExchangeId;
+            fixture.Experiment.SymbolId = symbol.Id;
+            fixture.Experiment.Symbol = symbol.SymbolName;
+            fixture.Experiment.TrainingStartUtc = evalStart;
+            fixture.Experiment.TrainingEndUtc = evalEnd;
+            fixture.Experiment.ValidationStartUtc = boundary;
+            fixture.Experiment.UpdatedAtUtc = DateTime.UtcNow;
+            db.ValidationExperiments.Update(fixture.Experiment);
+            await db.SaveChangesAsync();
+
+            await EnsureHarnessCandlesAsync(
+                db,
+                symbol.ExchangeId,
+                symbol.Id,
+                evalStart,
+                requiredWarmup,
+                evalCandles);
+
+            var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
+            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            {
+                ValidationExperimentId = fixture.Experiment.Id,
+                SymbolId = symbol.Id,
+                SymbolName = symbol.SymbolName,
+                Timeframe = fixture.Experiment.Timeframe,
+                TrainingEvaluationStartUtc = evalStart,
+                TrainingEvaluationEndExclusiveUtc = evalEnd,
+                ValidationBoundaryUtc = boundary,
+                RequiredWarmupCandleCount = requiredWarmup,
+                RequirementsVersion = StrategyExecutionRequirements.Version,
+                StrategyCode = fixture.Experiment.StrategyCode,
+                BoundScopeExecutionId = execution.ScopeExecutionId,
+                BoundAuditExecutionId = execution.AuditExecutionId,
+                BoundExecutionToken = execution.ExecutionToken,
+                BoundAttemptNumber = execution.AttemptNumber
+            };
+
+            await using var trainingScope = await scopeFactory.CreateAsync(scopeRequest);
 
             using (ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
             {
@@ -114,7 +158,16 @@ public static class Program
                 ValidationTrialId = fixture.Trial.Id
             }))
             {
-                trainingScope.RecordEvaluationAccess("AuditRestartHarness");
+                var dataSource = new ValidationTrainingStrategyLabCandleDataSource(trainingScope, "AuditRestartHarness");
+                var run = new StrategyLabRun
+                {
+                    SymbolId = symbol.Id,
+                    Symbol = symbol.SymbolName,
+                    Timeframe = fixture.Experiment.Timeframe,
+                    FromUtc = evalStart,
+                    ToUtc = evalEnd
+                };
+                _ = await dataSource.LoadAsync(run, requiredWarmup);
             }
 
             if (trainingScope.AccessLog.Count < 1)
@@ -448,6 +501,49 @@ public static class Program
         return (experiment, trialNew);
     }
 
+    private static async Task EnsureHarnessCandlesAsync(
+        MomoQuantDbContext db,
+        long exchangeId,
+        long symbolId,
+        DateTime evalStart,
+        int requiredWarmup,
+        int evalCandles)
+    {
+        var warmupStart = evalStart.AddMinutes(-requiredWarmup * 15);
+        var total = requiredWarmup + evalCandles;
+        var existing = await db.Candles
+            .Where(c => c.SymbolId == symbolId && c.OpenTimeUtc >= warmupStart)
+            .CountAsync();
+        if (existing >= total)
+        {
+            return;
+        }
+
+        var candles = new List<Candle>(total);
+        for (var i = 0; i < total; i++)
+        {
+            var open = warmupStart.AddMinutes(i * 15);
+            candles.Add(new Candle
+            {
+                ExchangeId = exchangeId,
+                SymbolId = symbolId,
+                Timeframe = Timeframe.M15,
+                OpenTimeUtc = open,
+                CloseTimeUtc = open.AddMinutes(15),
+                Open = 100m + i,
+                High = 101m + i,
+                Low = 99m + i,
+                Close = 100.5m + i,
+                Volume = 10m + i,
+                IsClosed = true,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        }
+
+        db.Candles.AddRange(candles);
+        await db.SaveChangesAsync();
+    }
+
     private static Guid CreateScopeId(Guid fixtureId)
     {
         // Deterministic, distinct from AuditExecutionId (= fixtureId).
@@ -529,6 +625,7 @@ public static class Program
         var services = new ServiceCollection();
         services.AddSingleton<IConfiguration>(config);
         services.AddPersistence(config);
+        services.AddScoped<IValidationTrainingCandleScopeFactory, ValidationTrainingCandleScopeFactory>();
         services.AddSingleton<IValidationAuditPayloadSetHasher, ValidationAuditPayloadSetHasher>();
         services.AddScoped<IValidationAuditCompletenessVerifier, ValidationAuditCompletenessVerifier>();
         services.AddScoped<IValidationAuditExecutionFactory, ValidationAuditExecutionService>();
@@ -544,89 +641,6 @@ public static class Program
         Console.Error.WriteLine(message);
         return 1;
     }
-}
-
-/// <summary>Minimal bound training scope for crash-before-flush harness (in-memory access only).</summary>
-internal sealed class HarnessBoundTrainingScope : IValidationTrainingCandleScope
-{
-    private readonly List<ValidationCandleAccessRecord> _log = new();
-
-    public HarnessBoundTrainingScope(
-        long experimentId,
-        Guid scopeExecutionId,
-        Guid boundAuditExecutionId,
-        long trialId,
-        DateTime segmentStartUtc,
-        DateTime boundaryUtc)
-    {
-        ValidationExperimentId = experimentId;
-        ScopeExecutionId = scopeExecutionId;
-        BoundAuditExecutionId = boundAuditExecutionId;
-        ActiveTrialId = trialId;
-        SegmentStartUtc = segmentStartUtc;
-        SegmentEndExclusiveUtc = boundaryUtc;
-        ValidationBoundaryUtc = boundaryUtc;
-        Partition = new ValidationCandlePartitionMetadata
-        {
-            ValidationExperimentId = experimentId,
-            RequiredWarmupCandleCount = 0,
-            AvailableWarmupCandleCount = 0,
-            EvaluationCandleCount = 1,
-            TotalCandleCount = 1,
-            WarmupStatus = ValidationWarmupStatus.NotRequired,
-            TrainingEvaluationStartUtc = segmentStartUtc,
-            TrainingEvaluationEndExclusiveUtc = boundaryUtc,
-            ValidationBoundaryUtc = boundaryUtc,
-            SymbolId = 1,
-            SymbolName = "HARNESS",
-            Timeframe = "15m",
-            RequirementsVersion = "Harness"
-        };
-    }
-
-    public Guid ScopeExecutionId { get; }
-    public Guid? BoundAuditExecutionId { get; }
-    public string? CorrelationId { get; set; }
-    public long? ActiveTrialId { get; set; }
-    public int? ActiveTrialNumber { get; set; }
-    public IReadOnlyList<ValidationCandleAccessRecord> AccessLog => _log;
-    public long ValidationExperimentId { get; }
-    public DateTime SegmentStartUtc { get; }
-    public DateTime SegmentEndExclusiveUtc { get; }
-    public DateTime ValidationBoundaryUtc { get; }
-    public ValidationCandlePartitionMetadata Partition { get; }
-
-    public void RecordEvaluationAccess(string callerComponent)
-    {
-        _log.Add(new ValidationCandleAccessRecord
-        {
-            AccessEventId = Guid.NewGuid(),
-            ScopeExecutionId = ScopeExecutionId,
-            ScopeSequenceNumber = 1,
-            ValidationExperimentId = ValidationExperimentId,
-            TrialId = ActiveTrialId,
-            TrialNumber = 1,
-            CallerComponent = callerComponent,
-            AccessPurpose = ValidationCandleAccessPurpose.EvaluationRange,
-            DatasetPartition = "Training",
-            RequestedCandleCount = 1,
-            ReturnedCandleCount = 1,
-            CandleContentFingerprint = "HARNESS01",
-            AccessedAtUtc = DateTime.UtcNow,
-            RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion
-        });
-    }
-
-    public IReadOnlyList<Candle> GetWarmupBefore(DateTime beforeOpenTimeUtc, int count, ValidationCandleAccessContext context) => [];
-    public IReadOnlyList<Candle> GetWarmupBefore(ValidationWarmupAccessRequest request) => [];
-    public IReadOnlyList<Candle> GetEvaluationRange(DateTime? fromUtc, DateTime? toUtcExclusive, ValidationCandleAccessContext context) => [];
-    public IReadOnlyList<Candle> GetEvaluationRange(ValidationEvaluationAccessRequest request) => [];
-    public Candle? GetByOpenTimeUtc(DateTime openTimeUtc, ValidationCandleAccessContext context) => null;
-    public Candle? GetByOpenTimeUtc(DateTime openTimeUtc, string callerComponent) => null;
-    public IReadOnlyList<Candle> GetRange(DateTime? fromUtc, DateTime? toUtcExclusive, string callerComponent) => [];
-    public StrategyLabDataset CreateStrategyLabDataset(ValidationDatasetMaterializationRequest request) =>
-        throw new NotSupportedException();
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
 internal sealed class HarnessArgs

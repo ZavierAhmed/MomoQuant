@@ -1,5 +1,8 @@
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.ValidationLab;
@@ -7,6 +10,7 @@ using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.ValidationLab;
 using MomoQuant.Persistence;
+using MomoQuant.Persistence.Repositories;
 
 namespace MomoQuant.IntegrationTests;
 
@@ -262,4 +266,210 @@ internal sealed class FakeTrainingCandleScope : IValidationTrainingCandleScope
     public StrategyLabDataset CreateStrategyLabDataset(ValidationDatasetMaterializationRequest request) =>
         throw new NotSupportedException();
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+public sealed class E2C1AuditWriteCounters
+{
+    public int ExecutionCreates { get; set; }
+    public int ExecutionUpdates { get; set; }
+    public int ManifestCreates { get; set; }
+    public int ManifestUpdates { get; set; }
+    public int AccessEventPersistCalls { get; set; }
+    public int AccessRowsPersisted { get; set; }
+    public int ConfirmationReadCalls { get; set; }
+    public int FinalizationCalls { get; set; }
+}
+
+internal sealed class CountingAuditExecutionRepository : IValidationAuditExecutionRepository
+{
+    private readonly IValidationAuditExecutionRepository _inner;
+    private readonly E2C1AuditWriteCounters _counters;
+
+    public CountingAuditExecutionRepository(IValidationAuditExecutionRepository inner, E2C1AuditWriteCounters counters)
+    {
+        _inner = inner;
+        _counters = counters;
+    }
+
+    public Task<ValidationAuditExecution?> GetByAuditExecutionIdAsync(Guid auditExecutionId, CancellationToken cancellationToken = default) =>
+        _inner.GetByAuditExecutionIdAsync(auditExecutionId, cancellationToken);
+
+    public Task<IReadOnlyList<ValidationAuditExecution>> GetActiveByTrialIdAsync(long validationTrialId, CancellationToken cancellationToken = default) =>
+        _inner.GetActiveByTrialIdAsync(validationTrialId, cancellationToken);
+
+    public Task<IReadOnlyList<ValidationAuditExecution>> GetByTrialIdAsync(long validationTrialId, CancellationToken cancellationToken = default) =>
+        _inner.GetByTrialIdAsync(validationTrialId, cancellationToken);
+
+    public Task<ValidationAuditExecution> CreateAndAssignTrialAuthoritativeAsync(
+        ValidationAuditExecution execution,
+        ValidationParameterTrial trial,
+        CancellationToken cancellationToken = default)
+    {
+        _counters.ExecutionCreates++;
+        return _inner.CreateAndAssignTrialAuthoritativeAsync(execution, trial, cancellationToken);
+    }
+
+    public Task AddAsync(ValidationAuditExecution execution, CancellationToken cancellationToken = default)
+    {
+        _counters.ExecutionCreates++;
+        return _inner.AddAsync(execution, cancellationToken);
+    }
+
+    public Task UpdateAsync(ValidationAuditExecution execution, CancellationToken cancellationToken = default)
+    {
+        _counters.ExecutionUpdates++;
+        return _inner.UpdateAsync(execution, cancellationToken);
+    }
+}
+
+internal sealed class CountingAuditBatchRepository : IValidationAuditBatchRepository
+{
+    private readonly IValidationAuditBatchRepository _inner;
+    private readonly E2C1AuditWriteCounters _counters;
+
+    public CountingAuditBatchRepository(IValidationAuditBatchRepository inner, E2C1AuditWriteCounters counters)
+    {
+        _inner = inner;
+        _counters = counters;
+    }
+
+    public Task<ValidationAuditBatch?> GetByAuditBatchIdAsync(Guid auditBatchId, CancellationToken cancellationToken = default) =>
+        _inner.GetByAuditBatchIdAsync(auditBatchId, cancellationToken);
+
+    public Task<IReadOnlyList<ValidationAuditBatch>> GetByAuditExecutionIdAsync(Guid auditExecutionId, CancellationToken cancellationToken = default) =>
+        _inner.GetByAuditExecutionIdAsync(auditExecutionId, cancellationToken);
+
+    public Task AddAsync(ValidationAuditBatch batch, CancellationToken cancellationToken = default)
+    {
+        _counters.ManifestCreates++;
+        return _inner.AddAsync(batch, cancellationToken);
+    }
+
+    public Task UpdateAsync(ValidationAuditBatch batch, CancellationToken cancellationToken = default)
+    {
+        _counters.ManifestUpdates++;
+        return _inner.UpdateAsync(batch, cancellationToken);
+    }
+
+    public async Task<ValidationAuditBatch> GetOrCreateManifestAsync(ValidationAuditBatch proposed, CancellationToken cancellationToken = default)
+    {
+        _counters.ManifestCreates++;
+        return await _inner.GetOrCreateManifestAsync(proposed, cancellationToken);
+    }
+}
+
+internal sealed class CountingAccessAuditRepository : IValidationCandleAccessAuditRepository
+{
+    private readonly IValidationCandleAccessAuditRepository _inner;
+    private readonly E2C1AuditWriteCounters _counters;
+
+    public CountingAccessAuditRepository(IValidationCandleAccessAuditRepository inner, E2C1AuditWriteCounters counters)
+    {
+        _inner = inner;
+        _counters = counters;
+    }
+
+    public Task AddRangeAsync(IReadOnlyList<ValidationCandleAccessAudit> audits, CancellationToken cancellationToken = default) =>
+        _inner.AddRangeAsync(audits, cancellationToken);
+
+    public async Task<ValidationAccessBatchPersistResult> AddRangeIdempotentByAccessEventIdAsync(
+        IReadOnlyList<ValidationCandleAccessAudit> audits,
+        CancellationToken cancellationToken = default)
+    {
+        _counters.AccessEventPersistCalls++;
+        _counters.AccessRowsPersisted += audits.Count;
+        return await _inner.AddRangeIdempotentByAccessEventIdAsync(audits, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<ValidationCandleAccessAudit>> GetByExperimentIdAsync(long experimentId, CancellationToken cancellationToken = default) =>
+        _inner.GetByExperimentIdAsync(experimentId, cancellationToken);
+}
+
+internal sealed class CountingAuditFinalizer : IValidationAuditExecutionFinalizer
+{
+    private readonly IValidationAuditExecutionFinalizer _inner;
+    private readonly E2C1AuditWriteCounters _counters;
+
+    public CountingAuditFinalizer(IValidationAuditExecutionFinalizer inner, E2C1AuditWriteCounters counters)
+    {
+        _inner = inner;
+        _counters = counters;
+    }
+
+    public Task<ValidationAuditExecutionCompletionResult> CompleteAsync(
+        Guid auditExecutionId,
+        long finalExpectedSequence,
+        CancellationToken cancellationToken = default)
+    {
+        _counters.FinalizationCalls++;
+        return _inner.CompleteAsync(auditExecutionId, finalExpectedSequence, cancellationToken);
+    }
+}
+
+internal sealed class CountingConfirmationReader : IValidationAccessAuditConfirmationReader
+{
+    private readonly IValidationAccessAuditConfirmationReader _inner;
+    private readonly E2C1AuditWriteCounters _counters;
+
+    public CountingConfirmationReader(
+        IValidationAccessAuditConfirmationReader inner,
+        E2C1AuditWriteCounters counters)
+    {
+        _inner = inner;
+        _counters = counters;
+    }
+
+    public bool UsesFreshContext => _inner.UsesFreshContext;
+
+    public async Task<IReadOnlyList<ValidationCandleAccessAudit>> ReadAsync(
+        IReadOnlyCollection<Guid> accessEventIds,
+        CancellationToken cancellationToken)
+    {
+        _counters.ConfirmationReadCalls++;
+        return await _inner.ReadAsync(accessEventIds, cancellationToken);
+    }
+}
+
+public sealed class E2C1InstrumentationFactory : MomoQuantWebApplicationFactory
+{
+    public E2C1AuditWriteCounters Counters { get; } = new();
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        builder.ConfigureTestServices(services =>
+        {
+            services.AddSingleton(Counters);
+
+            services.RemoveAll<IValidationAuditExecutionRepository>();
+            services.AddScoped<IValidationAuditExecutionRepository>(sp =>
+                new CountingAuditExecutionRepository(
+                    ActivatorUtilities.CreateInstance<ValidationAuditExecutionRepository>(sp),
+                    sp.GetRequiredService<E2C1AuditWriteCounters>()));
+
+            services.RemoveAll<IValidationAuditBatchRepository>();
+            services.AddScoped<IValidationAuditBatchRepository>(sp =>
+                new CountingAuditBatchRepository(
+                    ActivatorUtilities.CreateInstance<ValidationAuditBatchRepository>(sp),
+                    sp.GetRequiredService<E2C1AuditWriteCounters>()));
+
+            services.RemoveAll<IValidationCandleAccessAuditRepository>();
+            services.AddScoped<IValidationCandleAccessAuditRepository>(sp =>
+                new CountingAccessAuditRepository(
+                    ActivatorUtilities.CreateInstance<ValidationCandleAccessAuditRepository>(sp),
+                    sp.GetRequiredService<E2C1AuditWriteCounters>()));
+
+            services.RemoveAll<IValidationAccessAuditConfirmationReader>();
+            services.AddScoped<IValidationAccessAuditConfirmationReader>(sp =>
+                new CountingConfirmationReader(
+                    ActivatorUtilities.CreateInstance<ValidationAccessAuditConfirmationReader>(sp),
+                    sp.GetRequiredService<E2C1AuditWriteCounters>()));
+
+            services.RemoveAll<IValidationAuditExecutionFinalizer>();
+            services.AddScoped<IValidationAuditExecutionFinalizer>(sp =>
+                new CountingAuditFinalizer(
+                    ActivatorUtilities.CreateInstance<ValidationAuditExecutionFinalizer>(sp),
+                    sp.GetRequiredService<E2C1AuditWriteCounters>()));
+        });
+    }
 }

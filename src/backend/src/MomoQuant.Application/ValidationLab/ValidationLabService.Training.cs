@@ -197,7 +197,16 @@ public sealed partial class ValidationLabService
                     var trial = await _trials.GetByExperimentAndFingerprintAsync(experiment.Id, fingerprint, cancellationToken)
                         ?? throw new InvalidOperationException($"Trial row missing for fingerprint {fingerprint}.");
 
-                    if (trial.Status is ValidationTrialStatus.Completed or ValidationTrialStatus.GuardrailRejected)
+                    if (trial.Status == ValidationTrialStatus.GuardrailRejected)
+                    {
+                        await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
+                        await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
+                        continue;
+                    }
+
+                    var revalidateCompletedTrial = isResume && trial.Status == ValidationTrialStatus.Completed;
+
+                    if (!revalidateCompletedTrial && trial.Status == ValidationTrialStatus.Completed)
                     {
                         await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
                         await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
@@ -214,10 +223,18 @@ public sealed partial class ValidationLabService
                         continue;
                     }
 
-                    trial.Status = ValidationTrialStatus.Running;
-                    trial.StartedAtUtc = DateTime.UtcNow;
-                    trial.ErrorMessage = null;
-                    await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                    if (!revalidateCompletedTrial)
+                    {
+                        trial.Status = ValidationTrialStatus.Running;
+                        trial.StartedAtUtc = DateTime.UtcNow;
+                        trial.ErrorMessage = null;
+                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                    }
+                    else
+                    {
+                        trial.ErrorMessage = null;
+                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                    }
 
                     // Recover / supersede incomplete authoritative audit before access.
                     var ensureResult = await EnsureAuthoritativeAuditExecutionAsync(
@@ -226,11 +243,12 @@ public sealed partial class ValidationLabService
 
                     if (ensureResult.FailClosed)
                     {
-                        trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
-                        trial.ErrorMessage =
-                            $"Completed audit execution failed verifier revalidation: {ensureResult.CompletenessCode?.ToString() ?? "FailClosed"}.";
-                        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
-                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                        await ApplyCompletedTrialAuditRevalidationFailureAsync(
+                            experiment,
+                            trial,
+                            ensureResult.CompletenessCode,
+                            $"Completed audit execution failed verifier revalidation: {ensureResult.CompletenessCode?.ToString() ?? "FailClosed"}.",
+                            cancellationToken);
                         await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
                         await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
                         continue;
@@ -252,11 +270,12 @@ public sealed partial class ValidationLabService
 
                     if (auditExecution.Status == ValidationAuditExecutionStatus.Completed)
                     {
-                        trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
-                        trial.ErrorMessage =
-                            "Completed audit execution cannot re-enter StrategyLab training scope.";
-                        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
-                        await ValidationTrainingDbRetry.ExecuteAsync(() => _trials.UpdateAsync(trial, cancellationToken));
+                        await ApplyCompletedTrialAuditRevalidationFailureAsync(
+                            experiment,
+                            trial,
+                            null,
+                            "Completed audit execution cannot re-enter StrategyLab training scope.",
+                            cancellationToken);
                         await UpdateExperimentProgressAsync(experiment, combos.Count, cancellationToken);
                         await _trainingLease.HeartbeatAsync(experiment.Id, leaseOwner, TrainingLeaseTtl, cancellationToken);
                         continue;
@@ -1017,11 +1036,12 @@ public sealed partial class ValidationLabService
 
         if (!completion.IsComplete)
         {
-            trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
-            trial.ErrorMessage =
-                $"Audit finalization failed: {completion.FailureCode ?? completion.CompletionCode.ToString()}.";
-            trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
-            await _trials.UpdateAsync(trial, cancellationToken);
+            await ApplyCompletedTrialAuditRevalidationFailureAsync(
+                experiment,
+                trial,
+                completion.CompletionCode,
+                $"Audit finalization failed: {completion.FailureCode ?? completion.CompletionCode.ToString()}.",
+                cancellationToken);
             return;
         }
 
@@ -1043,9 +1063,42 @@ public sealed partial class ValidationLabService
         }
         else if (metricsPassed)
         {
-            trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
-            trial.ErrorMessage = $"Audit completeness verification failed: {completeness.CompletionCode}.";
-            trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+            await ApplyCompletedTrialAuditRevalidationFailureAsync(
+                experiment,
+                trial,
+                completeness.CompletionCode,
+                $"Audit completeness verification failed: {completeness.CompletionCode}.",
+                cancellationToken);
+            return;
+        }
+
+        await _trials.UpdateAsync(trial, cancellationToken);
+    }
+
+    private async Task ApplyCompletedTrialAuditRevalidationFailureAsync(
+        ValidationExperiment experiment,
+        ValidationParameterTrial trial,
+        ValidationAuditCompletenessCode? completenessCode,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        trial.Status = ValidationTrialStatus.AuditPersistenceFailed;
+        trial.AuditCompletionStatus = ValidationAuditCompletionStatus.RecoveryRequired;
+        trial.ErrorMessage = message;
+        trial.Rank = null;
+        trial.TrialRankEligibility = ValidationTrialRankEligibility.Ineligible;
+        trial.RankIneligibleReasonsJson = JsonSerializer.Serialize(
+            new[] { completenessCode?.ToString() ?? "AuditEvidenceRevalidationFailed" },
+            JsonOptions);
+
+        if (experiment.SelectedTrialId == trial.Id)
+        {
+            experiment.SelectedTrialId = null;
+            experiment.SelectedTrialNumber = null;
+            experiment.SelectedTrialParameterSnapshotJson = null;
+            experiment.SelectedTrialParameterFingerprint = null;
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
         }
 
         await _trials.UpdateAsync(trial, cancellationToken);
