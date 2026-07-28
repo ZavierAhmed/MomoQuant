@@ -1454,7 +1454,44 @@ public sealed partial class ValidationLabService
         CancellationToken cancellationToken,
         string leaseOwner)
     {
-        var trialEntities = (await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken)).ToList();
+        // Milestone 23.0E2C3A1 — scan readable negative evidence before population load / revalidation.
+        if (await TryBlockTrainingOnNegativeEvidenceAsync(experiment, draft, cancellationToken))
+        {
+            return await ApplyCleanupOutcomeToResultAsync(
+                experiment,
+                leaseOwner,
+                ServiceResult<ValidationExperimentDto>.Fail(
+                    experiment.ErrorMessage
+                    ?? ValidationTrainingFailureHandler.UserSafeLeakageMessage,
+                    experiment.PrimaryFailureReason
+                    ?? ValidationTrainingFailureCodes.ValidationDataLeakage),
+                cancellationToken);
+        }
+
+        var trialPopulationLoad = await ValidationAuthoritativeEvaluationSafety.TryGetTrialsByExperimentIdAsync(
+            _trials, experiment, cancellationToken);
+        if (!trialPopulationLoad.Succeeded)
+        {
+            var loadAggregate = trialPopulationLoad.FailureAggregate!;
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
+            experiment.IsQualificationCapable = false;
+            experiment.Status = ValidationExperimentStatus.Failed;
+            experiment.CurrentStage = "AuditPersistenceFailed";
+            experiment.ErrorMessage = loadAggregate.PrimaryFailure?.UserSafeMessage
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage;
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
+            return await ApplyCleanupOutcomeToResultAsync(
+                experiment,
+                leaseOwner,
+                ServiceResult<ValidationExperimentDto>.Fail(
+                    experiment.ErrorMessage,
+                    loadAggregate.PrimaryFailure?.Code
+                    ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed),
+                cancellationToken);
+        }
+
+        var trialEntities = trialPopulationLoad.Trials!.ToList();
         var useSnapshotSelection =
             ValidationMetricsContract.IsPopulationPathMetricsVersion(experiment.ValidationMetricsVersion);
 
@@ -1674,7 +1711,7 @@ public sealed partial class ValidationLabService
                     cancellationToken);
             }
         }
-        else
+        else if (experiment.LeakageAuditStatus != ValidationLeakageAuditStatus.Failed)
         {
             experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.NotAvailable;
         }
@@ -1703,8 +1740,30 @@ public sealed partial class ValidationLabService
             && selection.IntegrityStatus != ValidationSelectionIntegrityStatus.InfrastructureOnlyFallback
             && ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
         {
-            var selectedFresh = await _trials.GetByExperimentAndFingerprintAsync(
-                experiment.Id, winner.ParameterFingerprint, cancellationToken) ?? winner;
+            var selectedReload = await ValidationAuthoritativeEvaluationSafety.TryGetTrialByFingerprintAsync(
+                _trials, experiment, winner.ParameterFingerprint, cancellationToken);
+            if (!selectedReload.Succeeded)
+            {
+                var reloadAggregate = selectedReload.FailureAggregate!;
+                ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, reloadAggregate);
+                experiment.IsQualificationCapable = false;
+                experiment.Status = ValidationExperimentStatus.Failed;
+                experiment.CurrentStage = "AuditPersistenceFailed";
+                experiment.ErrorMessage = reloadAggregate.PrimaryFailure?.UserSafeMessage
+                    ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage;
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return await ApplyCleanupOutcomeToResultAsync(
+                    experiment,
+                    leaseOwner,
+                    ServiceResult<ValidationExperimentDto>.Fail(
+                        experiment.ErrorMessage,
+                        reloadAggregate.PrimaryFailure?.Code
+                        ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed),
+                    cancellationToken);
+            }
+
+            var selectedFresh = selectedReload.Trial ?? winner;
             var selectedAuditAttempt = await ValidationAuthoritativeEvaluationSafety.TryEvaluateTrialAsync(
                 _authoritativeAuditQualification,
                 experiment,
@@ -1806,6 +1865,62 @@ public sealed partial class ValidationLabService
     }
 
     /// <summary>
+    /// Milestone 23.0E2C3A1 — observe readable negative evidence before lower-precedence blockers.
+    /// Returns true when training must fail closed on Boundary or access-load AuditDurability.
+    /// </summary>
+    private async Task<bool> TryBlockTrainingOnNegativeEvidenceAsync(
+        ValidationExperiment experiment,
+        DraftConfiguration draft,
+        CancellationToken cancellationToken)
+    {
+        if (experiment.ValidationStartUtc is null
+            || experiment.TrainingStartUtc is null
+            || experiment.TrainingEndUtc is null)
+        {
+            return false;
+        }
+
+        var optimizerFp = _parameterFingerprint.ComputeFingerprint(draft.Parameters);
+        IReadOnlyList<ValidationCandleAccessAudit> allAudits;
+        try
+        {
+            allAudits = await _candleAccessAudits.GetByExperimentIdAsync(experiment.Id, cancellationToken);
+        }
+        catch (Exception loadEx)
+        {
+            var loadAggregate = ValidationAuthoritativeEvaluationSafety.ObserveRepositoryException(
+                experiment, loadEx);
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
+            experiment.IsQualificationCapable = false;
+            experiment.Status = ValidationExperimentStatus.Failed;
+            experiment.CurrentStage = "AuditPersistenceFailed";
+            experiment.ErrorMessage = loadAggregate.PrimaryFailure?.UserSafeMessage
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage;
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
+            return true;
+        }
+
+        var deniedOrLeakage = ValidationNegativeEvidenceGate.Scan(allAudits);
+        if (deniedOrLeakage.Count == 0)
+        {
+            return false;
+        }
+
+        var aggregate = ValidationNegativeEvidenceGate.BuildBoundaryAggregate(experiment);
+        ValidationNegativeEvidenceGate.UpdateLeakageAuditJsonFromNegativeRows(
+            experiment, deniedOrLeakage, _leakageAuditor, optimizerFp);
+        ValidationNegativeEvidenceGate.ApplyBoundaryBlock(experiment, aggregate, invalidateTentativeSelection: true);
+        experiment.Status = ValidationExperimentStatus.Failed;
+        experiment.CurrentStage = "LeakageDetected";
+        experiment.ErrorMessage = aggregate.PrimaryFailure?.UserSafeMessage
+            ?? ValidationTrainingFailureHandler.UserSafeLeakageMessage;
+        experiment.UpdatedAtUtc = DateTime.UtcNow;
+        await _experiments.UpdateAsync(experiment, cancellationToken);
+        return true;
+    }
+
+    /// <summary>
     /// Returns true when leakage finalization blocks training completion.
     /// </summary>
     private async Task<bool> TryFinalizeLeakageOrBlockTrainingAsync(
@@ -1823,10 +1938,9 @@ public sealed partial class ValidationLabService
         }
         catch (Exception loadEx)
         {
-            var loadAggregate = ValidationAuthoritativeEvaluationSafety.ObserveEvaluatorException(
+            var loadAggregate = ValidationAuthoritativeEvaluationSafety.ObserveRepositoryException(
                 experiment,
-                loadEx,
-                ValidationTrainingFailurePhase.AuditFinalization);
+                loadEx);
             ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
             experiment.IsQualificationCapable = false;
             experiment.Status = ValidationExperimentStatus.Failed;
@@ -1895,7 +2009,16 @@ public sealed partial class ValidationLabService
         CancellationToken cancellationToken)
     {
         _ = draft;
-        var trials = await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken);
+        var trialLoad = await ValidationAuthoritativeEvaluationSafety.TryGetTrialsByExperimentIdAsync(
+            _trials, experiment, cancellationToken);
+        if (!trialLoad.Succeeded)
+        {
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, trialLoad.FailureAggregate!);
+            experiment.IsQualificationCapable = false;
+            return;
+        }
+
+        var trials = trialLoad.Trials!;
         var evaluations = new List<(ValidationParameterTrial Trial, ValidationAuthoritativeAuditQualificationResult Evaluation)>();
         foreach (var trial in trials)
         {

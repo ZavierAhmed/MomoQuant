@@ -42,6 +42,69 @@ public sealed class E2C2SeamControls
     public bool ThrowOnAuditFinalizer { get; set; }
     public bool ThrowOnCompletenessVerifier { get; set; }
     public bool ThrowOnAccessAuditGet { get; set; }
+    /// <summary>One-shot: next <c>GetByExperimentIdAsync</c> throws (skip count honored first).</summary>
+    public bool ArmTrialPopulationGetFailure { get; set; }
+    /// <summary>Gets to allow after arm before the one-shot failure fires.</summary>
+    public int TrialPopulationGetFailureSkipCount { get; set; }
+    /// <summary>
+    /// After audit finalizer, fail on the Nth <c>GetByExperimentIdAsync</c> (1-based).
+    /// Use 2 when the first post-finalizer get is progress and the second is finalize.
+    /// </summary>
+    public int? FailTrialPopulationGetOnNthAfterFinalizer { get; set; }
+    private int _trialPopulationGetsAfterFinalizer;
+    /// <summary>Arm population-get failure after non-training runner completes.</summary>
+    public bool ArmTrialPopulationGetFailureAfterNonTrainingRun { get; set; }
+    /// <summary>One-shot: next <c>GetByExperimentAndFingerprintAsync</c> throws.</summary>
+    public bool ArmTrialFingerprintGetFailure { get; set; }
+    /// <summary>After non-training runner, inject denied candle-access evidence for this experiment.</summary>
+    public long? InjectDeniedEvidenceAfterNonTrainingRunForExperimentId { get; set; }
+    private int _leaseReleaseInvocationCount;
+
+    public int LeaseReleaseInvocationCount => Volatile.Read(ref _leaseReleaseInvocationCount);
+
+    public void IncrementLeaseReleaseInvocation() => Interlocked.Increment(ref _leaseReleaseInvocationCount);
+
+    /// <summary>Returns true and clears the arm when the next population get should throw.</summary>
+    public bool TryConsumeTrialPopulationGetFailure()
+    {
+        if (FailTrialPopulationGetOnNthAfterFinalizer is int nth && AuditFinalizerInvoked)
+        {
+            _trialPopulationGetsAfterFinalizer++;
+            if (_trialPopulationGetsAfterFinalizer == nth)
+            {
+                FailTrialPopulationGetOnNthAfterFinalizer = null;
+                return true;
+            }
+
+            return false;
+        }
+
+        if (ArmTrialPopulationGetFailureAfterNonTrainingRun)
+        {
+            // Armed by runner after non-training completion; already flipped to ArmTrialPopulationGetFailure.
+        }
+
+        if (!ArmTrialPopulationGetFailure)
+        {
+            return false;
+        }
+
+        if (TrialPopulationGetFailureSkipCount > 0)
+        {
+            TrialPopulationGetFailureSkipCount--;
+            return false;
+        }
+
+        ArmTrialPopulationGetFailure = false;
+        return true;
+    }
+
+    public void ArmPopulationGetFailureAfterNonTrainingRunner()
+    {
+        ArmTrialPopulationGetFailureAfterNonTrainingRun = false;
+        ArmTrialPopulationGetFailure = true;
+        TrialPopulationGetFailureSkipCount = 0;
+    }
     public bool FailScopeDisposal { get; set; }
     public int FailExperimentUpdateCount { get; set; }
     public int FailTrialUpdateCount { get; set; }
@@ -84,6 +147,14 @@ public sealed class E2C2SeamControls
         ThrowOnAuditFinalizer = false;
         ThrowOnCompletenessVerifier = false;
         ThrowOnAccessAuditGet = false;
+        ArmTrialPopulationGetFailure = false;
+        TrialPopulationGetFailureSkipCount = 0;
+        FailTrialPopulationGetOnNthAfterFinalizer = null;
+        _trialPopulationGetsAfterFinalizer = 0;
+        ArmTrialPopulationGetFailureAfterNonTrainingRun = false;
+        ArmTrialFingerprintGetFailure = false;
+        InjectDeniedEvidenceAfterNonTrainingRunForExperimentId = null;
+        Volatile.Write(ref _leaseReleaseInvocationCount, 0);
         FailScopeDisposal = false;
         FailExperimentUpdateCount = 0;
         FailTrialUpdateCount = 0;
@@ -509,6 +580,12 @@ internal sealed class E2C2StrategyLabRunner : IStrategyLabRunner
 
             await CompleteGenericRunAsync(runId, cancellationToken);
             await MaybeCorruptAuditAfterNonTrainingAsync(cancellationToken);
+            await MaybeInjectDeniedEvidenceAfterNonTrainingAsync(cancellationToken);
+            if (_controls.ArmTrialPopulationGetFailureAfterNonTrainingRun)
+            {
+                _controls.ArmPopulationGetFailureAfterNonTrainingRunner();
+            }
+
             return;
         }
 
@@ -587,6 +664,29 @@ internal sealed class E2C2StrategyLabRunner : IStrategyLabRunner
                     .ExecuteDeleteAsync(cancellationToken);
                 break;
         }
+    }
+
+    private async Task MaybeInjectDeniedEvidenceAfterNonTrainingAsync(CancellationToken cancellationToken)
+    {
+        if (_controls.InjectDeniedEvidenceAfterNonTrainingRunForExperimentId is not long experimentId)
+        {
+            return;
+        }
+
+        _controls.InjectDeniedEvidenceAfterNonTrainingRunForExperimentId = null;
+
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var denied = E2BAuditFixtures.NewAudit(
+            experimentId,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            1,
+            "E2C3A1-PostRunnerDenied",
+            wasDenied: true);
+        denied.DenialCode = "ValidationDataLeakageDetected";
+        denied.DenialReason = "denied after validation runner completion";
+        await scope.ServiceProvider.GetRequiredService<IValidationCandleAccessAuditRepository>()
+            .AddRangeIdempotentByAccessEventIdAsync([denied], cancellationToken);
     }
 
     private async Task CompleteGenericRunAsync(long runId, CancellationToken cancellationToken)
@@ -873,6 +973,7 @@ internal sealed class E2C2LeaseDecorator : IValidationTrainingExecutionLeaseServ
         string leaseOwner,
         CancellationToken cancellationToken = default)
     {
+        _controls.IncrementLeaseReleaseInvocation();
         if (_controls.FailLeaseRelease)
         {
             throw new OperationCanceledException("E2C2 simulated lease release failure.");
@@ -1090,14 +1191,27 @@ internal sealed class E2C2TrialRepositoryDecorator : IValidationParameterTrialRe
 
     public Task<IReadOnlyList<ValidationParameterTrial>> GetByExperimentIdAsync(
         long experimentId,
-        CancellationToken cancellationToken = default) =>
-        _inner.GetByExperimentIdAsync(experimentId, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        if (_controls.TryConsumeTrialPopulationGetFailure())
+        {
+            throw new InvalidOperationException("E2C2 simulated trial population repository failure.");
+        }
+
+        return _inner.GetByExperimentIdAsync(experimentId, cancellationToken);
+    }
 
     public Task<ValidationParameterTrial?> GetByExperimentAndFingerprintAsync(
         long experimentId,
         string parameterFingerprint,
         CancellationToken cancellationToken = default)
     {
+        if (_controls.ArmTrialFingerprintGetFailure)
+        {
+            _controls.ArmTrialFingerprintGetFailure = false;
+            throw new InvalidOperationException("E2C2 simulated trial fingerprint repository failure.");
+        }
+
         if (_controls.ArmTrialFingerprintGetFailureAfterFinalizer && _controls.AuditFinalizerInvoked)
         {
             _controls.ArmTrialFingerprintGetFailureAfterFinalizer = false;

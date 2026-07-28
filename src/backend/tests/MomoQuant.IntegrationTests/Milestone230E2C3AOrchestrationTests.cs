@@ -314,22 +314,31 @@ public sealed class Milestone230E2C3AOrchestrationTests
             experimentId = id;
             await RunSuccessfulTrainingAndFreezeAsync(factory, id, combo);
 
-            factory.Controls.CorruptAuthoritativeAuditAfterNonTrainingRunForExperimentId = id;
-
-            await using (var seedScope = factory.Services.CreateAsyncScope())
+            await using (var confirmScope = factory.Services.CreateAsyncScope())
             {
-                await AddDeniedForeignAuditAsync(seedScope.ServiceProvider, id, "E2C3A-DuringVal");
+                var audits = await confirmScope.ServiceProvider
+                    .GetRequiredService<IValidationCandleAccessAuditRepository>()
+                    .GetByExperimentIdAsync(id);
+                Assert.Empty(ValidationLeakageEvidenceSelector.CollectNegativeBlockingEvidence(audits));
             }
+
+            factory.Controls.InjectDeniedEvidenceAfterNonTrainingRunForExperimentId = id;
+            var runnerBefore = factory.Controls.RunnerInvocationCount;
 
             await using var scope = factory.Services.CreateAsyncScope();
             var validation = await scope.ServiceProvider.GetRequiredService<IValidationLabService>()
                 .RunValidationAsync(id);
             Assert.False(validation.Succeeded);
+            Assert.Equal(runnerBefore + 1, factory.Controls.RunnerInvocationCount);
 
             var experiment = await ReloadExperimentAsync(scope, id);
-            Assert.NotEqual(StrategyRobustnessDecision.Passed, experiment.StrategyRobustnessDecision);
-            Assert.NotEqual(ValidationRevealStatus.Revealed, experiment.ValidationRevealStatus);
+            AssertStructuredBoundaryRecords(experiment);
             Assert.False(experiment.IsQualificationCapable);
+            Assert.NotEqual(ValidationRevealStatus.Revealed, experiment.ValidationRevealStatus);
+            Assert.Null(experiment.ValidationRevealedAtUtc);
+            Assert.NotEqual(StrategyRobustnessDecision.Passed, experiment.StrategyRobustnessDecision);
+            Assert.NotEqual(ValidationExperimentStatus.Completed, experiment.Status);
+            E2C2FailureReasonHelpers.AssertNoSensitiveMessages(experiment, validation.ErrorMessage);
         }
         finally
         {

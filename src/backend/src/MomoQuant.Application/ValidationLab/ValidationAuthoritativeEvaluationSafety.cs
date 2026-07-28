@@ -1,9 +1,11 @@
+using MomoQuant.Application.Abstractions;
 using MomoQuant.Domain.ValidationLab;
 
 namespace MomoQuant.Application.ValidationLab;
 
 /// <summary>
-/// Milestone 23.0E2C3A — fail-closed wrappers for authoritative audit qualification evaluation.
+/// Milestone 23.0E2C3A / E2C3A1 — fail-closed wrappers for authoritative audit qualification
+/// evaluation and the repository reads required to reach those gates.
 /// Never exposes raw exception, SQL, connection, or payload details to callers.
 /// </summary>
 public static class ValidationAuthoritativeEvaluationSafety
@@ -23,6 +25,25 @@ public static class ValidationAuthoritativeEvaluationSafety
 
         var aggregate = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
         aggregate.Observe(exception, phase ?? ClassifyExceptionPhase(exception));
+        return aggregate;
+    }
+
+    /// <summary>
+    /// Repository / evidence-loading failures always classify as AuditDurability / AuditFinalization.
+    /// Phase is structural — never derived from exception messages.
+    /// </summary>
+    public static ValidationTrainingFailureAggregate ObserveRepositoryException(
+        ValidationExperiment experiment,
+        Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(experiment);
+        ArgumentNullException.ThrowIfNull(exception);
+
+        var aggregate = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
+        aggregate.Observe(
+            exception,
+            ValidationTrainingFailurePhase.AuditFinalization,
+            ValidationTrainingFailureHandler.UserSafeAuditPersistenceMessage);
         return aggregate;
     }
 
@@ -67,6 +88,48 @@ public static class ValidationAuthoritativeEvaluationSafety
         catch (Exception ex)
         {
             return (false, null, ObserveEvaluatorException(experiment, ex));
+        }
+    }
+
+    public static async Task<(bool Succeeded, IReadOnlyList<ValidationParameterTrial>? Trials, ValidationTrainingFailureAggregate? FailureAggregate)> TryGetTrialsByExperimentIdAsync(
+        IValidationParameterTrialRepository trials,
+        ValidationExperiment experiment,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(trials);
+        ArgumentNullException.ThrowIfNull(experiment);
+
+        try
+        {
+            var loaded = await trials.GetByExperimentIdAsync(experiment.Id, cancellationToken)
+                .ConfigureAwait(false);
+            return (true, loaded, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, null, ObserveRepositoryException(experiment, ex));
+        }
+    }
+
+    public static async Task<(bool Succeeded, ValidationParameterTrial? Trial, ValidationTrainingFailureAggregate? FailureAggregate)> TryGetTrialByFingerprintAsync(
+        IValidationParameterTrialRepository trials,
+        ValidationExperiment experiment,
+        string parameterFingerprint,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(trials);
+        ArgumentNullException.ThrowIfNull(experiment);
+
+        try
+        {
+            var trial = await trials.GetByExperimentAndFingerprintAsync(
+                    experiment.Id, parameterFingerprint, cancellationToken)
+                .ConfigureAwait(false);
+            return (true, trial, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, null, ObserveRepositoryException(experiment, ex));
         }
     }
 }

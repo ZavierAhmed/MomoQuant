@@ -773,7 +773,8 @@ public sealed partial class ValidationLabService : IValidationLabService
             return negativeBlock;
         }
 
-        if (!experiment.IsQualificationCapable)
+        if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment)
+            && !experiment.IsQualificationCapable)
         {
             return ServiceResult<ValidationExperimentDto>.Fail(
                 "Freeze blocked: experiment is not qualification-capable.");
@@ -798,7 +799,23 @@ public sealed partial class ValidationLabService : IValidationLabService
                 + "metric snapshot does not match the persisted RawStrategy training segment result.");
         }
 
-        var trialEntities = (await _trials.GetByExperimentIdAsync(id, cancellationToken)).ToList();
+        var trialPopulationLoad = await ValidationAuthoritativeEvaluationSafety.TryGetTrialsByExperimentIdAsync(
+            _trials, experiment, cancellationToken);
+        if (!trialPopulationLoad.Succeeded)
+        {
+            var loadAggregate = trialPopulationLoad.FailureAggregate!;
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
+            experiment.IsQualificationCapable = false;
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
+            return ServiceResult<ValidationExperimentDto>.Fail(
+                loadAggregate.PrimaryFailure?.UserSafeMessage
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                loadAggregate.PrimaryFailure?.Code
+                ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        var trialEntities = trialPopulationLoad.Trials!.ToList();
         if (!_selectionIntegrity.CanFreeze(experiment, trialEntities, out var freezeBlockReason))
         {
             if (experiment.IsQualificationCapable
@@ -971,21 +988,7 @@ public sealed partial class ValidationLabService : IValidationLabService
                 $"Validation requires ConfigurationFrozen status (current: {experiment.Status}).");
         }
 
-        var trialEntities = (await _trials.GetByExperimentIdAsync(id, cancellationToken)).ToList();
-        if (!_selectionIntegrity.CanStartValidation(experiment, trialEntities, out var validationBlockReason))
-        {
-            AppendDiagnostic(experiment, "ValidationStartedWithoutEligibleTrainingWinner", validationBlockReason ?? string.Empty);
-            experiment.UpdatedAtUtc = DateTime.UtcNow;
-            await _experiments.UpdateAsync(experiment, cancellationToken);
-            return ServiceResult<ValidationExperimentDetailDto>.Fail(validationBlockReason ?? "Validation blocked by selection integrity.");
-        }
-
-        if (!experiment.IsQualificationCapable)
-        {
-            return ServiceResult<ValidationExperimentDetailDto>.Fail(
-                "Validation blocked: experiment is not qualification-capable.");
-        }
-
+        // Milestone 23.0E2C3A1 — negative evidence before selection-integrity / capability returns.
         var validationNegativeBlock = await TryBlockOnPersistedNegativeEvidenceAsync(
             experiment,
             invalidateTentativeSelection: false,
@@ -997,6 +1000,39 @@ public sealed partial class ValidationLabService : IValidationLabService
             return ServiceResult<ValidationExperimentDetailDto>.Fail(
                 validationNegativeBlock.ErrorMessage ?? ValidationTrainingFailureHandler.UserSafeLeakageMessage,
                 validationNegativeBlock.ErrorField);
+        }
+
+        var trialPopulationLoad = await ValidationAuthoritativeEvaluationSafety.TryGetTrialsByExperimentIdAsync(
+            _trials, experiment, cancellationToken);
+        if (!trialPopulationLoad.Succeeded)
+        {
+            var loadAggregate = trialPopulationLoad.FailureAggregate!;
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
+            experiment.IsQualificationCapable = false;
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
+            return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                loadAggregate.PrimaryFailure?.UserSafeMessage
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                loadAggregate.PrimaryFailure?.Code
+                ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        var trialEntities = trialPopulationLoad.Trials!.ToList();
+        if (!_selectionIntegrity.CanStartValidation(experiment, trialEntities, out var validationBlockReason))
+        {
+            AppendDiagnostic(experiment, "ValidationStartedWithoutEligibleTrainingWinner", validationBlockReason ?? string.Empty);
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
+            return ServiceResult<ValidationExperimentDetailDto>.Fail(validationBlockReason ?? "Validation blocked by selection integrity.");
+        }
+
+        // Training-search qualification capability does not apply to ValidateExistingFrozenConfiguration.
+        if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment)
+            && !experiment.IsQualificationCapable)
+        {
+            return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                "Validation blocked: experiment is not qualification-capable.");
         }
 
         // Milestone 23.0E2C3 — revalidate authoritative audit before ValidationRunning / runner.
@@ -1325,7 +1361,27 @@ public sealed partial class ValidationLabService : IValidationLabService
             // Milestone 23.0E2C3 — revalidate authoritative audit immediately before verdict/reveal.
             if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
             {
-                var selectedForVerdict = (await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken))
+                var verdictTrialLoad = await ValidationAuthoritativeEvaluationSafety.TryGetTrialsByExperimentIdAsync(
+                    _trials, experiment, cancellationToken);
+                if (!verdictTrialLoad.Succeeded)
+                {
+                    var loadAggregate = verdictTrialLoad.FailureAggregate!;
+                    ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
+                    experiment.IsQualificationCapable = false;
+                    experiment.StrategyRobustnessDecision = StrategyRobustnessDecision.FailedDataIntegrity;
+                    experiment.DecisionExplanation = loadAggregate.PrimaryFailure?.UserSafeMessage
+                        ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage;
+                    experiment.Status = ValidationExperimentStatus.Failed;
+                    experiment.CurrentStage = "AuditPersistenceFailed";
+                    experiment.UpdatedAtUtc = DateTime.UtcNow;
+                    await _experiments.UpdateAsync(experiment, cancellationToken);
+                    return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                        experiment.DecisionExplanation,
+                        loadAggregate.PrimaryFailure?.Code
+                        ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+                }
+
+                var selectedForVerdict = verdictTrialLoad.Trials!
                     .FirstOrDefault(t => t.Id == experiment.SelectedTrialId);
                 if (selectedForVerdict is null)
                 {
@@ -1848,6 +1904,19 @@ public sealed partial class ValidationLabService : IValidationLabService
             return ServiceResult<ValidationExperimentDetailDto>.Fail("Validation experiment was not found.");
         }
 
+        // Milestone 23.0E2C3A1 — qualification gate (negative evidence first) before reconciliation mutation.
+        var recalculateGateFailure = await TryApplyRecalculateQualificationGateAsync(experiment, cancellationToken);
+        if (recalculateGateFailure is not null)
+        {
+            experiment.IsQualificationCapable = false;
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
+
+            return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                recalculateGateFailure.Message,
+                recalculateGateFailure.Code);
+        }
+
         // Recompute candidate reconciliation (e.g. TrainingSearch segment-only baseline).
         IReadOnlyList<StrategyResearchCandidate> fullCandidates = [];
         IReadOnlyList<StrategyResearchCandidate> trainCandidates = [];
@@ -1872,21 +1941,6 @@ public sealed partial class ValidationLabService : IValidationLabService
         }
 
         var persisted = persistedRules.ToList();
-
-        var recalculateGateFailure = await TryApplyRecalculateQualificationGateAsync(experiment, cancellationToken);
-        if (recalculateGateFailure is not null)
-        {
-            if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
-            {
-                experiment.IsQualificationCapable = false;
-                experiment.UpdatedAtUtc = DateTime.UtcNow;
-                await _experiments.UpdateAsync(experiment, cancellationToken);
-            }
-
-            return ServiceResult<ValidationExperimentDetailDto>.Fail(
-                recalculateGateFailure.Message,
-                recalculateGateFailure.Code);
-        }
 
         // Refresh data-integrity rule from latest reconciliation before recalculating.
         for (var i = 0; i < persisted.Count; i++)
@@ -3100,10 +3154,9 @@ public sealed partial class ValidationLabService : IValidationLabService
         }
         catch (Exception loadEx)
         {
-            var loadAggregate = ValidationAuthoritativeEvaluationSafety.ObserveEvaluatorException(
+            var loadAggregate = ValidationAuthoritativeEvaluationSafety.ObserveRepositoryException(
                 experiment,
-                loadEx,
-                ValidationTrainingFailurePhase.AuditFinalization);
+                loadEx);
             ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
             experiment.IsQualificationCapable = false;
             return ServiceResult<ValidationExperimentDto>.Fail(
@@ -3142,25 +3195,7 @@ public sealed partial class ValidationLabService : IValidationLabService
         ValidationExperiment experiment,
         CancellationToken cancellationToken)
     {
-        if (!experiment.IsQualificationCapable)
-        {
-            var existing = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
-            return new QualificationGateFailure(
-                existing.PrimaryFailure?.UserSafeMessage
-                ?? "Passed qualification decision rejected because the experiment is not qualification-capable.",
-                existing.PrimaryFailure?.Code ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
-        }
-
-        var blockingFailures = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
-        if (blockingFailures.IsQualificationBlocking)
-        {
-            return new QualificationGateFailure(
-                blockingFailures.PrimaryFailure?.UserSafeMessage
-                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
-                blockingFailures.PrimaryFailure?.Code
-                ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
-        }
-
+        // Milestone 23.0E2C3A1 — readable negative evidence before capability / blocking-failure returns.
         IReadOnlyList<ValidationCandleAccessAudit> accessRows;
         try
         {
@@ -3168,10 +3203,8 @@ public sealed partial class ValidationLabService : IValidationLabService
         }
         catch (Exception loadEx)
         {
-            var loadAggregate = ValidationAuthoritativeEvaluationSafety.ObserveEvaluatorException(
-                experiment,
-                loadEx,
-                ValidationTrainingFailurePhase.AuditFinalization);
+            var loadAggregate = ValidationAuthoritativeEvaluationSafety.ObserveRepositoryException(
+                experiment, loadEx);
             ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
             experiment.IsQualificationCapable = false;
             return new QualificationGateFailure(
@@ -3204,6 +3237,25 @@ public sealed partial class ValidationLabService : IValidationLabService
             return null;
         }
 
+        if (!experiment.IsQualificationCapable)
+        {
+            var existing = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
+            return new QualificationGateFailure(
+                existing.PrimaryFailure?.UserSafeMessage
+                ?? "Passed qualification decision rejected because the experiment is not qualification-capable.",
+                existing.PrimaryFailure?.Code ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        var blockingFailures = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
+        if (blockingFailures.IsQualificationBlocking)
+        {
+            return new QualificationGateFailure(
+                blockingFailures.PrimaryFailure?.UserSafeMessage
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                blockingFailures.PrimaryFailure?.Code
+                ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
         if (experiment.SelectedTrialId is null)
         {
             return new QualificationGateFailure(
@@ -3211,8 +3263,21 @@ public sealed partial class ValidationLabService : IValidationLabService
                 ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
         }
 
-        var trials = await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken);
-        var selected = trials.FirstOrDefault(t => t.Id == experiment.SelectedTrialId);
+        var trialPopulationLoad = await ValidationAuthoritativeEvaluationSafety.TryGetTrialsByExperimentIdAsync(
+            _trials, experiment, cancellationToken);
+        if (!trialPopulationLoad.Succeeded)
+        {
+            var evaluatorAggregate = trialPopulationLoad.FailureAggregate!;
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, evaluatorAggregate);
+            experiment.IsQualificationCapable = false;
+            return new QualificationGateFailure(
+                evaluatorAggregate.PrimaryFailure?.UserSafeMessage
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                evaluatorAggregate.PrimaryFailure?.Code
+                ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        var selected = trialPopulationLoad.Trials!.FirstOrDefault(t => t.Id == experiment.SelectedTrialId);
         if (selected is null)
         {
             return new QualificationGateFailure(
