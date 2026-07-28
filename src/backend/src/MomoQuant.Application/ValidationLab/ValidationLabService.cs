@@ -748,23 +748,29 @@ public sealed partial class ValidationLabService : IValidationLabService
 
         if (experiment.LeakageAuditStatus == ValidationLeakageAuditStatus.Failed)
         {
-            return ServiceResult<ValidationExperimentDto>.Fail(
-                "Freeze blocked: ValidationDataLeakageDetected. Training optimizer accessed validation-range data.");
-        }
-
-        // Milestone 23.0E2C3 — denied/boundary evidence from any attempt remains qualification-blocking.
-        var freezeAccessRows = await _candleAccessAudits.GetByExperimentIdAsync(id, cancellationToken);
-        var negativeEvidence = ValidationLeakageEvidenceSelector.CollectNegativeBlockingEvidence(freezeAccessRows);
-        if (negativeEvidence.Count > 0)
-        {
-            experiment.LeakageAuditStatus = ValidationLeakageAuditStatus.Failed;
-            experiment.IsQualificationCapable = false;
-            AppendDiagnostic(experiment, "ValidationDataLeakageDetected",
-                "Denied or boundary-violation access evidence remains qualification-blocking.");
+            var preexistingAggregate = ValidationNegativeEvidenceGate.BuildBoundaryAggregate(experiment);
+            ValidationNegativeEvidenceGate.ApplyBoundaryBlock(
+                experiment,
+                preexistingAggregate,
+                invalidateTentativeSelection: false);
             experiment.UpdatedAtUtc = DateTime.UtcNow;
             await _experiments.UpdateAsync(experiment, cancellationToken);
             return ServiceResult<ValidationExperimentDto>.Fail(
-                "Freeze blocked: ValidationDataLeakageDetected. Training optimizer accessed validation-range data.");
+                preexistingAggregate.PrimaryFailure?.UserSafeMessage
+                ?? ValidationTrainingFailureHandler.UserSafeLeakageMessage,
+                preexistingAggregate.PrimaryFailure?.Code
+                ?? ValidationTrainingFailureCodes.ValidationDataLeakage);
+        }
+
+        var negativeBlock = await TryBlockOnPersistedNegativeEvidenceAsync(
+            experiment,
+            invalidateTentativeSelection: false,
+            cancellationToken);
+        if (negativeBlock is not null)
+        {
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
+            return negativeBlock;
         }
 
         if (!experiment.IsQualificationCapable)
@@ -816,8 +822,26 @@ public sealed partial class ValidationLabService : IValidationLabService
                 return ServiceResult<ValidationExperimentDto>.Fail("Freeze blocked: selected trial was not found.");
             }
 
-            var auditGate = await _authoritativeAuditQualification.EvaluateTrialAsync(
-                experiment, selected, cancellationToken);
+            var auditGateAttempt = await ValidationAuthoritativeEvaluationSafety.TryEvaluateTrialAsync(
+                _authoritativeAuditQualification,
+                experiment,
+                selected,
+                cancellationToken);
+            if (!auditGateAttempt.Succeeded)
+            {
+                var evaluatorAggregate = auditGateAttempt.FailureAggregate!;
+                ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, evaluatorAggregate);
+                experiment.IsQualificationCapable = false;
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return ServiceResult<ValidationExperimentDto>.Fail(
+                    evaluatorAggregate.PrimaryFailure?.UserSafeMessage
+                    ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                    evaluatorAggregate.PrimaryFailure?.Code
+                    ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+            }
+
+            var auditGate = auditGateAttempt.Evaluation!;
             if (!auditGate.IsQualificationEligible)
             {
                 ValidationAuthoritativeAuditQualificationEvaluator.ApplyPopulationMarker(selected, auditGate);
@@ -962,6 +986,19 @@ public sealed partial class ValidationLabService : IValidationLabService
                 "Validation blocked: experiment is not qualification-capable.");
         }
 
+        var validationNegativeBlock = await TryBlockOnPersistedNegativeEvidenceAsync(
+            experiment,
+            invalidateTentativeSelection: false,
+            cancellationToken);
+        if (validationNegativeBlock is not null)
+        {
+            experiment.UpdatedAtUtc = DateTime.UtcNow;
+            await _experiments.UpdateAsync(experiment, cancellationToken);
+            return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                validationNegativeBlock.ErrorMessage ?? ValidationTrainingFailureHandler.UserSafeLeakageMessage,
+                validationNegativeBlock.ErrorField);
+        }
+
         // Milestone 23.0E2C3 — revalidate authoritative audit before ValidationRunning / runner.
         if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
         {
@@ -972,8 +1009,26 @@ public sealed partial class ValidationLabService : IValidationLabService
                     "Validation blocked: selected trial was not found.");
             }
 
-            var auditGate = await _authoritativeAuditQualification.EvaluateTrialAsync(
-                experiment, selected, cancellationToken);
+            var auditGateAttempt = await ValidationAuthoritativeEvaluationSafety.TryEvaluateTrialAsync(
+                _authoritativeAuditQualification,
+                experiment,
+                selected,
+                cancellationToken);
+            if (!auditGateAttempt.Succeeded)
+            {
+                var evaluatorAggregate = auditGateAttempt.FailureAggregate!;
+                ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, evaluatorAggregate);
+                experiment.IsQualificationCapable = false;
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                    evaluatorAggregate.PrimaryFailure?.UserSafeMessage
+                    ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                    evaluatorAggregate.PrimaryFailure?.Code
+                    ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+            }
+
+            var auditGate = auditGateAttempt.Evaluation!;
             if (!auditGate.IsQualificationEligible)
             {
                 ValidationAuthoritativeAuditQualificationEvaluator.ApplyPopulationMarker(selected, auditGate);
@@ -1248,6 +1303,25 @@ public sealed partial class ValidationLabService : IValidationLabService
                 experiment.LeakageAuditStatus,
                 metricOk);
 
+            var verdictNegativeBlock = await TryBlockOnPersistedNegativeEvidenceAsync(
+                experiment,
+                invalidateTentativeSelection: false,
+                cancellationToken);
+            if (verdictNegativeBlock is not null)
+            {
+                experiment.IsQualificationCapable = false;
+                experiment.StrategyRobustnessDecision = StrategyRobustnessDecision.FailedDataIntegrity;
+                experiment.DecisionExplanation = verdictNegativeBlock.ErrorMessage
+                    ?? ValidationTrainingFailureHandler.UserSafeLeakageMessage;
+                experiment.Status = ValidationExperimentStatus.Failed;
+                experiment.CurrentStage = "LeakageDetected";
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                    verdictNegativeBlock.ErrorMessage ?? ValidationTrainingFailureHandler.UserSafeLeakageMessage,
+                    verdictNegativeBlock.ErrorField);
+            }
+
             // Milestone 23.0E2C3 — revalidate authoritative audit immediately before verdict/reveal.
             if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
             {
@@ -1266,8 +1340,30 @@ public sealed partial class ValidationLabService : IValidationLabService
                         ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
                 }
 
-                var verdictAudit = await _authoritativeAuditQualification.EvaluateTrialAsync(
-                    experiment, selectedForVerdict, cancellationToken);
+                var verdictAuditAttempt = await ValidationAuthoritativeEvaluationSafety.TryEvaluateTrialAsync(
+                    _authoritativeAuditQualification,
+                    experiment,
+                    selectedForVerdict,
+                    cancellationToken);
+                if (!verdictAuditAttempt.Succeeded)
+                {
+                    var evaluatorAggregate = verdictAuditAttempt.FailureAggregate!;
+                    ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, evaluatorAggregate);
+                    experiment.IsQualificationCapable = false;
+                    experiment.StrategyRobustnessDecision = StrategyRobustnessDecision.FailedDataIntegrity;
+                    experiment.DecisionExplanation = evaluatorAggregate.PrimaryFailure?.UserSafeMessage
+                        ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage;
+                    experiment.Status = ValidationExperimentStatus.Failed;
+                    experiment.CurrentStage = "AuditPersistenceFailed";
+                    experiment.UpdatedAtUtc = DateTime.UtcNow;
+                    await _experiments.UpdateAsync(experiment, cancellationToken);
+                    return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                        experiment.DecisionExplanation,
+                        evaluatorAggregate.PrimaryFailure?.Code
+                        ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+                }
+
+                var verdictAudit = verdictAuditAttempt.Evaluation!;
                 if (!verdictAudit.IsQualificationEligible)
                 {
                     ValidationAuthoritativeAuditQualificationEvaluator.ApplyPopulationMarker(
@@ -1776,6 +1872,22 @@ public sealed partial class ValidationLabService : IValidationLabService
         }
 
         var persisted = persistedRules.ToList();
+
+        var recalculateGateFailure = await TryApplyRecalculateQualificationGateAsync(experiment, cancellationToken);
+        if (recalculateGateFailure is not null)
+        {
+            if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
+            {
+                experiment.IsQualificationCapable = false;
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+            }
+
+            return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                recalculateGateFailure.Message,
+                recalculateGateFailure.Code);
+        }
+
         // Refresh data-integrity rule from latest reconciliation before recalculating.
         for (var i = 0; i < persisted.Count; i++)
         {
@@ -1808,6 +1920,20 @@ public sealed partial class ValidationLabService : IValidationLabService
         }
 
         var verdict = _verdictService.Recalculate(persisted);
+        if (verdict.Decision == StrategyRobustnessDecision.Passed)
+        {
+            var postRecalcGate = await TryApplyRecalculateQualificationGateAsync(experiment, cancellationToken);
+            if (postRecalcGate is not null)
+            {
+                experiment.IsQualificationCapable = false;
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                    postRecalcGate.Message,
+                    postRecalcGate.Code);
+            }
+        }
+
         if (experiment.StrategyRobustnessDecision is { } stored
             && stored != verdict.Decision)
         {
@@ -2958,6 +3084,182 @@ public sealed partial class ValidationLabService : IValidationLabService
         {
             return json;
         }
+    }
+
+    private sealed record QualificationGateFailure(string Message, string Code);
+
+    private async Task<ServiceResult<ValidationExperimentDto>?> TryBlockOnPersistedNegativeEvidenceAsync(
+        ValidationExperiment experiment,
+        bool invalidateTentativeSelection,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<ValidationCandleAccessAudit> accessRows;
+        try
+        {
+            accessRows = await _candleAccessAudits.GetByExperimentIdAsync(experiment.Id, cancellationToken);
+        }
+        catch (Exception loadEx)
+        {
+            var loadAggregate = ValidationAuthoritativeEvaluationSafety.ObserveEvaluatorException(
+                experiment,
+                loadEx,
+                ValidationTrainingFailurePhase.AuditFinalization);
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
+            experiment.IsQualificationCapable = false;
+            return ServiceResult<ValidationExperimentDto>.Fail(
+                loadAggregate.PrimaryFailure?.UserSafeMessage
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                loadAggregate.PrimaryFailure?.Code
+                ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        var negativeRows = ValidationNegativeEvidenceGate.Scan(accessRows);
+        if (negativeRows.Count == 0)
+        {
+            return null;
+        }
+
+        var aggregate = ValidationNegativeEvidenceGate.BuildBoundaryAggregate(experiment);
+        var optimizerFp = experiment.FrozenParameterFingerprint
+            ?? experiment.SelectedTrialParameterFingerprint
+            ?? string.Empty;
+        ValidationNegativeEvidenceGate.UpdateLeakageAuditJsonFromNegativeRows(
+            experiment,
+            negativeRows,
+            _leakageAuditor,
+            optimizerFp);
+        ValidationNegativeEvidenceGate.ApplyBoundaryBlock(
+            experiment,
+            aggregate,
+            invalidateTentativeSelection);
+
+        return ServiceResult<ValidationExperimentDto>.Fail(
+            aggregate.PrimaryFailure?.UserSafeMessage ?? ValidationTrainingFailureHandler.UserSafeLeakageMessage,
+            aggregate.PrimaryFailure?.Code ?? ValidationTrainingFailureCodes.ValidationDataLeakage);
+    }
+
+    private async Task<QualificationGateFailure?> TryApplyRecalculateQualificationGateAsync(
+        ValidationExperiment experiment,
+        CancellationToken cancellationToken)
+    {
+        if (!experiment.IsQualificationCapable)
+        {
+            var existing = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
+            return new QualificationGateFailure(
+                existing.PrimaryFailure?.UserSafeMessage
+                ?? "Passed qualification decision rejected because the experiment is not qualification-capable.",
+                existing.PrimaryFailure?.Code ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        var blockingFailures = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
+        if (blockingFailures.IsQualificationBlocking)
+        {
+            return new QualificationGateFailure(
+                blockingFailures.PrimaryFailure?.UserSafeMessage
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                blockingFailures.PrimaryFailure?.Code
+                ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        IReadOnlyList<ValidationCandleAccessAudit> accessRows;
+        try
+        {
+            accessRows = await _candleAccessAudits.GetByExperimentIdAsync(experiment.Id, cancellationToken);
+        }
+        catch (Exception loadEx)
+        {
+            var loadAggregate = ValidationAuthoritativeEvaluationSafety.ObserveEvaluatorException(
+                experiment,
+                loadEx,
+                ValidationTrainingFailurePhase.AuditFinalization);
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
+            experiment.IsQualificationCapable = false;
+            return new QualificationGateFailure(
+                loadAggregate.PrimaryFailure?.UserSafeMessage
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                loadAggregate.PrimaryFailure?.Code
+                ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        if (ValidationNegativeEvidenceGate.HasBlockingEvidence(accessRows))
+        {
+            var aggregate = ValidationNegativeEvidenceGate.BuildBoundaryAggregate(experiment);
+            var optimizerFp = experiment.FrozenParameterFingerprint
+                ?? experiment.SelectedTrialParameterFingerprint
+                ?? string.Empty;
+            ValidationNegativeEvidenceGate.UpdateLeakageAuditJsonFromNegativeRows(
+                experiment,
+                ValidationNegativeEvidenceGate.Scan(accessRows),
+                _leakageAuditor,
+                optimizerFp);
+            ValidationNegativeEvidenceGate.ApplyBoundaryBlock(experiment, aggregate, invalidateTentativeSelection: false);
+            experiment.IsQualificationCapable = false;
+            return new QualificationGateFailure(
+                aggregate.PrimaryFailure?.UserSafeMessage ?? ValidationTrainingFailureHandler.UserSafeLeakageMessage,
+                aggregate.PrimaryFailure?.Code ?? ValidationTrainingFailureCodes.ValidationDataLeakage);
+        }
+
+        if (!ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
+        {
+            return null;
+        }
+
+        if (experiment.SelectedTrialId is null)
+        {
+            return new QualificationGateFailure(
+                ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        var trials = await _trials.GetByExperimentIdAsync(experiment.Id, cancellationToken);
+        var selected = trials.FirstOrDefault(t => t.Id == experiment.SelectedTrialId);
+        if (selected is null)
+        {
+            return new QualificationGateFailure(
+                ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        var auditAttempt = await ValidationAuthoritativeEvaluationSafety.TryEvaluateTrialAsync(
+            _authoritativeAuditQualification,
+            experiment,
+            selected,
+            cancellationToken);
+        if (!auditAttempt.Succeeded)
+        {
+            var evaluatorAggregate = auditAttempt.FailureAggregate!;
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, evaluatorAggregate);
+            experiment.IsQualificationCapable = false;
+            return new QualificationGateFailure(
+                evaluatorAggregate.PrimaryFailure?.UserSafeMessage
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                evaluatorAggregate.PrimaryFailure?.Code
+                ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        if (!auditAttempt.Evaluation!.IsQualificationEligible)
+        {
+            var auditAggregate = ValidationTrainingFailurePersistence.MergeExisting(experiment.FailureReasonsJson);
+            auditAggregate.Observe(new ValidationTrainingFailureRecord
+            {
+                Code = ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
+                Category = ValidationTrainingFailureCategory.AuditDurability,
+                Precedence = ValidationTrainingFailurePrecedence.AuditDurability,
+                Phase = ValidationTrainingFailurePhase.CompletenessVerification,
+                UserSafeMessage = auditAttempt.Evaluation.UserSafeBlockingReason
+                    ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                OccurredAtUtc = DateTime.UtcNow,
+                IsQualificationBlocking = true
+            });
+            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, auditAggregate);
+            experiment.IsQualificationCapable = false;
+            return new QualificationGateFailure(
+                auditAttempt.Evaluation.UserSafeBlockingReason
+                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+        }
+
+        return null;
     }
 
     internal sealed class DraftConfiguration

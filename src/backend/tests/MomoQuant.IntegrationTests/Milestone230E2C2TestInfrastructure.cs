@@ -41,6 +41,7 @@ public sealed class E2C2SeamControls
     public bool FailCompletenessVerification { get; set; }
     public bool ThrowOnAuditFinalizer { get; set; }
     public bool ThrowOnCompletenessVerifier { get; set; }
+    public bool ThrowOnAccessAuditGet { get; set; }
     public bool FailScopeDisposal { get; set; }
     public int FailExperimentUpdateCount { get; set; }
     public int FailTrialUpdateCount { get; set; }
@@ -82,6 +83,7 @@ public sealed class E2C2SeamControls
         FailCompletenessVerification = false;
         ThrowOnAuditFinalizer = false;
         ThrowOnCompletenessVerifier = false;
+        ThrowOnAccessAuditGet = false;
         FailScopeDisposal = false;
         FailExperimentUpdateCount = 0;
         FailTrialUpdateCount = 0;
@@ -316,6 +318,13 @@ public sealed class E2C2OrchestrationFactory : MomoQuantWebApplicationFactory
             {
                 var inner = ActivatorUtilities.CreateInstance<ValidationAuditExecutionRecoveryService>(sp);
                 return new E2C2AuditRecoveryDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
+            });
+
+            services.RemoveAll<IValidationCandleAccessAuditRepository>();
+            services.AddScoped<IValidationCandleAccessAuditRepository>(sp =>
+            {
+                var inner = ActivatorUtilities.CreateInstance<MomoQuant.Persistence.Repositories.ValidationCandleAccessAuditRepository>(sp);
+                return new E2C2AccessAuditRepositoryDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
             });
         });
     }
@@ -1171,6 +1180,42 @@ internal sealed class E2C2AuditExecutionRepositoryDecorator : IValidationAuditEx
         ValidationParameterTrial trial,
         CancellationToken cancellationToken = default) =>
         _inner.CreateAndAssignTrialAuthoritativeAsync(execution, trial, cancellationToken);
+}
+
+internal sealed class E2C2AccessAuditRepositoryDecorator : IValidationCandleAccessAuditRepository
+{
+    private readonly IValidationCandleAccessAuditRepository _inner;
+    private readonly E2C2SeamControls _controls;
+
+    public E2C2AccessAuditRepositoryDecorator(
+        IValidationCandleAccessAuditRepository inner,
+        E2C2SeamControls controls)
+    {
+        _inner = inner;
+        _controls = controls;
+    }
+
+    public Task<IReadOnlyList<ValidationCandleAccessAudit>> GetByExperimentIdAsync(
+        long experimentId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_controls.ThrowOnAccessAuditGet)
+        {
+            throw new InvalidOperationException("E2C2 simulated access audit load failure.");
+        }
+
+        return _inner.GetByExperimentIdAsync(experimentId, cancellationToken);
+    }
+
+    public Task AddRangeAsync(
+        IReadOnlyList<ValidationCandleAccessAudit> audits,
+        CancellationToken cancellationToken = default) =>
+        _inner.AddRangeAsync(audits, cancellationToken);
+
+    public Task<ValidationAccessBatchPersistResult> AddRangeIdempotentByAccessEventIdAsync(
+        IReadOnlyList<ValidationCandleAccessAudit> audits,
+        CancellationToken cancellationToken = default) =>
+        _inner.AddRangeIdempotentByAccessEventIdAsync(audits, cancellationToken);
 }
 
 internal sealed class E2C2AuditRecoveryDecorator : IValidationAuditExecutionRecoveryService
