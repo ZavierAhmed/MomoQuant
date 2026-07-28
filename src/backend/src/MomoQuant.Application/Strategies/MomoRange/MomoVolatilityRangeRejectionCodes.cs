@@ -15,5 +15,7 @@ public static class MomoVolatilityRangeRejectionCodes
     public const string RewardRiskInsufficient = "RewardRiskInsufficient";
     public const string InvalidStop = "InvalidStop";
     public const string DuplicateSetup = "DuplicateSetup";
+    public const string StrengthBelowMinimum = "StrengthBelowMinimum";
+    public const string InvalidTargetMode = "InvalidTargetMode";
     public const string EntryConfirmed = "EntryConfirmed";
 }

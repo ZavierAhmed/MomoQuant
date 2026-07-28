@@ -34,12 +34,13 @@ public sealed class HigherTimeframeDatasetEnricher : IHigherTimeframeDatasetEnri
         IReadOnlyList<PreparedStrategy> strategies,
         CancellationToken cancellationToken = default)
     {
-        if (strategies.Count == 0 || dataset.HigherTimeframeSeriesByTimeframe.Count > 0)
+        if (strategies.Count == 0)
         {
             return dataset;
         }
 
         var required = StrategyHigherTimeframeSupport.CollectRequiredHigherTimeframes(strategies, dataset.Timeframe);
+        // Fill every missing mapped HTF while preserving any series already present.
         return await EnrichAsync(dataset, required, cancellationToken);
     }
 

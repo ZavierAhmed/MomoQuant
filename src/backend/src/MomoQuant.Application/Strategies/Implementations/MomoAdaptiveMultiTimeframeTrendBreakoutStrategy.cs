@@ -47,6 +47,7 @@ public sealed class MomoAdaptiveMultiTimeframeTrendBreakoutStrategy : StrategyBa
             candles,
             context.HigherTimeframeCandles,
             context.StrategyParameters,
+            context.MarketRegime,
             seen,
             StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
             context.SymbolId,

@@ -55,6 +55,31 @@ public sealed class MomoVolatilityRangeReversionParameters
         TargetMode = StrategyParameterReader.GetString(parameters, "targetMode", "RangeMidpoint"),
         MinStrength = StrategyParameterReader.GetDecimal(parameters, "minStrength", 65m)
     };
+
+    public static IReadOnlyDictionary<string, string> GetDefaultParameterContract() => new Dictionary<string, string>
+    {
+        ["rangeLookback"] = "48",
+        ["minRangeWidthAtr"] = "3.0",
+        ["maxRangeWidthAtr"] = "12.0",
+        ["fastEmaPeriod"] = "20",
+        ["slowEmaPeriod"] = "50",
+        ["maxEmaSeparationAtr"] = "0.50",
+        ["slopeLookback"] = "5",
+        ["maxSlowEmaSlopeAtr"] = "0.15",
+        ["fastAtrPeriod"] = "14",
+        ["slowAtrPeriod"] = "100",
+        ["minVolatilityRatio"] = "0.65",
+        ["maxVolatilityRatio"] = "1.25",
+        ["rsiPeriod"] = "14",
+        ["rsiOversold"] = "35",
+        ["rsiOverbought"] = "65",
+        ["boundaryToleranceAtr"] = "0.15",
+        ["minimumWickPercent"] = "30",
+        ["stopBufferAtr"] = "0.25",
+        ["minimumRewardRisk"] = "1.25",
+        ["targetMode"] = "RangeMidpoint",
+        ["minStrength"] = "65"
+    };
 }
 
 public sealed class MomoVolatilityRangeReversionCandidate
@@ -100,6 +125,11 @@ public static class MomoVolatilityRangeReversionEvaluator
         if (!TryComputeIndicators(candles, currentIndex, settings, out var indicators))
         {
             return (null, MomoVolatilityRangeRejectionCodes.InsufficientData);
+        }
+
+        if (!string.Equals(settings.TargetMode, "RangeMidpoint", StringComparison.OrdinalIgnoreCase))
+        {
+            return (null, MomoVolatilityRangeRejectionCodes.InvalidTargetMode);
         }
 
         if (!TryBuildRange(candles, currentIndex, settings.RangeLookback, out var range))
@@ -151,11 +181,11 @@ public static class MomoVolatilityRangeReversionEvaluator
         return (null, PickCloserReason(longReason, shortReason));
     }
 
-    private static int MinimumRequiredCandles(MomoVolatilityRangeReversionParameters settings) =>
+    public static int MinimumRequiredCandles(MomoVolatilityRangeReversionParameters settings) =>
         Math.Max(settings.SlowAtrPeriod, settings.SlowEmaPeriod)
         + settings.RangeLookback
         + settings.SlopeLookback
-        + 2;
+        + 5;
 
     private sealed record RangeBounds(decimal High, decimal Low, decimal Midpoint, decimal Width);
 
@@ -170,7 +200,6 @@ public static class MomoVolatilityRangeReversionEvaluator
         decimal Rsi);
 
     private sealed record StrengthBreakdown(
-        decimal Base,
         decimal RangeQuality,
         decimal VolatilityQuality,
         decimal RsiExtremity,
@@ -249,7 +278,7 @@ public static class MomoVolatilityRangeReversionEvaluator
             return MomoVolatilityRangeRejectionCodes.VolatilityTooHigh;
         }
 
-        if (HasConfirmedExpansionBreakout(candles, currentIndex, settings.SlopeLookback, range))
+        if (HasConfirmedExpansionBreakout(candles, currentIndex, settings.RangeLookback, settings.SlopeLookback, range))
         {
             return MomoVolatilityRangeRejectionCodes.TrendFilterFailed;
         }
@@ -260,14 +289,39 @@ public static class MomoVolatilityRangeReversionEvaluator
     private static bool HasConfirmedExpansionBreakout(
         IReadOnlyList<Candle> candles,
         int currentIndex,
+        int rangeLookback,
         int slopeLookback,
-        RangeBounds range)
+        RangeBounds currentRange)
     {
-        var start = Math.Max(0, currentIndex - slopeLookback);
-        for (var i = start; i < currentIndex; i++)
+        var baselineEnd = currentIndex - slopeLookback;
+        if (baselineEnd < 0)
+        {
+            return false;
+        }
+
+        var baselineStart = baselineEnd - rangeLookback;
+        if (baselineStart < 0)
+        {
+            return false;
+        }
+
+        var priorHigh = decimal.MinValue;
+        var priorLow = decimal.MaxValue;
+        for (var i = baselineStart; i < baselineEnd; i++)
+        {
+            priorHigh = Math.Max(priorHigh, candles[i].High);
+            priorLow = Math.Min(priorLow, candles[i].Low);
+        }
+
+        if (priorHigh <= priorLow)
+        {
+            return false;
+        }
+
+        for (var i = baselineEnd; i < currentIndex; i++)
         {
             var close = candles[i].Close;
-            if (close > range.High || close < range.Low)
+            if (close > priorHigh || close < priorLow)
             {
                 return true;
             }
@@ -286,13 +340,12 @@ public static class MomoVolatilityRangeReversionEvaluator
         long symbolId,
         string timeframe)
     {
-        var tolerance = settings.BoundaryToleranceAtr * indicators.FastAtr;
         if (current.Low >= range.Low)
         {
             return (null, MomoVolatilityRangeRejectionCodes.NoBoundaryProbe);
         }
 
-        if (current.Close <= range.Low - tolerance || current.Close > range.High)
+        if (current.Close < range.Low || current.Close > range.High)
         {
             return (null, MomoVolatilityRangeRejectionCodes.CloseDidNotReclaim);
         }
@@ -315,7 +368,7 @@ public static class MomoVolatilityRangeReversionEvaluator
             return (null, MomoVolatilityRangeRejectionCodes.InvalidStop);
         }
 
-        var takeProfit = ResolveTarget(settings.TargetMode, range, TradeDirection.Long);
+        var takeProfit = range.Midpoint;
         var risk = entry - stop;
         var reward = takeProfit - entry;
         if (risk <= 0m || reward <= 0m)
@@ -348,7 +401,13 @@ public static class MomoVolatilityRangeReversionEvaluator
             lowerWickPercent,
             rewardRisk,
             isLong: true);
-        var strength = StrategyStrengthHelper.ResolveStrength(strengthBreakdown.Total, settings.MinStrength);
+
+        if (strengthBreakdown.Total < settings.MinStrength)
+        {
+            return (null, MomoVolatilityRangeRejectionCodes.StrengthBelowMinimum);
+        }
+
+        var strength = Math.Clamp(strengthBreakdown.Total, 0m, 100m);
         var rawDataJson = BuildRawDataJson(
             TradeDirection.Long,
             range,
@@ -384,13 +443,12 @@ public static class MomoVolatilityRangeReversionEvaluator
         long symbolId,
         string timeframe)
     {
-        var tolerance = settings.BoundaryToleranceAtr * indicators.FastAtr;
         if (current.High <= range.High)
         {
             return (null, MomoVolatilityRangeRejectionCodes.NoBoundaryProbe);
         }
 
-        if (current.Close >= range.High + tolerance || current.Close < range.Low)
+        if (current.Close > range.High || current.Close < range.Low)
         {
             return (null, MomoVolatilityRangeRejectionCodes.CloseDidNotReclaim);
         }
@@ -413,7 +471,7 @@ public static class MomoVolatilityRangeReversionEvaluator
             return (null, MomoVolatilityRangeRejectionCodes.InvalidStop);
         }
 
-        var takeProfit = ResolveTarget(settings.TargetMode, range, TradeDirection.Short);
+        var takeProfit = range.Midpoint;
         var risk = stop - entry;
         var reward = entry - takeProfit;
         if (risk <= 0m || reward <= 0m)
@@ -446,7 +504,13 @@ public static class MomoVolatilityRangeReversionEvaluator
             upperWickPercent,
             rewardRisk,
             isLong: false);
-        var strength = StrategyStrengthHelper.ResolveStrength(strengthBreakdown.Total, settings.MinStrength);
+
+        if (strengthBreakdown.Total < settings.MinStrength)
+        {
+            return (null, MomoVolatilityRangeRejectionCodes.StrengthBelowMinimum);
+        }
+
+        var strength = Math.Clamp(strengthBreakdown.Total, 0m, 100m);
         var rawDataJson = BuildRawDataJson(
             TradeDirection.Short,
             range,
@@ -472,16 +536,6 @@ public static class MomoVolatilityRangeReversionEvaluator
         }, MomoVolatilityRangeRejectionCodes.EntryConfirmed);
     }
 
-    private static decimal ResolveTarget(string targetMode, RangeBounds range, TradeDirection direction)
-    {
-        if (string.Equals(targetMode, "RangeMidpoint", StringComparison.OrdinalIgnoreCase))
-        {
-            return range.Midpoint;
-        }
-
-        return range.Midpoint;
-    }
-
     private static StrengthBreakdown CalculateStrength(
         MomoVolatilityRangeReversionParameters settings,
         RangeBounds range,
@@ -490,39 +544,31 @@ public static class MomoVolatilityRangeReversionEvaluator
         decimal rewardRisk,
         bool isLong)
     {
-        var baseStrength = settings.MinStrength;
         var widthAtr = range.Width / indicators.FastAtr;
         var widthMid = (settings.MinRangeWidthAtr + settings.MaxRangeWidthAtr) / 2m;
         var widthSpan = Math.Max(0.01m, settings.MaxRangeWidthAtr - settings.MinRangeWidthAtr);
-        var rangeQuality = Math.Clamp(8m - Math.Abs(widthAtr - widthMid) / widthSpan * 8m, 0m, 8m);
+        var rangeQuality = Math.Clamp(20m - Math.Abs(widthAtr - widthMid) / widthSpan * 20m, 0m, 20m);
 
         var volMid = (settings.MinVolatilityRatio + settings.MaxVolatilityRatio) / 2m;
         var volSpan = Math.Max(0.01m, settings.MaxVolatilityRatio - settings.MinVolatilityRatio);
-        var volatilityQuality = Math.Clamp(6m - Math.Abs(indicators.VolatilityRatio - volMid) / volSpan * 6m, 0m, 6m);
+        var volatilityQuality = Math.Clamp(15m - Math.Abs(indicators.VolatilityRatio - volMid) / volSpan * 15m, 0m, 15m);
 
         var rsiExtremity = isLong
-            ? Math.Clamp((settings.RsiOversold - indicators.Rsi) / Math.Max(1m, settings.RsiOversold) * 10m, 0m, 10m)
-            : Math.Clamp((indicators.Rsi - settings.RsiOverbought) / Math.Max(1m, 100m - settings.RsiOverbought) * 10m, 0m, 10m);
+            ? Math.Clamp((settings.RsiOversold - indicators.Rsi) / Math.Max(1m, settings.RsiOversold) * 20m, 0m, 20m)
+            : Math.Clamp((indicators.Rsi - settings.RsiOverbought) / Math.Max(1m, 100m - settings.RsiOverbought) * 20m, 0m, 20m);
 
-        var wickQuality = Math.Clamp((wickPercent - settings.MinimumWickPercent) / Math.Max(1m, 100m - settings.MinimumWickPercent) * 8m, 0m, 8m);
-        var rewardRiskQuality = Math.Clamp((rewardRisk - settings.MinimumRewardRisk) * 4m, 0m, 8m);
+        var wickQuality = Math.Clamp((wickPercent - settings.MinimumWickPercent) / Math.Max(1m, 100m - settings.MinimumWickPercent) * 15m, 0m, 15m);
+        var rewardRiskQuality = Math.Clamp((rewardRisk - settings.MinimumRewardRisk) * 5m, 0m, 15m);
         var trendFlatness = Math.Clamp(
-            8m
-            - indicators.EmaSeparationAtr / Math.Max(0.01m, settings.MaxEmaSeparationAtr) * 4m
-            - Math.Abs(indicators.SlowEmaSlopeAtr) / Math.Max(0.01m, settings.MaxSlowEmaSlopeAtr) * 4m,
+            15m
+            - indicators.EmaSeparationAtr / Math.Max(0.01m, settings.MaxEmaSeparationAtr) * 7.5m
+            - Math.Abs(indicators.SlowEmaSlopeAtr) / Math.Max(0.01m, settings.MaxSlowEmaSlopeAtr) * 7.5m,
             0m,
-            8m);
+            15m);
 
-        var total = baseStrength
-            + rangeQuality
-            + volatilityQuality
-            + rsiExtremity
-            + wickQuality
-            + rewardRiskQuality
-            + trendFlatness;
+        var total = rangeQuality + volatilityQuality + rsiExtremity + wickQuality + rewardRiskQuality + trendFlatness;
 
         return new StrengthBreakdown(
-            baseStrength,
             rangeQuality,
             volatilityQuality,
             rsiExtremity,
@@ -565,7 +611,6 @@ public static class MomoVolatilityRangeReversionEvaluator
             takeProfit,
             strengthBreakdown = new
             {
-                strengthBreakdown.Base,
                 strengthBreakdown.RangeQuality,
                 strengthBreakdown.VolatilityQuality,
                 strengthBreakdown.RsiExtremity,
@@ -716,6 +761,7 @@ public static class MomoVolatilityRangeReversionEvaluator
         {
             MomoVolatilityRangeRejectionCodes.DuplicateSetup,
             MomoVolatilityRangeRejectionCodes.InvalidStop,
+            MomoVolatilityRangeRejectionCodes.StrengthBelowMinimum,
             MomoVolatilityRangeRejectionCodes.RewardRiskInsufficient,
             MomoVolatilityRangeRejectionCodes.WickConfirmationMissing,
             MomoVolatilityRangeRejectionCodes.RsiNotExtreme,

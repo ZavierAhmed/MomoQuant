@@ -67,6 +67,12 @@ public sealed class StrategyValidationService : IStrategyValidationService
                 "strategyCode");
         }
 
+        var validationRejection = StrategyCapabilityPolicy.RejectValidationReason(strategyEnum);
+        if (validationRejection is not null)
+        {
+            return ServiceResult<StrategyValidationResultDto>.Fail(validationRejection, "strategyCode");
+        }
+
         var symbol = await _symbolRepository.GetByIdAsync(request.SymbolId, cancellationToken);
         if (symbol is null)
         {
@@ -365,6 +371,12 @@ public sealed class ParameterOptimizationService : IParameterOptimizationService
         if (request.OptimizationMode == ParameterOptimizationMode.ManualOnly)
         {
             return ServiceResult<ParameterOptimizationResultDto>.Fail("Optimization mode must be GridSearch or RandomSearch.");
+        }
+
+        var capabilityRejection = StrategyCapabilityPolicy.RejectOptimizationReason(request.StrategyCode);
+        if (capabilityRejection is not null)
+        {
+            return ServiceResult<ParameterOptimizationResultDto>.Fail(capabilityRejection, "strategyCode");
         }
 
         var estimated = _definitionProvider.EstimateGridCombinations(request.StrategyCode, request.ParameterRangeOverrides);

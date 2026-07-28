@@ -39,8 +39,8 @@ public class StrategyCatalogMetadataTests
         Assert.Contains("3m", requirement.AllowedExecutionTimeframes);
         Assert.Contains("4h", requirement.AllowedExecutionTimeframes);
         Assert.Equal(["5m", "15m", "1h"], requirement.PreferredTimeframes);
-        Assert.True(requirement.SupportsOptimization);
-        Assert.True(requirement.SupportsValidation);
+        Assert.False(requirement.SupportsOptimization);
+        Assert.False(requirement.SupportsValidation);
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public class StrategyCatalogMetadataTests
         Assert.Equal(["3m"], requirement.AllowedExecutionTimeframes);
         Assert.Equal(["1m", "3m", "5m"], requirement.RequiredDataTimeframes);
         Assert.False(requirement.SupportsOptimization);
-        Assert.True(requirement.SupportsValidation);
+        Assert.False(requirement.SupportsValidation);
     }
 
     [Fact]

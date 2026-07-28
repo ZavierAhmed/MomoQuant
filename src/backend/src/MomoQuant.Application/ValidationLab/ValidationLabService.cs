@@ -313,6 +313,12 @@ public sealed partial class ValidationLabService : IValidationLabService
                 "strategyCode");
         }
 
+        var validationRejection = StrategyCapabilityPolicy.RejectValidationReason(strategyEnum);
+        if (validationRejection is not null)
+        {
+            return ServiceResult<ValidationExperimentDto>.Fail(validationRejection, "strategyCode");
+        }
+
         var version = string.IsNullOrWhiteSpace(request.StrategyVersion)
             ? strategyEntity?.Version ?? "1.0.0"
             : request.StrategyVersion!;

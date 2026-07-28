@@ -42,6 +42,7 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
         }
 
         await EnsureDefaultParametersAsync(cancellationToken);
+        await ReconcileCanonicalParameterContractsAsync(cancellationToken);
     }
 
     private async Task EnsureCanonicalStrategiesAsync(CancellationToken cancellationToken)
@@ -49,7 +50,7 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
         await EnsureStrategyAsync(
             StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout,
             "MOMO Adaptive Multi-Timeframe Trend Breakout",
-            "Adaptive multi-timeframe trend breakout strategy using multiple HTF confirmations.",
+            "Adaptive multi-timeframe trend breakout using mapped closed-HTF EMA/slope alignment with LTF EMA, ATR ratio, MACD, breakout and retest confirmation.",
             cancellationToken,
             version: "1.0.0",
             isEnabled: true);
@@ -65,7 +66,7 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
         await EnsureStrategyAsync(
             StrategyCode.MomoVolatilityRangeReversion,
             "MOMO Volatility Range Reversion",
-            "Range-bound mean reversion strategy with volatility-based entry filters.",
+            "Range-bound mean reversion with range-width, EMA flatness, ATR ratio, RSI, boundary sweep/reclaim and midpoint reward/risk filters.",
             cancellationToken,
             version: "1.0.0",
             isEnabled: true);
@@ -411,6 +412,121 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
         }
     }
 
+    private async Task ReconcileCanonicalParameterContractsAsync(CancellationToken cancellationToken)
+    {
+        var strategies = await _dbContext.Strategies
+            .Where(strategy =>
+                strategy.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout
+                || strategy.Code == StrategyCode.MomoVolatilityRangeReversion)
+            .ToListAsync(cancellationToken);
+
+        foreach (var strategy in strategies)
+        {
+            var obsoleteKeys = strategy.Code switch
+            {
+                StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout => MomoAdaptiveObsoleteParameterKeys,
+                StrategyCode.MomoVolatilityRangeReversion => MomoRangeObsoleteParameterKeys,
+                _ => Array.Empty<string>()
+            };
+
+            var defaults = strategy.Code switch
+            {
+                StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout => MomoAdaptiveMultiTimeframeTrendBreakoutDefaults,
+                StrategyCode.MomoVolatilityRangeReversion => MomoVolatilityRangeReversionDefaults,
+                _ => Array.Empty<(string Key, string Value, SettingValueType Type)>()
+            };
+
+            var defaultTimeframes = strategy.Code switch
+            {
+                StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout => new[] { Timeframe.M5, Timeframe.M15, Timeframe.H1, Timeframe.H4 },
+                StrategyCode.MomoVolatilityRangeReversion => new[] { Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1 },
+                _ => Array.Empty<Timeframe>()
+            };
+
+            var parameters = await _dbContext.StrategyParameters
+                .Where(parameter => parameter.StrategyId == strategy.Id && parameter.SymbolId == null)
+                .ToListAsync(cancellationToken);
+
+            foreach (var parameter in parameters)
+            {
+                if (obsoleteKeys.Contains(parameter.ParameterKey, StringComparer.OrdinalIgnoreCase) && parameter.IsActive)
+                {
+                    parameter.IsActive = false;
+                    parameter.UpdatedAtUtc = DateTime.UtcNow;
+                }
+
+                // Upgrade only the known 23.1A Adaptive seed RR=2.0 to the contract default 2.50.
+                if (strategy.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout
+                    && string.Equals(parameter.ParameterKey, "fixedRewardRisk", StringComparison.OrdinalIgnoreCase)
+                    && parameter.IsActive
+                    && IsKnown231AAdaptiveRewardRiskSeed(parameter.ParameterValue))
+                {
+                    parameter.ParameterValue = "2.50";
+                    parameter.ValueType = SettingValueType.Decimal;
+                    parameter.UpdatedAtUtc = DateTime.UtcNow;
+                }
+            }
+
+            var defaultLookup = defaults.ToDictionary(item => item.Key, StringComparer.OrdinalIgnoreCase);
+            foreach (var timeframe in defaultTimeframes)
+            {
+                foreach (var (key, value, valueType) in defaults)
+                {
+                    var existing = parameters.FirstOrDefault(parameter =>
+                        parameter.ParameterKey == key
+                        && parameter.Timeframe == timeframe
+                        && parameter.SymbolId is null);
+
+                    if (existing is null)
+                    {
+                        _dbContext.StrategyParameters.Add(new StrategyParameter
+                        {
+                            StrategyId = strategy.Id,
+                            ParameterKey = key,
+                            ParameterValue = value,
+                            ValueType = valueType,
+                            Timeframe = timeframe,
+                            SymbolId = null,
+                            IsActive = true,
+                            CreatedAtUtc = DateTime.UtcNow,
+                            UpdatedAtUtc = DateTime.UtcNow
+                        });
+                        continue;
+                    }
+
+                    if (!existing.IsActive)
+                    {
+                        existing.IsActive = true;
+                        existing.UpdatedAtUtc = DateTime.UtcNow;
+                    }
+
+                    // Backfill contract defaults only when the row still carries an empty/missing contract value.
+                    if (string.IsNullOrWhiteSpace(existing.ParameterValue)
+                        && defaultLookup.TryGetValue(key, out var contractDefault))
+                    {
+                        existing.ParameterValue = contractDefault.Value;
+                        existing.ValueType = contractDefault.Type;
+                        existing.UpdatedAtUtc = DateTime.UtcNow;
+                    }
+                }
+            }
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static bool IsKnown231AAdaptiveRewardRiskSeed(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return decimal.TryParse(value, System.Globalization.NumberStyles.Number,
+                   System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+               && parsed == 2.0m;
+    }
+
     private void DetachAddedStrategies()
     {
         foreach (var entry in _dbContext.ChangeTracker.Entries<Strategy>()
@@ -669,23 +785,75 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
 
     private static readonly (string Key, string Value, SettingValueType Type)[] MomoAdaptiveMultiTimeframeTrendBreakoutDefaults =
     [
-        ("htfTrendTimeframe", "1h", SettingValueType.String),
-        ("htfStructureTimeframe", "15m", SettingValueType.String),
-        ("requireHtfTrendAlignment", "true", SettingValueType.Bool),
-        ("requireHtfStructureBreak", "true", SettingValueType.Bool),
-        ("minBreakoutStrength", "60", SettingValueType.Decimal),
-        ("fixedRewardRisk", "2.0", SettingValueType.Decimal),
-        ("stopBufferPercent", "0.05", SettingValueType.Decimal)
+        ("htfFastEmaPeriod", "50", SettingValueType.Int),
+        ("htfSlowEmaPeriod", "200", SettingValueType.Int),
+        ("htfSlopeLookback", "5", SettingValueType.Int),
+        ("ltfFastEmaPeriod", "20", SettingValueType.Int),
+        ("ltfSlowEmaPeriod", "50", SettingValueType.Int),
+        ("breakoutLookback", "20", SettingValueType.Int),
+        ("fastAtrPeriod", "14", SettingValueType.Int),
+        ("slowAtrPeriod", "100", SettingValueType.Int),
+        ("minVolatilityRatio", "1.00", SettingValueType.Decimal),
+        ("maxVolatilityRatio", "2.25", SettingValueType.Decimal),
+        ("baseBreakoutBufferAtr", "0.10", SettingValueType.Decimal),
+        ("volatilitySensitivity", "0.15", SettingValueType.Decimal),
+        ("minBreakoutBufferAtr", "0.05", SettingValueType.Decimal),
+        ("maxBreakoutBufferAtr", "0.35", SettingValueType.Decimal),
+        ("macdFast", "12", SettingValueType.Int),
+        ("macdSlow", "26", SettingValueType.Int),
+        ("macdSignal", "9", SettingValueType.Int),
+        ("requireHistogramExpansion", "true", SettingValueType.Bool),
+        ("maxRetestBars", "8", SettingValueType.Int),
+        ("retestToleranceAtr", "0.35", SettingValueType.Decimal),
+        ("maxBreakoutChaseAtr", "1.00", SettingValueType.Decimal),
+        ("stopBufferAtr", "0.20", SettingValueType.Decimal),
+        ("fixedRewardRisk", "2.50", SettingValueType.Decimal),
+        ("minStrength", "70", SettingValueType.Decimal)
+    ];
+
+    private static readonly string[] MomoAdaptiveObsoleteParameterKeys =
+    [
+        "htfTrendTimeframe",
+        "htfStructureTimeframe",
+        "requireHtfTrendAlignment",
+        "requireHtfStructureBreak",
+        "minBreakoutStrength",
+        "stopBufferPercent"
     ];
 
     private static readonly (string Key, string Value, SettingValueType Type)[] MomoVolatilityRangeReversionDefaults =
     [
-        ("rangeLookbackBars", "20", SettingValueType.Int),
-        ("maxVolatilityAtrPercent", "2.0", SettingValueType.Decimal),
-        ("meanReversionZonePercent", "0.25", SettingValueType.Decimal),
-        ("requireRangeConfirmation", "true", SettingValueType.Bool),
-        ("fixedRewardRisk", "2.0", SettingValueType.Decimal),
-        ("stopBufferPercent", "0.05", SettingValueType.Decimal)
+        ("rangeLookback", "48", SettingValueType.Int),
+        ("minRangeWidthAtr", "3.0", SettingValueType.Decimal),
+        ("maxRangeWidthAtr", "12.0", SettingValueType.Decimal),
+        ("fastEmaPeriod", "20", SettingValueType.Int),
+        ("slowEmaPeriod", "50", SettingValueType.Int),
+        ("maxEmaSeparationAtr", "0.50", SettingValueType.Decimal),
+        ("slopeLookback", "5", SettingValueType.Int),
+        ("maxSlowEmaSlopeAtr", "0.15", SettingValueType.Decimal),
+        ("fastAtrPeriod", "14", SettingValueType.Int),
+        ("slowAtrPeriod", "100", SettingValueType.Int),
+        ("minVolatilityRatio", "0.65", SettingValueType.Decimal),
+        ("maxVolatilityRatio", "1.25", SettingValueType.Decimal),
+        ("rsiPeriod", "14", SettingValueType.Int),
+        ("rsiOversold", "35", SettingValueType.Decimal),
+        ("rsiOverbought", "65", SettingValueType.Decimal),
+        ("boundaryToleranceAtr", "0.15", SettingValueType.Decimal),
+        ("minimumWickPercent", "30", SettingValueType.Decimal),
+        ("stopBufferAtr", "0.25", SettingValueType.Decimal),
+        ("minimumRewardRisk", "1.25", SettingValueType.Decimal),
+        ("targetMode", "RangeMidpoint", SettingValueType.String),
+        ("minStrength", "65", SettingValueType.Decimal)
+    ];
+
+    private static readonly string[] MomoRangeObsoleteParameterKeys =
+    [
+        "rangeLookbackBars",
+        "maxVolatilityAtrPercent",
+        "meanReversionZonePercent",
+        "requireRangeConfirmation",
+        "fixedRewardRisk",
+        "stopBufferPercent"
     ];
 
     private static bool IsDuplicateStrategyException(DbUpdateException exception) =>

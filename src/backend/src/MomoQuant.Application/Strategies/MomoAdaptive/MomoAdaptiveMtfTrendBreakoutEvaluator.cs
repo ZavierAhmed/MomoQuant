@@ -1,4 +1,5 @@
 using System.Text.Json;
+using MomoQuant.Application.Common;
 using MomoQuant.Application.Strategies.Implementations;
 using MomoQuant.Application.Strategies.PriceStructure;
 using MomoQuant.Domain.Enums;
@@ -92,12 +93,25 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
         IReadOnlyList<Candle> candles,
         IReadOnlyList<Candle> higherTimeframeCandles,
         IReadOnlyDictionary<string, string> parameters,
+        MarketRegime marketRegime,
         IReadOnlySet<string> seenFingerprints,
         string strategyCode,
         long symbolId,
         string timeframe)
     {
         var settings = ReadParameters(parameters);
+
+        var validationResult = ValidateParameters(settings);
+        if (validationResult != null)
+        {
+            return (null, validationResult);
+        }
+
+        if (marketRegime != MarketRegime.Trending && marketRegime != MarketRegime.Breakout)
+        {
+            return (null, MomoAdaptiveMtfRejectionCodes.UnsupportedRegime);
+        }
+
         var minLtfBars = ComputeMinLtfBars(settings);
         if (candles.Count < minLtfBars)
         {
@@ -120,21 +134,18 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
 
         if (!TryGetEma(ltfEmaFast, currentIndex, settings.LtfFastEmaPeriod, out var execEmaFast) ||
             !TryGetEma(ltfEmaSlow, currentIndex, settings.LtfSlowEmaPeriod, out var execEmaSlow) ||
-            !TryGetAtr(ltfAtrFast, currentIndex, settings.FastAtrPeriod, out var atrFast) ||
-            !TryGetAtr(ltfAtrSlow, currentIndex, settings.SlowAtrPeriod, out var atrSlow) ||
+            !TryGetAtr(ltfAtrFast, currentIndex, settings.FastAtrPeriod, out var confirmationAtrFast) ||
+            !TryGetAtr(ltfAtrSlow, currentIndex, settings.SlowAtrPeriod, out var confirmationAtrSlow) ||
             !TryGetMacdHistogram(macdHistogram, currentIndex, settings, out var histogram) ||
             !TryGetMacdHistogram(macdHistogram, currentIndex - 1, settings, out var previousHistogram))
         {
             return (null, MomoAdaptiveMtfRejectionCodes.MtfDataUnavailable);
         }
 
-        if (atrSlow <= 0m)
+        if (confirmationAtrSlow <= 0m || confirmationAtrFast <= 0m)
         {
             return (null, MomoAdaptiveMtfRejectionCodes.MtfDataUnavailable);
         }
-
-        var volRatio = atrFast / atrSlow;
-        var adaptiveBuffer = ComputeAdaptiveBuffer(settings, volRatio);
 
         var htfCloses = higherTimeframeCandles.Select(c => c.Close).ToArray();
         var htfEmaFast = ComputeEma(htfCloses, settings.HtfFastEmaPeriod);
@@ -178,11 +189,11 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                 htfClose,
                 execEmaFast,
                 execEmaSlow,
-                volRatio,
-                adaptiveBuffer,
-                atrFast,
+                confirmationAtrFast,
                 histogram,
-                previousHistogram);
+                previousHistogram,
+                ltfAtrFast,
+                ltfAtrSlow);
 
             if (candidate is not null)
             {
@@ -208,11 +219,11 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                 htfClose,
                 execEmaFast,
                 execEmaSlow,
-                volRatio,
-                adaptiveBuffer,
-                atrFast,
+                confirmationAtrFast,
                 histogram,
-                previousHistogram);
+                previousHistogram,
+                ltfAtrFast,
+                ltfAtrSlow);
 
             if (candidate is not null)
             {
@@ -223,6 +234,105 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
         }
 
         return (null, bestReason);
+    }
+
+    public static IReadOnlyDictionary<string, string> GetDefaultParameterContract()
+    {
+        var defaults = new MomoAdaptiveMtfParameters();
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        return new Dictionary<string, string>
+        {
+            ["htfFastEmaPeriod"] = defaults.HtfFastEmaPeriod.ToString(inv),
+            ["htfSlowEmaPeriod"] = defaults.HtfSlowEmaPeriod.ToString(inv),
+            ["htfSlopeLookback"] = defaults.HtfSlopeLookback.ToString(inv),
+            ["ltfFastEmaPeriod"] = defaults.LtfFastEmaPeriod.ToString(inv),
+            ["ltfSlowEmaPeriod"] = defaults.LtfSlowEmaPeriod.ToString(inv),
+            ["breakoutLookback"] = defaults.BreakoutLookback.ToString(inv),
+            ["fastAtrPeriod"] = defaults.FastAtrPeriod.ToString(inv),
+            ["slowAtrPeriod"] = defaults.SlowAtrPeriod.ToString(inv),
+            ["minVolatilityRatio"] = defaults.MinVolatilityRatio.ToString("0.00", inv),
+            ["maxVolatilityRatio"] = defaults.MaxVolatilityRatio.ToString("0.00", inv),
+            ["baseBreakoutBufferAtr"] = defaults.BaseBreakoutBufferAtr.ToString("0.00", inv),
+            ["volatilitySensitivity"] = defaults.VolatilitySensitivity.ToString("0.00", inv),
+            ["minBreakoutBufferAtr"] = defaults.MinBreakoutBufferAtr.ToString("0.00", inv),
+            ["maxBreakoutBufferAtr"] = defaults.MaxBreakoutBufferAtr.ToString("0.00", inv),
+            ["macdFast"] = defaults.MacdFast.ToString(inv),
+            ["macdSlow"] = defaults.MacdSlow.ToString(inv),
+            ["macdSignal"] = defaults.MacdSignal.ToString(inv),
+            ["requireHistogramExpansion"] = defaults.RequireHistogramExpansion ? "true" : "false",
+            ["maxRetestBars"] = defaults.MaxRetestBars.ToString(inv),
+            ["retestToleranceAtr"] = defaults.RetestToleranceAtr.ToString("0.00", inv),
+            ["maxBreakoutChaseAtr"] = defaults.MaxBreakoutChaseAtr.ToString("0.00", inv),
+            ["stopBufferAtr"] = defaults.StopBufferAtr.ToString("0.00", inv),
+            ["fixedRewardRisk"] = defaults.FixedRewardRisk.ToString("0.00", inv),
+            ["minStrength"] = defaults.MinStrength.ToString(inv)
+        };
+    }
+
+    public static int ComputeWarmupBars(MomoAdaptiveMtfParameters settings) =>
+        ComputeMinLtfBars(settings);
+
+    private static string? ValidateParameters(MomoAdaptiveMtfParameters settings)
+    {
+        if (settings.HtfFastEmaPeriod <= 0 || settings.HtfSlowEmaPeriod <= 0 ||
+            settings.HtfSlopeLookback <= 0 || settings.LtfFastEmaPeriod <= 0 ||
+            settings.LtfSlowEmaPeriod <= 0 || settings.BreakoutLookback <= 0 ||
+            settings.FastAtrPeriod <= 0 || settings.SlowAtrPeriod <= 0 ||
+            settings.MacdFast <= 0 || settings.MacdSlow <= 0 || settings.MacdSignal <= 0 ||
+            settings.MaxRetestBars <= 0)
+        {
+            return MomoAdaptiveMtfRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.HtfFastEmaPeriod >= settings.HtfSlowEmaPeriod)
+        {
+            return MomoAdaptiveMtfRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.LtfFastEmaPeriod >= settings.LtfSlowEmaPeriod)
+        {
+            return MomoAdaptiveMtfRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.FastAtrPeriod >= settings.SlowAtrPeriod)
+        {
+            return MomoAdaptiveMtfRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.MacdFast >= settings.MacdSlow)
+        {
+            return MomoAdaptiveMtfRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.MinVolatilityRatio > settings.MaxVolatilityRatio)
+        {
+            return MomoAdaptiveMtfRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.MinBreakoutBufferAtr > settings.MaxBreakoutBufferAtr)
+        {
+            return MomoAdaptiveMtfRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.RetestToleranceAtr < 0m || settings.MaxBreakoutChaseAtr < 0m ||
+            settings.StopBufferAtr < 0m || settings.BaseBreakoutBufferAtr < 0m ||
+            settings.VolatilitySensitivity < 0m || settings.MinBreakoutBufferAtr < 0m ||
+            settings.MaxBreakoutBufferAtr < 0m)
+        {
+            return MomoAdaptiveMtfRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.FixedRewardRisk <= 0m)
+        {
+            return MomoAdaptiveMtfRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.MinStrength < 0m || settings.MinStrength > 100m)
+        {
+            return MomoAdaptiveMtfRejectionCodes.InvalidParameters;
+        }
+
+        return null;
     }
 
     private static (MomoAdaptiveMtfCandidate? Candidate, string Reason) TryBuildLongCandidate(
@@ -239,11 +349,11 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
         decimal htfClose,
         decimal execEmaFast,
         decimal execEmaSlow,
-        decimal volRatio,
-        decimal adaptiveBuffer,
-        decimal atrFast,
+        decimal confirmationAtrFast,
         decimal histogram,
-        decimal previousHistogram)
+        decimal previousHistogram,
+        decimal[] ltfAtrFast,
+        decimal[] ltfAtrSlow)
     {
         if (htfFast <= htfSlow)
         {
@@ -265,16 +375,6 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
             return (null, MomoAdaptiveMtfRejectionCodes.ExecutionTrendNotAligned);
         }
 
-        if (volRatio < settings.MinVolatilityRatio)
-        {
-            return (null, MomoAdaptiveMtfRejectionCodes.VolatilityTooLow);
-        }
-
-        if (volRatio > settings.MaxVolatilityRatio)
-        {
-            return (null, MomoAdaptiveMtfRejectionCodes.VolatilityTooHigh);
-        }
-
         if (histogram <= 0m || (settings.RequireHistogramExpansion && histogram <= previousHistogram))
         {
             return (null, MomoAdaptiveMtfRejectionCodes.MomentumNotConfirmed);
@@ -285,6 +385,33 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
 
         for (var breakoutIndex = currentIndex - 1; breakoutIndex >= minBreakoutIndex; breakoutIndex--)
         {
+            if (!TryGetAtr(ltfAtrFast, breakoutIndex, settings.FastAtrPeriod, out var breakoutAtrFast) ||
+                !TryGetAtr(ltfAtrSlow, breakoutIndex, settings.SlowAtrPeriod, out var breakoutAtrSlow))
+            {
+                continue;
+            }
+
+            if (breakoutAtrSlow <= 0m)
+            {
+                continue;
+            }
+
+            var volRatio = breakoutAtrFast / breakoutAtrSlow;
+
+            if (volRatio < settings.MinVolatilityRatio)
+            {
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.VolatilityTooLow);
+                continue;
+            }
+
+            if (volRatio > settings.MaxVolatilityRatio)
+            {
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.VolatilityTooHigh);
+                continue;
+            }
+
+            var adaptiveBuffer = ComputeAdaptiveBuffer(settings, volRatio);
+
             var brokenLevel = ComputeRangeHigh(candles, breakoutIndex - settings.BreakoutLookback, breakoutIndex - 1);
             if (!brokenLevel.HasValue)
             {
@@ -298,7 +425,7 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
             }
 
             var breakoutDistance = breakoutCandle.Close - brokenLevel.Value;
-            var requiredDistance = adaptiveBuffer * atrFast;
+            var requiredDistance = adaptiveBuffer * breakoutAtrFast;
             if (breakoutDistance < requiredDistance)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.BreakoutBufferNotMet);
@@ -311,18 +438,23 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
 
             for (var i = breakoutIndex + 1; i <= retestSearchEnd; i++)
             {
+                if (!TryGetAtr(ltfAtrFast, i, settings.FastAtrPeriod, out var retestAtr))
+                {
+                    continue;
+                }
+
                 var candle = candles[i];
-                if (IsRetestInvalidatedLong(candle, brokenLevel.Value, settings.RetestToleranceAtr, atrFast))
+                if (IsRetestInvalidatedLong(candle, brokenLevel.Value, settings.RetestToleranceAtr, retestAtr))
                 {
                     bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.RetestInvalidated);
                     retestIndex = null;
                     break;
                 }
 
-                if (IsLongRetestTouch(candle, brokenLevel.Value, settings.RetestToleranceAtr, atrFast))
+                if (IsLongRetestTouch(candle, brokenLevel.Value, settings.RetestToleranceAtr, retestAtr))
                 {
                     retestIndex = i;
-                    retestLow = candle.Low;
+                    retestLow = Math.Min(retestLow, candle.Low);
                 }
             }
 
@@ -347,13 +479,13 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
             }
 
             var entry = candles[currentIndex].Close;
-            if (entry - brokenLevel.Value > settings.MaxBreakoutChaseAtr * atrFast)
+            if (entry - brokenLevel.Value > settings.MaxBreakoutChaseAtr * confirmationAtrFast)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.BreakoutOverextended);
                 continue;
             }
 
-            var stop = retestLow - (settings.StopBufferAtr * atrFast);
+            var stop = retestLow - (settings.StopBufferAtr * confirmationAtrFast);
             if (stop >= entry || stop <= 0m || entry <= 0m)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.InvalidStop);
@@ -362,6 +494,13 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
 
             var risk = entry - stop;
             var target = entry + (risk * settings.FixedRewardRisk);
+
+            if (target <= entry)
+            {
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.InvalidTarget);
+                continue;
+            }
+
             var fingerprint = BuildFingerprint(
                 strategyCode,
                 symbolId,
@@ -393,15 +532,16 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                 previousHistogram,
                 brokenLevel.Value,
                 retestLow,
-                atrFast);
+                confirmationAtrFast);
 
             var rawStrength = strengthBreakdown.Total;
-            var strength = StrategyStrengthHelper.ResolveStrength(rawStrength, settings.MinStrength);
-            if (strength < settings.MinStrength)
+            if (rawStrength < settings.MinStrength)
             {
-                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.MomentumNotConfirmed);
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.StrengthBelowMinimum);
                 continue;
             }
+
+            var strength = ConfidenceScoreNormalizer.Normalize(rawStrength);
 
             return (new MomoAdaptiveMtfCandidate
             {
@@ -447,11 +587,11 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
         decimal htfClose,
         decimal execEmaFast,
         decimal execEmaSlow,
-        decimal volRatio,
-        decimal adaptiveBuffer,
-        decimal atrFast,
+        decimal confirmationAtrFast,
         decimal histogram,
-        decimal previousHistogram)
+        decimal previousHistogram,
+        decimal[] ltfAtrFast,
+        decimal[] ltfAtrSlow)
     {
         if (htfFast >= htfSlow)
         {
@@ -473,16 +613,6 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
             return (null, MomoAdaptiveMtfRejectionCodes.ExecutionTrendNotAligned);
         }
 
-        if (volRatio < settings.MinVolatilityRatio)
-        {
-            return (null, MomoAdaptiveMtfRejectionCodes.VolatilityTooLow);
-        }
-
-        if (volRatio > settings.MaxVolatilityRatio)
-        {
-            return (null, MomoAdaptiveMtfRejectionCodes.VolatilityTooHigh);
-        }
-
         if (histogram >= 0m || (settings.RequireHistogramExpansion && histogram >= previousHistogram))
         {
             return (null, MomoAdaptiveMtfRejectionCodes.MomentumNotConfirmed);
@@ -493,6 +623,33 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
 
         for (var breakoutIndex = currentIndex - 1; breakoutIndex >= minBreakoutIndex; breakoutIndex--)
         {
+            if (!TryGetAtr(ltfAtrFast, breakoutIndex, settings.FastAtrPeriod, out var breakoutAtrFast) ||
+                !TryGetAtr(ltfAtrSlow, breakoutIndex, settings.SlowAtrPeriod, out var breakoutAtrSlow))
+            {
+                continue;
+            }
+
+            if (breakoutAtrSlow <= 0m)
+            {
+                continue;
+            }
+
+            var volRatio = breakoutAtrFast / breakoutAtrSlow;
+
+            if (volRatio < settings.MinVolatilityRatio)
+            {
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.VolatilityTooLow);
+                continue;
+            }
+
+            if (volRatio > settings.MaxVolatilityRatio)
+            {
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.VolatilityTooHigh);
+                continue;
+            }
+
+            var adaptiveBuffer = ComputeAdaptiveBuffer(settings, volRatio);
+
             var brokenLevel = ComputeRangeLow(candles, breakoutIndex - settings.BreakoutLookback, breakoutIndex - 1);
             if (!brokenLevel.HasValue)
             {
@@ -506,7 +663,7 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
             }
 
             var breakoutDistance = brokenLevel.Value - breakoutCandle.Close;
-            var requiredDistance = adaptiveBuffer * atrFast;
+            var requiredDistance = adaptiveBuffer * breakoutAtrFast;
             if (breakoutDistance < requiredDistance)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.BreakoutBufferNotMet);
@@ -519,18 +676,23 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
 
             for (var i = breakoutIndex + 1; i <= retestSearchEnd; i++)
             {
+                if (!TryGetAtr(ltfAtrFast, i, settings.FastAtrPeriod, out var retestAtr))
+                {
+                    continue;
+                }
+
                 var candle = candles[i];
-                if (IsRetestInvalidatedShort(candle, brokenLevel.Value, settings.RetestToleranceAtr, atrFast))
+                if (IsRetestInvalidatedShort(candle, brokenLevel.Value, settings.RetestToleranceAtr, retestAtr))
                 {
                     bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.RetestInvalidated);
                     retestIndex = null;
                     break;
                 }
 
-                if (IsShortRetestTouch(candle, brokenLevel.Value, settings.RetestToleranceAtr, atrFast))
+                if (IsShortRetestTouch(candle, brokenLevel.Value, settings.RetestToleranceAtr, retestAtr))
                 {
                     retestIndex = i;
-                    retestHigh = candle.High;
+                    retestHigh = Math.Max(retestHigh, candle.High);
                 }
             }
 
@@ -555,13 +717,13 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
             }
 
             var entry = candles[currentIndex].Close;
-            if (brokenLevel.Value - entry > settings.MaxBreakoutChaseAtr * atrFast)
+            if (brokenLevel.Value - entry > settings.MaxBreakoutChaseAtr * confirmationAtrFast)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.BreakoutOverextended);
                 continue;
             }
 
-            var stop = retestHigh + (settings.StopBufferAtr * atrFast);
+            var stop = retestHigh + (settings.StopBufferAtr * confirmationAtrFast);
             if (stop <= entry || stop <= 0m || entry <= 0m)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.InvalidStop);
@@ -570,6 +732,13 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
 
             var risk = stop - entry;
             var target = entry - (risk * settings.FixedRewardRisk);
+
+            if (target >= entry || target <= 0m)
+            {
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.InvalidTarget);
+                continue;
+            }
+
             var fingerprint = BuildFingerprint(
                 strategyCode,
                 symbolId,
@@ -601,15 +770,16 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                 previousHistogram,
                 brokenLevel.Value,
                 retestHigh,
-                atrFast);
+                confirmationAtrFast);
 
             var rawStrength = strengthBreakdown.Total;
-            var strength = StrategyStrengthHelper.ResolveStrength(rawStrength, settings.MinStrength);
-            if (strength < settings.MinStrength)
+            if (rawStrength < settings.MinStrength)
             {
-                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.MomentumNotConfirmed);
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.StrengthBelowMinimum);
                 continue;
             }
+
+            var strength = ConfidenceScoreNormalizer.Normalize(rawStrength);
 
             return (new MomoAdaptiveMtfCandidate
             {
@@ -693,18 +863,15 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
 
         var histDelta = Math.Abs(histogram - previousHistogram);
         var histMagnitude = Math.Abs(histogram);
-        var momentum = Clamp((histMagnitude * 500m) + (histDelta * 800m), 0m, 100m);
+        var histMagnitudeNormalized = atrFast > 0m ? (histMagnitude / atrFast) : 0m;
+        var histDeltaNormalized = atrFast > 0m ? (histDelta / atrFast) : 0m;
+        var momentum = Clamp((histMagnitudeNormalized * 25m) + (histDeltaNormalized * 30m), 0m, 100m);
 
         var retestDistance = Math.Abs(retestExtreme - brokenLevel);
         var tolerance = settings.RetestToleranceAtr * atrFast;
         var retestQuality = tolerance > 0m
             ? Clamp((1m - (retestDistance / tolerance)) * 100m, 0m, 100m)
             : 0m;
-
-        if (direction == TradeDirection.Short)
-        {
-            momentum = Clamp(momentum, 0m, 100m);
-        }
 
         return new StrengthBreakdownResult
         {
@@ -946,19 +1113,23 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
             [MomoAdaptiveMtfRejectionCodes.EntryConfirmed] = 0,
             [MomoAdaptiveMtfRejectionCodes.DuplicateSetup] = 1,
             [MomoAdaptiveMtfRejectionCodes.InvalidStop] = 2,
-            [MomoAdaptiveMtfRejectionCodes.BreakoutOverextended] = 3,
-            [MomoAdaptiveMtfRejectionCodes.WaitingForRetest] = 4,
-            [MomoAdaptiveMtfRejectionCodes.RetestExpired] = 5,
-            [MomoAdaptiveMtfRejectionCodes.RetestInvalidated] = 6,
-            [MomoAdaptiveMtfRejectionCodes.BreakoutBufferNotMet] = 7,
-            [MomoAdaptiveMtfRejectionCodes.NoBreakout] = 8,
-            [MomoAdaptiveMtfRejectionCodes.MomentumNotConfirmed] = 9,
-            [MomoAdaptiveMtfRejectionCodes.VolatilityTooLow] = 10,
-            [MomoAdaptiveMtfRejectionCodes.VolatilityTooHigh] = 11,
-            [MomoAdaptiveMtfRejectionCodes.ExecutionTrendNotAligned] = 12,
-            [MomoAdaptiveMtfRejectionCodes.HtfSlopeNotAligned] = 13,
-            [MomoAdaptiveMtfRejectionCodes.HtfTrendNotAligned] = 14,
-            [MomoAdaptiveMtfRejectionCodes.MtfDataUnavailable] = 15
+            [MomoAdaptiveMtfRejectionCodes.InvalidTarget] = 3,
+            [MomoAdaptiveMtfRejectionCodes.BreakoutOverextended] = 4,
+            [MomoAdaptiveMtfRejectionCodes.StrengthBelowMinimum] = 5,
+            [MomoAdaptiveMtfRejectionCodes.WaitingForRetest] = 6,
+            [MomoAdaptiveMtfRejectionCodes.RetestExpired] = 7,
+            [MomoAdaptiveMtfRejectionCodes.RetestInvalidated] = 8,
+            [MomoAdaptiveMtfRejectionCodes.BreakoutBufferNotMet] = 9,
+            [MomoAdaptiveMtfRejectionCodes.NoBreakout] = 10,
+            [MomoAdaptiveMtfRejectionCodes.MomentumNotConfirmed] = 11,
+            [MomoAdaptiveMtfRejectionCodes.VolatilityTooLow] = 12,
+            [MomoAdaptiveMtfRejectionCodes.VolatilityTooHigh] = 13,
+            [MomoAdaptiveMtfRejectionCodes.ExecutionTrendNotAligned] = 14,
+            [MomoAdaptiveMtfRejectionCodes.HtfSlopeNotAligned] = 15,
+            [MomoAdaptiveMtfRejectionCodes.HtfTrendNotAligned] = 16,
+            [MomoAdaptiveMtfRejectionCodes.UnsupportedRegime] = 17,
+            [MomoAdaptiveMtfRejectionCodes.InvalidParameters] = 18,
+            [MomoAdaptiveMtfRejectionCodes.MtfDataUnavailable] = 19
         };
 
         if (string.IsNullOrEmpty(current))

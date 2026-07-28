@@ -164,7 +164,7 @@ public static class PriceStructureBreakoutRetestEvaluator
             if (IsBullishRetestTouch(candle, swing.Price, tolerance, settings))
             {
                 retestIndex = i;
-                retestLow = candle.Low;
+                retestLow = Math.Min(retestLow, candle.Low);
             }
         }
 
@@ -306,7 +306,7 @@ public static class PriceStructureBreakoutRetestEvaluator
             if (IsBearishRetestTouch(candle, swing.Price, tolerance, settings))
             {
                 retestIndex = i;
-                retestHigh = candle.High;
+                retestHigh = Math.Max(retestHigh, candle.High);
             }
         }
 
@@ -808,13 +808,34 @@ public static class PriceStructureBreakoutRetestEvaluator
         ConfirmedSwing swing,
         int breakoutIndex,
         int retestIndex,
-        IReadOnlyList<Candle> candles)
+        IReadOnlyList<Candle> candles) =>
+        BuildFingerprint(
+            strategyCode,
+            symbolId,
+            timeframe,
+            direction,
+            swing,
+            breakoutIndex,
+            retestIndex,
+            candles,
+            StrategyVersion);
+
+    public static string BuildFingerprint(
+        string strategyCode,
+        long symbolId,
+        string timeframe,
+        TradeDirection direction,
+        ConfirmedSwing swing,
+        int breakoutIndex,
+        int retestIndex,
+        IReadOnlyList<Candle> candles,
+        string version)
     {
         var swingLabel = swing.IsHigh ? "SWINGHIGH" : "SWINGLOW";
         var level = Math.Round(swing.Price, 8);
         var breakTs = candles[breakoutIndex].OpenTimeUtc.ToString("yyyyMMdd'T'HHmm");
         var retestTs = candles[retestIndex].OpenTimeUtc.ToString("yyyyMMdd'T'HHmm");
-        var raw = $"{strategyCode}|v{StrategyVersion}|{symbolId}|{timeframe}|{direction}|{swingLabel}_{level}|BREAK_{breakTs}|RETEST_{retestTs}";
+        var raw = $"{strategyCode}|v{version}|{symbolId}|{timeframe}|{direction}|{swingLabel}_{level}|BREAK_{breakTs}|RETEST_{retestTs}";
         return SetupFingerprintHasher.Hash(raw);
     }
 

@@ -14,7 +14,7 @@ import { CheckboxField, DateField, MultiSelectField, NumberField, SelectField, T
 import { EXECUTION_MODE_OPTIONS } from '@/constants/tradingOptions';
 import { formatDate, formatNumber } from '@/components/common/utils';
 import { useAsync } from '@/hooks/useAsync';
-import { isOperationallySelectableStrategy } from '@/constants/canonicalStrategies';
+import { isCanonicalStrategyCode, isOperationallySelectableStrategy } from '@/constants/canonicalStrategies';
 import { useReferenceData } from '@/hooks/useReferenceData';
 import { useRole } from '@/hooks/useRole';
 import { useShowDisabledStrategies } from '@/hooks/useSessionPolling';
@@ -290,12 +290,10 @@ export function StrategyBenchmarksPage() {
   }
 
   const estimatedRuns = preflight?.estimatedTotalRuns ?? (resolvedSymbols.length * Math.max(1, form.strategyIds.length));
-  const controlledStrategyIds = useMemo(
+  const canonicalStrategyIds = useMemo(
     () =>
       (reference.strategies ?? [])
-        .filter((strategy) =>
-          strategy.name.toUpperCase().includes('EMA PULLBACK') ||
-          strategy.name.toUpperCase().includes('4H RANGE RE-ENTRY'))
+        .filter((strategy) => isCanonicalStrategyCode(strategy.code) && strategy.isOperationallySelectable !== false)
         .map((strategy) => strategy.id),
     [reference.strategies],
   );
@@ -475,13 +473,13 @@ export function StrategyBenchmarksPage() {
               onClick={() =>
                 setForm((c) => ({
                   ...c,
-                  name: 'Debug Benchmark - BNBUSDT 3m 2 Strategies 10 Days',
+                  name: 'Canonical Portfolio Benchmark Preset',
                   symbolIds: exchangeSymbols.symbols.filter((s) => s.symbol === 'BNBUSDT').map((s) => s.id),
                   timeframes: ['5m'],
                   executionTimeframeMode: 'AutoSelectByStrategy',
                   strategyExecutionScope: 'PreferredOnly',
                   manualExecutionTimeframes: [],
-                  strategyIds: controlledStrategyIds,
+                  strategyIds: canonicalStrategyIds,
                   warmupFromDate: '2026-05-25',
                   benchmarkFromDate: '2026-06-01',
                   benchmarkToDate: '2026-06-10',
@@ -493,7 +491,7 @@ export function StrategyBenchmarksPage() {
                 }))
               }
             >
-              Use controlled debug benchmark (2 runs)
+              Use canonical portfolio preset
             </button>
           </div>
           <div className="mt-2 rounded border border-slate-800 bg-slate-950/40 p-2 text-xs text-slate-400">

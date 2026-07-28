@@ -40,8 +40,9 @@ public class StrategyDetailByCodeTests
         Assert.Equal("15m", result.Data!.PreferredTimeframe);
         Assert.Contains("4h", result.Data.AllowedTimeframes);
         Assert.Contains("SuperTrend", result.Data.RequiredIndicators);
-        Assert.True(result.Data.SupportsOptimization);
-        Assert.True(result.Data.SupportsValidation);
+        // Archived strategies are not operationally optimizable/validatable under StrategyCapabilityPolicy.
+        Assert.False(result.Data.SupportsOptimization);
+        Assert.False(result.Data.SupportsValidation);
         Assert.False(string.IsNullOrWhiteSpace(result.Data.HowItWorks));
         Assert.NotEmpty(result.Data.ParameterDefinitions);
     }
