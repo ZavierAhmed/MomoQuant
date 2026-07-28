@@ -58,8 +58,7 @@ public sealed class StrategyLabService : IStrategyLabService
 {
     private static readonly HashSet<string> LabStrategyCodes =
     [
-        StrategyCodes.PriceStructureBreakoutRetest,
-        StrategyCodes.PriceStructureLiquiditySweepReclaim
+        StrategyCodes.PriceStructureBreakoutRetest
     ];
 
     private readonly IStrategyLabRunRepository _runRepository;
@@ -95,8 +94,8 @@ public sealed class StrategyLabService : IStrategyLabService
             {
                 Code = code,
                 Name = entity?.Name ?? code,
-                Version = "1.0.0",
-                Category = code.Contains("LIQUIDITY") ? "Price Action / Liquidity" : "Price Action / Market Structure",
+                Version = "1.1.0",
+                Category = "Price Action / Market Structure",
                 AllowedTimeframes = ["5m", "15m", "30m", "1h", "4h"],
                 PreferredTimeframe = "15m"
             };
@@ -112,13 +111,29 @@ public sealed class StrategyLabService : IStrategyLabService
             return ServiceResult<StrategyLabRunDto>.Fail("Strategy is not enabled for Strategy Laboratory.");
         }
 
+        StrategyCode strategyEnum;
+        try
+        {
+            strategyEnum = StrategyCodeExtensions.FromCode(request.StrategyCode);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return ServiceResult<StrategyLabRunDto>.Fail("Strategy code is invalid.", "strategyCode");
+        }
+
+        if (!CanonicalStrategyPortfolio.CanCreateNewRun(strategyEnum))
+        {
+            return ServiceResult<StrategyLabRunDto>.Fail(
+                CanonicalStrategyPortfolio.ArchivedCannotUseMessage(request.StrategyCode),
+                "strategyCode");
+        }
+
         var symbol = await _symbolRepository.GetByIdAsync(request.SymbolId, cancellationToken);
         if (symbol is null)
         {
             return ServiceResult<StrategyLabRunDto>.Fail("Symbol not found.");
         }
 
-        var strategyEnum = StrategyCodeExtensions.FromCode(request.StrategyCode);
         var strategyEntity = await _strategyRepository.GetByCodeAsync(strategyEnum, cancellationToken);
         var version = strategyEntity?.Version ?? "1.0.0";
         var parameters = request.Parameters ?? new Dictionary<string, string>();
@@ -539,11 +554,9 @@ public sealed class StrategyLabService : IStrategyLabService
         }
 
         Strategy? breakoutEntity = null;
-        Strategy? sweepEntity = null;
         try
         {
             breakoutEntity = await _strategyRepository.GetByCodeAsync(StrategyCode.PriceStructureBreakoutRetest, cancellationToken);
-            sweepEntity = await _strategyRepository.GetByCodeAsync(StrategyCode.PriceStructureLiquiditySweepReclaim, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -551,32 +564,19 @@ public sealed class StrategyLabService : IStrategyLabService
         }
 
         var breakoutRegistered = breakoutEntity is not null;
-        var sweepRegistered = sweepEntity is not null;
         if (!breakoutRegistered)
         {
             issues.Add("PRICE_STRUCTURE_BREAKOUT_RETEST is not registered in the database.");
         }
 
-        if (!sweepRegistered)
-        {
-            issues.Add("PRICE_STRUCTURE_LIQUIDITY_SWEEP_RECLAIM is not registered in the database.");
-        }
-
         var breakoutResolvable = _strategyRegistry.GetByCode(StrategyCode.PriceStructureBreakoutRetest) is not null;
-        var sweepResolvable = _strategyRegistry.GetByCode(StrategyCode.PriceStructureLiquiditySweepReclaim) is not null;
         if (!breakoutResolvable)
         {
             issues.Add("PRICE_STRUCTURE_BREAKOUT_RETEST is not resolvable from strategy registry.");
         }
 
-        if (!sweepResolvable)
-        {
-            issues.Add("PRICE_STRUCTURE_LIQUIDITY_SWEEP_RECLAIM is not resolvable from strategy registry.");
-        }
-
         var syntheticAvailable =
-            SyntheticScenarioCatalog.ForStrategy(StrategyCodes.PriceStructureBreakoutRetest).Count > 0
-            && SyntheticScenarioCatalog.ForStrategy(StrategyCodes.PriceStructureLiquiditySweepReclaim).Count > 0;
+            SyntheticScenarioCatalog.ForStrategy(StrategyCodes.PriceStructureBreakoutRetest).Count > 0;
         if (!syntheticAvailable)
         {
             issues.Add("Synthetic test scenarios are missing.");
@@ -589,9 +589,9 @@ public sealed class StrategyLabService : IStrategyLabService
             StrategyLabRunTableAvailable = runTable,
             StrategyResearchCandidateTableAvailable = candidateTable,
             BreakoutRetestRegistered = breakoutRegistered,
-            LiquiditySweepRegistered = sweepRegistered,
+            LiquiditySweepRegistered = false,
             BreakoutRetestResolvable = breakoutResolvable,
-            LiquiditySweepResolvable = sweepResolvable,
+            LiquiditySweepResolvable = false,
             SyntheticTestsAvailable = syntheticAvailable,
             Issues = issues,
             Status = healthy ? "Healthy" : "Degraded"

@@ -130,7 +130,8 @@ public sealed class StrategyBacktestSliceRunner : IStrategyBacktestSliceRunner
             Timeframe = dataset.Timeframe,
             Candles = dataset.Candles,
             IndicatorSnapshots = dataset.IndicatorSnapshots,
-            EvaluationIndices = evaluationIndices
+            EvaluationIndices = evaluationIndices,
+            HigherTimeframeSeriesByTimeframe = dataset.HigherTimeframeSeriesByTimeframe
         };
 
         var riskRules = await _riskRuleRepository.GetByProfileIdAsync(request.RiskProfileId, cancellationToken);

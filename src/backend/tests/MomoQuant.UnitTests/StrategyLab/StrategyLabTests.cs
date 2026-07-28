@@ -262,6 +262,77 @@ public class PriceStructureBreakoutRetestEvaluatorTests
         Assert.Equal(PriceStructureRejectionCodes.DuplicateSetup, reason);
     }
 
+    [Fact]
+    public void StrategyVersion_Is_1_1_0()
+    {
+        Assert.Equal("1.1.0", PriceStructureBreakoutRetestEvaluator.StrategyVersion);
+        Assert.Equal("1.0.0", PriceStructureBreakoutRetestEvaluator.StrategyVersionV10);
+    }
+
+    [Theory]
+    [InlineData("BullishReactionClose", "ReactionClose")]
+    [InlineData("BullishEngulfing", "Engulfing")]
+    [InlineData("CloseAbovePreviousHigh", "CloseBeyondPreviousExtreme")]
+    [InlineData("NoConfirmation", "NoConfirmation")]
+    public void NormalizeConfirmationMode_MapsLegacyAliases(string input, string expected)
+    {
+        Assert.Equal(expected, PriceStructureBreakoutRetestEvaluator.NormalizeConfirmationMode(input));
+    }
+
+    [Fact]
+    public void LegacyConfirmationAlias_StillEvaluatesBullishScenario()
+    {
+        var scenario = new BullishBreakoutRetestScenario();
+        var candles = scenario.BuildCandles().ToList();
+        var parameters = new Dictionary<string, string>
+        {
+            ["confirmationMode"] = "BullishReactionClose"
+        };
+
+        PriceStructureCandidateDto? candidate = null;
+        for (var i = 10; i < candles.Count; i++)
+        {
+            var slice = candles.Take(i + 1).ToList();
+            (candidate, _) = PriceStructureBreakoutRetestEvaluator.EvaluateAtCurrentCandle(
+                slice, parameters, new HashSet<string>(), "PRICE_STRUCTURE_BREAKOUT_RETEST", 1, "15m");
+            if (candidate is not null)
+            {
+                break;
+            }
+        }
+
+        Assert.NotNull(candidate);
+    }
+
+    [Fact]
+    public void ComputeStrengthBreakdown_ReturnsDeterministicComponents()
+    {
+        var scenario = new BullishBreakoutRetestScenario();
+        var candles = scenario.BuildCandles().ToList();
+        var settings = PriceStructureBreakoutRetestEvaluator.ReadParameters(new Dictionary<string, string>());
+        PriceStructureCandidateDto? candidate = null;
+        for (var i = 10; i < candles.Count; i++)
+        {
+            var slice = candles.Take(i + 1).ToList();
+            (candidate, _) = PriceStructureBreakoutRetestEvaluator.EvaluateAtCurrentCandle(
+                slice, new Dictionary<string, string>(), new HashSet<string>(), "PRICE_STRUCTURE_BREAKOUT_RETEST", 1, "15m");
+            if (candidate is not null)
+            {
+                candles = slice;
+                break;
+            }
+        }
+
+        Assert.NotNull(candidate);
+        var breakdown = PriceStructureBreakoutRetestEvaluator.ComputeStrengthBreakdown(candles, candidate, settings);
+        Assert.InRange(breakdown.Total, 0m, 100m);
+        Assert.Equal(breakdown.Total,
+            breakdown.BreakoutDistanceScore
+            + breakdown.RetestQualityScore
+            + breakdown.ConfirmationQualityScore
+            + breakdown.RewardRiskValidityScore);
+    }
+
     private static Candle Make(int index, decimal open, decimal high, decimal low, decimal close) => new()
     {
         Id = index + 1,

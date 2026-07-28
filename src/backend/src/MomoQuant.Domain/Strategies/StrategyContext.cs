@@ -12,6 +12,13 @@ public sealed class StrategyContext
     public string? Symbol { get; init; }
     public required Timeframe Timeframe { get; init; }
     public required Timeframe HigherTimeframe { get; init; }
+
+    /// <summary>
+    /// Closed higher-timeframe candles visible at evaluation time (CloseTimeUtc &lt;= T).
+    /// Empty by default for legacy direct unit tests that do not supply HTF series.
+    /// </summary>
+    public IReadOnlyList<Candle> HigherTimeframeCandles { get; init; } = Array.Empty<Candle>();
+
     public required MarketRegime MarketRegime { get; init; }
     public required IReadOnlyList<Candle> Candles { get; init; }
     public required IndicatorSnapshot? IndicatorSnapshot { get; init; }

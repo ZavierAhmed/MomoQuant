@@ -149,6 +149,22 @@ public static class StrategyCatalogContentProvider
                 RiskManagement: "Strategy Laboratory simulates raw outcomes independently. Normal risk gating is observational only in lab modes.",
                 ApproximationNotes: "Pure price-structure v1.0.0 with no indicator filters.",
                 ImplementationNotes: requirement?.Notes),
+            StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout => new StrategyContent(
+                HowItWorks: "Identifies trending conditions by analyzing structure breaks across multiple higher timeframes. Enters on execution timeframe when HTF filters confirm directional alignment and breakout momentum.",
+                EntryLogic: "Enter on confirmed breakout close when higher timeframe trend and structure filters align. Requires HTF trend alignment (1h) and HTF structure break confirmation (15m or configured mapping).",
+                ExitLogic: "Fixed R-multiple target (default 2R) with stop placed beyond recent structure or breakout invalidation level plus buffer.",
+                NoTradeConditions: "HtfTrendMisaligned, HtfStructureNotBroken, NoBreakoutConfirmation, InvalidStop, LowBreakoutStrength.",
+                RiskManagement: "All trades require risk-engine approval. Stop placement adapts to HTF structure context. Breakout strength filters reduce false entries.",
+                ApproximationNotes: "Multi-timeframe trend continuation strategy. Designed for trending and breakout regimes. HTF filters mapped per execution timeframe (5m:1h, 15m:4h, 1h:4h, 4h:1d).",
+                ImplementationNotes: requirement?.Notes),
+            StrategyCode.MomoVolatilityRangeReversion => new StrategyContent(
+                HowItWorks: "Detects ranging market conditions using volatility and price structure. Enters mean-reversion trades when price reaches range extremes with low volatility confirmation.",
+                EntryLogic: "Enter at range extreme when price is in mean reversion zone (default 25% from edge), volatility is below threshold (max 2.0% ATR), and range confirmation is valid.",
+                ExitLogic: "Fixed 2R target with stop beyond range boundary plus buffer. Exit if range breaks or volatility exceeds threshold.",
+                NoTradeConditions: "NoRangeDetected, HighVolatility, NotInReversionZone, RangeBreakout, InvalidStop.",
+                RiskManagement: "All trades require risk-engine approval. Volatility filters reduce entries during expansion. Range boundary validation prevents trading during trend transitions.",
+                ApproximationNotes: "Range-bound mean reversion strategy. Designed for ranging and low-volatility regimes. Uses volatility (ATR %) and range lookback for structure confirmation.",
+                ImplementationNotes: requirement?.Notes),
             _ => new StrategyContent(
                 HowItWorks: strategy.Description,
                 EntryLogic: "Entry rules are defined by the strategy plugin and configured parameters.",

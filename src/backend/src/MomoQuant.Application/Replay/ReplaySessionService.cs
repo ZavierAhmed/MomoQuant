@@ -43,6 +43,7 @@ public sealed class ReplaySessionService : IReplaySessionService
     private readonly IAuditService _auditService;
     private readonly IMarketDataCoverageService? _coverageService;
     private readonly IStrategyDataRequirementService? _requirementService;
+    private readonly IHigherTimeframeDatasetEnricher _higherTimeframeDatasetEnricher;
 
     public ReplaySessionService(
         IReplaySessionRepository replaySessionRepository,
@@ -57,6 +58,7 @@ public sealed class ReplaySessionService : IReplaySessionService
         IReplayStateStore stateStore,
         ICurrentUserService currentUserService,
         IAuditService auditService,
+        IHigherTimeframeDatasetEnricher higherTimeframeDatasetEnricher,
         IMarketDataCoverageService? coverageService = null,
         IStrategyDataRequirementService? requirementService = null)
     {
@@ -72,6 +74,7 @@ public sealed class ReplaySessionService : IReplaySessionService
         _stateStore = stateStore;
         _currentUserService = currentUserService;
         _auditService = auditService;
+        _higherTimeframeDatasetEnricher = higherTimeframeDatasetEnricher;
         _coverageService = coverageService;
         _requirementService = requirementService;
     }
@@ -261,6 +264,13 @@ public sealed class ReplaySessionService : IReplaySessionService
                     return ServiceResult<ValidatedReplayRequest>.Fail($"Strategy {strategyId} was not found.", "strategyIds");
                 }
 
+                if (!CanonicalStrategyPortfolio.CanCreateNewRun(strategy.Code))
+                {
+                    return ServiceResult<ValidatedReplayRequest>.Fail(
+                        CanonicalStrategyPortfolio.ArchivedCannotUseMessage(strategy.Code.ToCode()),
+                        "strategyIds");
+                }
+
                 if (!strategy.IsEnabled)
                 {
                     return ServiceResult<ValidatedReplayRequest>.Fail(
@@ -309,6 +319,10 @@ public sealed class ReplaySessionService : IReplaySessionService
             return ServiceResult<ValidatedReplayRequest>.Fail("No enabled strategy plugins were found for the requested strategies.", "strategyIds");
         }
 
+        var enrichedDataset = candleOnlyReplay
+            ? dataset
+            : await _higherTimeframeDatasetEnricher.EnrichForStrategiesAsync(dataset, strategies, cancellationToken);
+
         var riskRules = await _riskRuleRepository.GetByProfileIdAsync(request.RiskProfileId, cancellationToken);
         var settings = new ReplaySessionSettings
         {
@@ -328,7 +342,7 @@ public sealed class ReplaySessionService : IReplaySessionService
             Timeframe = timeframe,
             ExecutionMode = executionMode,
             Speed = speed,
-            Dataset = dataset,
+            Dataset = enrichedDataset,
             Symbol = symbol,
             Strategies = strategies,
             RiskRules = riskRules,

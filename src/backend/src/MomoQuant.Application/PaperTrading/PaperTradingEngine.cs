@@ -1,5 +1,6 @@
 using MomoQuant.Application.Backtesting;
 using MomoQuant.Application.Backtesting.Simulation;
+using MomoQuant.Application.Strategies;
 
 namespace MomoQuant.Application.PaperTrading;
 
@@ -16,11 +17,16 @@ public sealed class PaperTradingEngine : IPaperTradingEngine
 {
     private readonly IBacktestEngine _backtestEngine;
     private readonly IPaperExecutionProvider _executionProvider;
+    private readonly IHigherTimeframeDatasetEnricher _higherTimeframeDatasetEnricher;
 
-    public PaperTradingEngine(IBacktestEngine backtestEngine, IPaperExecutionProvider executionProvider)
+    public PaperTradingEngine(
+        IBacktestEngine backtestEngine,
+        IPaperExecutionProvider executionProvider,
+        IHigherTimeframeDatasetEnricher higherTimeframeDatasetEnricher)
     {
         _backtestEngine = backtestEngine;
         _executionProvider = executionProvider;
+        _higherTimeframeDatasetEnricher = higherTimeframeDatasetEnricher;
     }
 
     public async Task<PaperTradingDecisionResult?> ProcessNextCandleAsync(
@@ -31,6 +37,11 @@ public sealed class PaperTradingEngine : IPaperTradingEngine
         {
             return null;
         }
+
+        state.Dataset = await _higherTimeframeDatasetEnricher.EnrichForStrategiesAsync(
+            state.Dataset,
+            state.Strategies,
+            cancellationToken);
 
         var evaluationIndex = state.NextEvaluationIndex;
         var result = state.FrozenStrategyParameters is { Count: > 0 }

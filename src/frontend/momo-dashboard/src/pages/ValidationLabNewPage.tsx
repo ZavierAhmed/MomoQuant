@@ -19,6 +19,7 @@ import {
   type ValidationPrimaryQualificationLayer,
   type ValidationQualificationProfile,
 } from '@/api/validationLabApi';
+import { filterByCanonicalCodes } from '@/constants/canonicalStrategies';
 import { parseApiClientError } from '@/utils/apiError';
 
 const STEPS = [
@@ -131,8 +132,9 @@ export function ValidationLabNewPage() {
     strategyLabApi
       .getStrategies()
       .then((data) => {
-        setStrategies(data ?? []);
-        const first = data?.[0];
+        const selectable = filterByCanonicalCodes(data ?? []);
+        setStrategies(selectable);
+        const first = selectable[0];
         if (first) {
           setForm((prev) => ({
             ...prev,

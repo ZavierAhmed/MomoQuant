@@ -54,19 +54,22 @@ public sealed class ReplayEngine : IReplayEngine
     private readonly IRiskEngine _riskEngine;
     private readonly IAiIntegrationService _aiIntegrationService;
     private readonly ISimulatedExecutionProvider _executionProvider;
+    private readonly IHigherTimeframeDatasetEnricher _higherTimeframeDatasetEnricher;
 
     public ReplayEngine(
         IStrategyEngine strategyEngine,
         IStrategyParameterProvider parameterProvider,
         IRiskEngine riskEngine,
         IAiIntegrationService aiIntegrationService,
-        ISimulatedExecutionProvider executionProvider)
+        ISimulatedExecutionProvider executionProvider,
+        IHigherTimeframeDatasetEnricher higherTimeframeDatasetEnricher)
     {
         _strategyEngine = strategyEngine;
         _parameterProvider = parameterProvider;
         _riskEngine = riskEngine;
         _aiIntegrationService = aiIntegrationService;
         _executionProvider = executionProvider;
+        _higherTimeframeDatasetEnricher = higherTimeframeDatasetEnricher;
     }
 
     public async Task<ReplayStepResult> ProcessFrameAsync(ReplayRuntimeState state, CancellationToken cancellationToken = default)
@@ -126,6 +129,11 @@ public sealed class ReplayEngine : IReplayEngine
         var recentCandles = GetRecentCandles(dataset.Candles, candleIndex);
         var recentSnapshots = GetRecentSnapshots(dataset, dataset.Candles, candleIndex);
 
+        var enrichedDataset = await _higherTimeframeDatasetEnricher.EnrichForStrategiesAsync(
+            dataset,
+            state.Strategies,
+            cancellationToken);
+
         foreach (var prepared in state.Strategies)
         {
             var parameters = await _parameterProvider.GetParametersAsync(
@@ -134,6 +142,12 @@ public sealed class ReplayEngine : IReplayEngine
                 dataset.SymbolId,
                 cancellationToken);
 
+            var (higherTimeframe, higherTimeframeCandles) = StrategyHigherTimeframeSupport.BuildContextHigherTimeframe(
+                prepared.Plugin,
+                dataset.Timeframe,
+                enrichedDataset.HigherTimeframeSeriesByTimeframe,
+                candle.CloseTimeUtc);
+
             var strategyContext = new StrategyContext
             {
                 TradingSessionId = context.TradingSessionId,
@@ -141,7 +155,8 @@ public sealed class ReplayEngine : IReplayEngine
                 SymbolId = dataset.SymbolId,
                 Symbol = dataset.SymbolName,
                 Timeframe = dataset.Timeframe,
-                HigherTimeframe = ResolveHigherTimeframe(dataset.Timeframe),
+                HigherTimeframe = higherTimeframe,
+                HigherTimeframeCandles = higherTimeframeCandles,
                 MarketRegime = regime,
                 Candles = recentCandles,
                 IndicatorSnapshot = snapshot,
@@ -769,12 +784,4 @@ public sealed class ReplayEngine : IReplayEngine
 
         return snapshots;
     }
-
-    private static Timeframe ResolveHigherTimeframe(Timeframe timeframe) => timeframe switch
-    {
-        Timeframe.M1 or Timeframe.M3 or Timeframe.M5 => Timeframe.M15,
-        Timeframe.M15 or Timeframe.M30 => Timeframe.H1,
-        Timeframe.H1 => Timeframe.H4,
-        _ => Timeframe.D1
-    };
 }

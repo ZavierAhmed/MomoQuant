@@ -30,18 +30,87 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
 
     public async Task SeedAsync(CancellationToken cancellationToken = default)
     {
-        // Strategy Laboratory strategies always seed idempotently, even when full catalog seeding is disabled.
-        await SeedStrategyLabStrategiesAsync(cancellationToken);
-
-        if (!_settings.SeedDefaultStrategies)
-        {
-            _logger.LogInformation(
-                "Default strategy seeding is disabled (StrategyCatalog:SeedDefaultStrategies=false). Skipping remaining strategy catalog seed.");
-            return;
-        }
-
         await CleanupDuplicateStrategiesAsync(cancellationToken);
 
+        await EnsureCanonicalStrategiesAsync(cancellationToken);
+
+        await DisableNonCanonicalStrategiesAsync(cancellationToken);
+
+        if (_settings.SeedDefaultStrategies)
+        {
+            await SeedLegacyStrategiesAsync(cancellationToken);
+        }
+
+        await EnsureDefaultParametersAsync(cancellationToken);
+    }
+
+    private async Task EnsureCanonicalStrategiesAsync(CancellationToken cancellationToken)
+    {
+        await EnsureStrategyAsync(
+            StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout,
+            "MOMO Adaptive Multi-Timeframe Trend Breakout",
+            "Adaptive multi-timeframe trend breakout strategy using multiple HTF confirmations.",
+            cancellationToken,
+            version: "1.0.0",
+            isEnabled: true);
+
+        await EnsureStrategyAsync(
+            StrategyCode.PriceStructureBreakoutRetest,
+            "Price Structure Breakout + Retest",
+            "Detects confirmed swing structure levels, breakout closes, retests, and confirmation using OHLC candles only.",
+            cancellationToken,
+            version: "1.1.0",
+            isEnabled: true);
+
+        await EnsureStrategyAsync(
+            StrategyCode.MomoVolatilityRangeReversion,
+            "MOMO Volatility Range Reversion",
+            "Range-bound mean reversion strategy with volatility-based entry filters.",
+            cancellationToken,
+            version: "1.0.0",
+            isEnabled: true);
+
+        await EnsureDefaultParametersForCodesAsync(
+            [
+                StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout,
+                StrategyCode.PriceStructureBreakoutRetest,
+                StrategyCode.MomoVolatilityRangeReversion
+            ],
+            cancellationToken);
+    }
+
+    private async Task DisableNonCanonicalStrategiesAsync(CancellationToken cancellationToken)
+    {
+        var canonicalCodes = new HashSet<StrategyCode>
+        {
+            StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout,
+            StrategyCode.PriceStructureBreakoutRetest,
+            StrategyCode.MomoVolatilityRangeReversion
+        };
+
+        var allStrategies = await _dbContext.Strategies.ToListAsync(cancellationToken);
+        var nonCanonical = allStrategies.Where(strategy => !canonicalCodes.Contains(strategy.Code)).ToList();
+
+        foreach (var strategy in nonCanonical)
+        {
+            if (strategy.IsEnabled)
+            {
+                strategy.IsEnabled = false;
+                strategy.UpdatedAtUtc = DateTime.UtcNow;
+                _logger.LogInformation(
+                    "Strategy {StrategyCode} disabled because it is not in canonical portfolio.",
+                    strategy.Code.ToCode());
+            }
+        }
+
+        if (nonCanonical.Any(strategy => !strategy.IsEnabled))
+        {
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private async Task SeedLegacyStrategiesAsync(CancellationToken cancellationToken)
+    {
         await EnsureStrategyAsync(
             StrategyCode.EmaPullback,
             "EMA Pullback",
@@ -126,35 +195,15 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
             "SuperTrend continuation strategy filtered by ATR volatility regime and momentum confirmation to reduce sideways-market whipsaws.",
             cancellationToken);
 
-        await EnsureDefaultParametersAsync(cancellationToken);
-    }
-
-    private async Task SeedStrategyLabStrategiesAsync(CancellationToken cancellationToken)
-    {
-        await EnsureStrategyAsync(
-            StrategyCode.PriceStructureBreakoutRetest,
-            "Price Structure Breakout + Retest",
-            "Detects confirmed swing structure levels, breakout closes, retests, and confirmation using OHLC candles only.",
-            cancellationToken,
-            version: "1.0.0",
-            isEnabled: true);
-
         await EnsureStrategyAsync(
             StrategyCode.PriceStructureLiquiditySweepReclaim,
             "Price Structure Liquidity Sweep + Reclaim",
             "Detects swing liquidity levels, sweeps through them, and reclaims the level using OHLC candles only.",
             cancellationToken,
             version: "1.0.0",
-            isEnabled: true);
-
-        // Ensure parameters exist even when full catalog seed is disabled.
-        await EnsureDefaultParametersForCodesAsync(
-            [
-                StrategyCode.PriceStructureBreakoutRetest,
-                StrategyCode.PriceStructureLiquiditySweepReclaim
-            ],
-            cancellationToken);
+            isEnabled: false);
     }
+
 
     private async Task EnsureStrategyAsync(
         StrategyCode code,
@@ -303,6 +352,8 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
             StrategyCode.VolatilityGatedSupertrendMomentum => VgSupertrendDefaults,
             StrategyCode.PriceStructureBreakoutRetest => PriceStructureBreakoutRetestDefaults,
             StrategyCode.PriceStructureLiquiditySweepReclaim => PriceStructureLiquiditySweepDefaults,
+            StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout => MomoAdaptiveMultiTimeframeTrendBreakoutDefaults,
+            StrategyCode.MomoVolatilityRangeReversion => MomoVolatilityRangeReversionDefaults,
             _ => Array.Empty<(string Key, string Value, SettingValueType Type)>()
         };
 
@@ -313,6 +364,8 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
             StrategyCode.VolatilityGatedSupertrendMomentum => new[] { Timeframe.M3, Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1, Timeframe.H4 },
             StrategyCode.PriceStructureBreakoutRetest or StrategyCode.PriceStructureLiquiditySweepReclaim =>
                 new[] { Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1, Timeframe.H4 },
+            StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout => new[] { Timeframe.M5, Timeframe.M15, Timeframe.H1, Timeframe.H4 },
+            StrategyCode.MomoVolatilityRangeReversion => new[] { Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1 },
             _ => new[] { Timeframe.M3, Timeframe.M5 }
         };
 
@@ -590,9 +643,10 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
         ("maxRetestBars", "20", SettingValueType.Int),
         ("retestTolerancePercent", "0.15", SettingValueType.Decimal),
         ("retestToleranceMode", "Percent", SettingValueType.String),
+        ("retestToleranceAtrMultiplier", "0.25", SettingValueType.Decimal),
         ("allowWickThroughLevel", "true", SettingValueType.Bool),
         ("maxRetestPenetrationPercent", "0.30", SettingValueType.Decimal),
-        ("confirmationMode", "BullishReactionClose", SettingValueType.String),
+        ("confirmationMode", "ReactionClose", SettingValueType.String),
         ("fixedRewardRisk", "2.0", SettingValueType.Decimal),
         ("stopBufferPercent", "0.05", SettingValueType.Decimal)
     ];
@@ -609,6 +663,27 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
         ("requireSameCandleReclaim", "true", SettingValueType.Bool),
         ("minimumSweepDistancePercent", "0", SettingValueType.Decimal),
         ("confirmationMode", "ReclaimCloseOnly", SettingValueType.String),
+        ("fixedRewardRisk", "2.0", SettingValueType.Decimal),
+        ("stopBufferPercent", "0.05", SettingValueType.Decimal)
+    ];
+
+    private static readonly (string Key, string Value, SettingValueType Type)[] MomoAdaptiveMultiTimeframeTrendBreakoutDefaults =
+    [
+        ("htfTrendTimeframe", "1h", SettingValueType.String),
+        ("htfStructureTimeframe", "15m", SettingValueType.String),
+        ("requireHtfTrendAlignment", "true", SettingValueType.Bool),
+        ("requireHtfStructureBreak", "true", SettingValueType.Bool),
+        ("minBreakoutStrength", "60", SettingValueType.Decimal),
+        ("fixedRewardRisk", "2.0", SettingValueType.Decimal),
+        ("stopBufferPercent", "0.05", SettingValueType.Decimal)
+    ];
+
+    private static readonly (string Key, string Value, SettingValueType Type)[] MomoVolatilityRangeReversionDefaults =
+    [
+        ("rangeLookbackBars", "20", SettingValueType.Int),
+        ("maxVolatilityAtrPercent", "2.0", SettingValueType.Decimal),
+        ("meanReversionZonePercent", "0.25", SettingValueType.Decimal),
+        ("requireRangeConfirmation", "true", SettingValueType.Bool),
         ("fixedRewardRisk", "2.0", SettingValueType.Decimal),
         ("stopBufferPercent", "0.05", SettingValueType.Decimal)
     ];

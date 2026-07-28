@@ -28,46 +28,25 @@ public sealed class StrategyRecommendationService : IStrategyRecommendationServi
         {
             [MarketRegime.Trending] =
             [
-                StrategyCode.EmaPullback,
-                StrategyCode.MacdMomentumContinuation,
-                StrategyCode.SupertrendContinuation
+                StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout
             ],
             [MarketRegime.Ranging] =
             [
-                StrategyCode.VwapMeanReversion,
-                StrategyCode.LiquiditySweep,
-                StrategyCode.RsiDivergenceReversal,
-                StrategyCode.FourHourRangeReEntry
+                StrategyCode.MomoVolatilityRangeReversion
             ],
             [MarketRegime.Breakout] =
             [
-                StrategyCode.DonchianBreakout,
-                StrategyCode.BollingerSqueezeBreakout,
-                StrategyCode.AtrVolatilityBreakout,
-                StrategyCode.SupportResistanceBreakoutRetest,
-                StrategyCode.FourHourRangeReEntry
+                StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout,
+                StrategyCode.PriceStructureBreakoutRetest
             ],
             [MarketRegime.Reversal] =
             [
-                StrategyCode.LiquiditySweep,
-                StrategyCode.RsiDivergenceReversal,
-                StrategyCode.VwapMeanReversion,
-                StrategyCode.FourHourRangeReEntry
+                StrategyCode.MomoVolatilityRangeReversion,
+                StrategyCode.PriceStructureBreakoutRetest
             ],
-            [MarketRegime.HighVolatility] =
-            [
-                StrategyCode.LiquiditySweep,
-                StrategyCode.AtrVolatilityBreakout
-            ],
-            [MarketRegime.LowVolatility] =
-            [
-                StrategyCode.BollingerSqueezeBreakout,
-                StrategyCode.DonchianBreakout
-            ],
-            [MarketRegime.Choppy] =
-            [
-                StrategyCode.VwapMeanReversion
-            ]
+            [MarketRegime.HighVolatility] = [],
+            [MarketRegime.LowVolatility] = [],
+            [MarketRegime.Choppy] = []
         };
 
     private readonly IMarketSituationService _marketSituationService;
@@ -183,8 +162,10 @@ public sealed class StrategyRecommendationService : IStrategyRecommendationServi
             });
         }
 
+        var strategyMap = candidates.ToDictionary(strategy => strategy.Id);
         var selectedByDefault = items
             .Where(item => item.Recommended && item.IsEnabled)
+            .Where(item => strategyMap.TryGetValue(item.StrategyId, out var strat) && CanonicalStrategyPortfolio.IsCanonicalActive(strat.Code))
             .OrderByDescending(item => item.SuitabilityScore)
             .Take(3)
             .Select(item => item.StrategyId)

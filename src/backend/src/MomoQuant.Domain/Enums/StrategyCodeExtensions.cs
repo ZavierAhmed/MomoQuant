@@ -22,6 +22,8 @@ public static class StrategyCodeExtensions
         StrategyCode.VolatilityGatedSupertrendMomentum => StrategyCodes.VolatilityGatedSupertrendMomentum,
         StrategyCode.PriceStructureBreakoutRetest => StrategyCodes.PriceStructureBreakoutRetest,
         StrategyCode.PriceStructureLiquiditySweepReclaim => StrategyCodes.PriceStructureLiquiditySweepReclaim,
+        StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout => StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
+        StrategyCode.MomoVolatilityRangeReversion => StrategyCodes.MomoVolatilityRangeReversion,
         _ => code.ToString()
     };
 
@@ -43,6 +45,8 @@ public static class StrategyCodeExtensions
         StrategyCodes.VolatilityGatedSupertrendMomentum => StrategyCode.VolatilityGatedSupertrendMomentum,
         StrategyCodes.PriceStructureBreakoutRetest => StrategyCode.PriceStructureBreakoutRetest,
         StrategyCodes.PriceStructureLiquiditySweepReclaim => StrategyCode.PriceStructureLiquiditySweepReclaim,
+        StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout => StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout,
+        StrategyCodes.MomoVolatilityRangeReversion => StrategyCode.MomoVolatilityRangeReversion,
         _ => throw new ArgumentOutOfRangeException(nameof(code), code, "Unknown strategy code.")
     };
 }

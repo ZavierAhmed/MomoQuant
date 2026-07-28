@@ -1,4 +1,5 @@
 using System.Text.Json;
+using MomoQuant.Application.Common;
 using MomoQuant.Application.Strategies.PriceStructure;
 using MomoQuant.Domain.Constants;
 using MomoQuant.Domain.Enums;
@@ -9,6 +10,7 @@ namespace MomoQuant.Application.Strategies.Implementations;
 public sealed class PriceStructureBreakoutRetestStrategy : StrategyBase
 {
     public const string Version = PriceStructureBreakoutRetestEvaluator.StrategyVersion;
+    public const string VersionV10 = PriceStructureBreakoutRetestEvaluator.StrategyVersionV10;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -56,10 +58,14 @@ public sealed class PriceStructureBreakoutRetestStrategy : StrategyBase
             return NoTrade(reason, reason);
         }
 
+        var settings = PriceStructureBreakoutRetestEvaluator.ReadParameters(context.StrategyParameters);
+        var strengthBreakdown = PriceStructureBreakoutRetestEvaluator.ComputeStrengthBreakdown(candles, candidate, settings);
+        var strength = ConfidenceScoreNormalizer.Normalize(strengthBreakdown.Total);
+
         return Entry(
             candidate.Direction,
-            70m,
-            70m,
+            strength,
+            strength,
             candidate.EntryPrice,
             candidate.StopLoss,
             candidate.Target1,
@@ -68,7 +74,15 @@ public sealed class PriceStructureBreakoutRetestStrategy : StrategyBase
             {
                 setupFingerprint = candidate.SetupFingerprint,
                 structure = candidate.Structure,
-                version = Version
+                version = Version,
+                strengthBreakdown = new
+                {
+                    total = strengthBreakdown.Total,
+                    breakoutDistance = strengthBreakdown.BreakoutDistanceScore,
+                    retestQuality = strengthBreakdown.RetestQualityScore,
+                    confirmationQuality = strengthBreakdown.ConfirmationQualityScore,
+                    rewardRiskValidity = strengthBreakdown.RewardRiskValidityScore
+                }
             }, JsonOptions));
     }
 

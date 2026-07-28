@@ -19,6 +19,7 @@ import { SavedParameterSetsPanel } from '@/components/strategies/SavedParameterS
 import { useAsync } from '@/hooks/useAsync';
 import { strategiesApi } from '@/api/strategiesApi';
 import { timeframeLabel } from '@/constants/timeframes';
+import { isActivePortfolioStrategy } from '@/constants/canonicalStrategies';
 
 type DetailTab = 'overview' | 'parameters' | 'synthetic' | 'health' | 'lab-runs' | 'validation' | 'optimization' | 'saved-sets';
 
@@ -68,7 +69,11 @@ export function StrategyDetailPage() {
   }
 
   const strategy = detail.data;
-  const tabOptions = isStrategyLabStrategy(strategy.code) ? LAB_TAB_OPTIONS : BASE_TAB_OPTIONS;
+  const isActivePortfolio = isActivePortfolioStrategy(strategy);
+  const baseTabOptions = isStrategyLabStrategy(strategy.code) ? LAB_TAB_OPTIONS : BASE_TAB_OPTIONS;
+  const tabOptions = isActivePortfolio
+    ? baseTabOptions
+    : baseTabOptions.filter((tab) => tab.id === 'overview' || tab.id === 'parameters' || tab.id === 'saved-sets');
 
   return (
     <div>
@@ -106,6 +111,7 @@ export function StrategyDetailPage() {
         {strategy.category ? <Badge tone="neutral">{strategy.category}</Badge> : null}
         <Badge tone="neutral">{strategy.isBuiltIn ? 'Built-in' : 'Custom'}</Badge>
         <Badge tone={strategy.isEnabled ? 'success' : 'warning'}>{strategy.isEnabled ? 'Enabled' : 'Disabled'}</Badge>
+        {!isActivePortfolio ? <Badge tone="neutral">Archived</Badge> : null}
         {(strategy.supportedModes ?? []).map((mode) => (
           <Badge key={mode} tone="info">{mode}</Badge>
         ))}
@@ -189,33 +195,43 @@ export function StrategyDetailPage() {
             ) : null}
           </section>
 
-          <section className="rounded-lg border border-slate-800 p-4">
-            <h2 className="text-lg font-medium text-slate-100">Actions</h2>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Link to="/backtesting" className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-950">
-                Run Backtest
-              </Link>
-              <Link to="/strategy-benchmarks" className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200">
-                Run Benchmark
-              </Link>
-              <button
-                type="button"
-                onClick={() => setActiveTab('validation')}
-                className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200"
-              >
-                Validate current parameters
-              </button>
-              {strategy.supportsOptimization ? (
+          {!isActivePortfolio ? (
+            <section className="rounded-lg border border-slate-800 p-4">
+              <h2 className="text-lg font-medium text-slate-100">Archived strategy</h2>
+              <p className="mt-2 text-sm text-slate-400">
+                This strategy is archived and read-only. Historical documentation remains available, but new runs,
+                optimization, and enable/disable controls are not available.
+              </p>
+            </section>
+          ) : (
+            <section className="rounded-lg border border-slate-800 p-4">
+              <h2 className="text-lg font-medium text-slate-100">Actions</h2>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Link to="/backtesting" className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-950">
+                  Run Backtest
+                </Link>
+                <Link to="/strategy-benchmarks" className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200">
+                  Run Benchmark
+                </Link>
                 <button
                   type="button"
-                  onClick={() => setActiveTab('optimization')}
-                  className="rounded-lg border border-emerald-800 px-4 py-2 text-sm text-emerald-200"
+                  onClick={() => setActiveTab('validation')}
+                  className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200"
                 >
-                  Find better parameters
+                  Validate current parameters
                 </button>
-              ) : null}
-            </div>
-          </section>
+                {strategy.supportsOptimization ? (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('optimization')}
+                    className="rounded-lg border border-emerald-800 px-4 py-2 text-sm text-emerald-200"
+                  >
+                    Find better parameters
+                  </button>
+                ) : null}
+              </div>
+            </section>
+          )}
         </>
       ) : null}
 
@@ -260,7 +276,7 @@ export function StrategyDetailPage() {
         </div>
       ) : null}
 
-      {activeTab === 'optimization' ? <TargetOptimizationLab strategy={strategy} /> : null}
+      {activeTab === 'optimization' && isActivePortfolio ? <TargetOptimizationLab strategy={strategy} /> : null}
 
       {activeTab === 'synthetic' && isStrategyLabStrategy(strategy.code) ? (
         <SyntheticTestsPanel strategyCode={strategy.code} />

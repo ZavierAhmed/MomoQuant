@@ -12,6 +12,7 @@ import { ExchangeSymbolSelector } from '@/components/strategies/ExchangeSymbolSe
 import { useReferenceData } from '@/hooks/useReferenceData';
 import { useRole } from '@/hooks/useRole';
 import { strategyLabApi, type CreateStrategyLabRunRequest, type ExposureSemanticsVersion, type StrategyLabExecutionMode, type StrategyLabStrategy } from '@/api/strategyLabApi';
+import { filterStrategyLabNewRunStrategies } from '@/constants/canonicalStrategies';
 import { parseApiClientError } from '@/utils/apiError';
 
 const EXECUTION_MODES: { value: StrategyLabExecutionMode; label: string }[] = [
@@ -73,7 +74,10 @@ export function StrategyLabPage() {
 
   useEffect(() => {
     strategyLabApi.getStrategies()
-      .then((data) => setStrategies(data ?? []))
+      .then((data) => {
+        const labStrategies = filterStrategyLabNewRunStrategies(data ?? []);
+        setStrategies(labStrategies);
+      })
       .catch((err: unknown) => setError(parseApiClientError(err).message))
       .finally(() => setLoading(false));
   }, []);

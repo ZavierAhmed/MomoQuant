@@ -8,7 +8,6 @@ import { parseApiClientError } from '@/utils/apiError';
 
 const LAB_STRATEGIES = new Set([
   'PRICE_STRUCTURE_BREAKOUT_RETEST',
-  'PRICE_STRUCTURE_LIQUIDITY_SWEEP_RECLAIM',
 ]);
 
 export function isStrategyLabStrategy(code: string) {

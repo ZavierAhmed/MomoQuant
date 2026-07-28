@@ -49,6 +49,7 @@ public sealed class PaperSessionService : IPaperSessionService
     private readonly IMarketSituationService _marketSituationService;
     private readonly ICurrentUserService _currentUserService;
     private readonly IAuditService _auditService;
+    private readonly IHigherTimeframeDatasetEnricher _higherTimeframeDatasetEnricher;
 
     public PaperSessionService(
         IPaperTradingSessionRepository sessionRepository,
@@ -67,7 +68,8 @@ public sealed class PaperSessionService : IPaperSessionService
         ILiveMarketConnectionManager liveMarketConnectionManager,
         IMarketSituationService marketSituationService,
         ICurrentUserService currentUserService,
-        IAuditService auditService)
+        IAuditService auditService,
+        IHigherTimeframeDatasetEnricher higherTimeframeDatasetEnricher)
     {
         _sessionRepository = sessionRepository;
         _accountRepository = accountRepository;
@@ -86,6 +88,7 @@ public sealed class PaperSessionService : IPaperSessionService
         _marketSituationService = marketSituationService;
         _currentUserService = currentUserService;
         _auditService = auditService;
+        _higherTimeframeDatasetEnricher = higherTimeframeDatasetEnricher;
     }
 
     public async Task<ServiceResult<PaperSessionDto>> CreateAsync(
@@ -317,6 +320,13 @@ public sealed class PaperSessionService : IPaperSessionService
                 return ServiceResult<ValidatedPaperRequest>.Fail($"Strategy {strategyId} was not found.", "strategyIds");
             }
 
+            if (!CanonicalStrategyPortfolio.CanCreateNewRun(strategy.Code))
+            {
+                return ServiceResult<ValidatedPaperRequest>.Fail(
+                    CanonicalStrategyPortfolio.ArchivedCannotUseMessage(strategy.Code.ToCode()),
+                    "strategyIds");
+            }
+
             if (!strategy.IsEnabled)
             {
                 return ServiceResult<ValidatedPaperRequest>.Fail(
@@ -460,6 +470,11 @@ public sealed class PaperSessionService : IPaperSessionService
             {
                 [selectedStrategy.Id] = frozenParameters
             };
+        }
+
+        if (dataset is not null)
+        {
+            dataset = await _higherTimeframeDatasetEnricher.EnrichForStrategiesAsync(dataset, strategies, cancellationToken);
         }
 
         return ServiceResult<ValidatedPaperRequest>.Ok(new ValidatedPaperRequest

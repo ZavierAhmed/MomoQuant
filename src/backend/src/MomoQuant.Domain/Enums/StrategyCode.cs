@@ -17,5 +17,7 @@ public enum StrategyCode
     BbLiquiditySweepCisdRsiPrimed = 13,
     VolatilityGatedSupertrendMomentum = 14,
     PriceStructureBreakoutRetest = 15,
-    PriceStructureLiquiditySweepReclaim = 16
+    PriceStructureLiquiditySweepReclaim = 16,
+    MomoAdaptiveMultiTimeframeTrendBreakout = 17,
+    MomoVolatilityRangeReversion = 18
 }

@@ -12,6 +12,7 @@ public static class StrategyCatalogMapper
         bool parameterDefinitionsAvailable)
     {
         var code = strategy.Code.ToCode();
+        var isCanonicalActive = CanonicalStrategyPortfolio.IsCanonicalActive(strategy.Code);
         return new StrategyDto
         {
             Id = strategy.Id,
@@ -40,7 +41,9 @@ public static class StrategyCatalogMapper
                     or StrategyCode.PriceStructureLiquiditySweepReclaim),
             ResearchStatus = strategy.ResearchStatus.ToString(),
             DeploymentQualificationEligible = strategy.DeploymentQualificationEligible,
-            CanonicalValidationExperimentId = strategy.CanonicalValidationExperimentId
+            CanonicalValidationExperimentId = strategy.CanonicalValidationExperimentId,
+            PortfolioStatus = isCanonicalActive ? "Active" : "Archived",
+            IsOperationallySelectable = isCanonicalActive
         };
     }
 
@@ -62,6 +65,8 @@ public static class StrategyCatalogMapper
             StrategyCode.SupportResistanceBreakoutRetest => "Breakout",
             StrategyCode.PriceStructureBreakoutRetest => "Price Action / Market Structure",
             StrategyCode.PriceStructureLiquiditySweepReclaim => "Price Action / Liquidity",
+            StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout => "Trend / Breakout",
+            StrategyCode.MomoVolatilityRangeReversion => "Range / Mean Reversion",
             _ => "General"
         };
 

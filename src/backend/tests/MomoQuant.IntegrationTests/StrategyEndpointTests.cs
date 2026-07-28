@@ -37,7 +37,7 @@ public class StrategyEndpointTests : IClassFixture<MomoQuantWebApplicationFactor
         Assert.NotNull(listPayload?.Data);
         Assert.True(listPayload.Data.Count >= 3);
 
-        var strategy = listPayload.Data.First(item => item.Code == "EMA_PULLBACK");
+        var strategy = listPayload.Data.First(item => item.Code == "PRICE_STRUCTURE_BREAKOUT_RETEST");
 
         var enableResponse = await SendAuthorizedAsync(HttpMethod.Post, $"/api/v1/strategies/{strategy.Id}/enable", adminToken);
         Assert.Equal(HttpStatusCode.OK, enableResponse.StatusCode);
@@ -55,9 +55,9 @@ public class StrategyEndpointTests : IClassFixture<MomoQuantWebApplicationFactor
                 [
                     new UpdateStrategyParameterItem
                     {
-                        ParameterKey = "PullbackTolerancePercent",
-                        ParameterValue = "0.75",
-                        Timeframe = "3m",
+                        ParameterKey = "retestTolerancePercent",
+                        ParameterValue = "0.20",
+                        Timeframe = "15m",
                         ValueType = SettingValueType.Decimal
                     }
                 ]

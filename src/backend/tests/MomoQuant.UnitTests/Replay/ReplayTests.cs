@@ -460,6 +460,18 @@ public class ReplaySessionServiceValidationTests
             new Mock<IReplayDataLoader>().Object,
             new ReplayStateStore(),
             new Mock<ICurrentUserService>().Object,
-            new Mock<IAuditService>().Object);
+            new Mock<IAuditService>().Object,
+            CreatePassthroughHigherTimeframeEnricher());
+    }
+
+    private static IHigherTimeframeDatasetEnricher CreatePassthroughHigherTimeframeEnricher()
+    {
+        var enricher = new Mock<IHigherTimeframeDatasetEnricher>();
+        enricher.Setup(e => e.EnrichForStrategiesAsync(
+                It.IsAny<BacktestDataset>(),
+                It.IsAny<IReadOnlyList<PreparedStrategy>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BacktestDataset dataset, IReadOnlyList<PreparedStrategy> _, CancellationToken _) => dataset);
+        return enricher.Object;
     }
 }

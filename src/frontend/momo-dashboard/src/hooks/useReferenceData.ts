@@ -4,6 +4,11 @@ import { paperTradingApi } from '@/api/paperTradingApi';
 import { riskApi } from '@/api/riskApi';
 import { strategiesApi } from '@/api/strategiesApi';
 import { symbolsApi } from '@/api/symbolsApi';
+import {
+  filterActivePortfolioStrategies,
+  filterArchivedStrategies,
+  filterOperationallySelectableStrategies,
+} from '@/constants/canonicalStrategies';
 import { buildSymbolOptionLabel, dedupeSymbolsByName, enabledStrategiesFirst, filterSymbolsByExchange } from '@/utils/referenceLookups';
 import { useAsync } from '@/hooks/useAsync';
 
@@ -58,21 +63,35 @@ export function useReferenceData(exchangeId?: number | null) {
     [allSymbolList, exchangeList],
   );
 
+  const allStrategies = strategies.data ?? [];
+
+  const activePortfolioStrategies = useMemo(
+    () => filterActivePortfolioStrategies(allStrategies),
+    [allStrategies],
+  );
+
+  const archivedStrategies = useMemo(
+    () => filterArchivedStrategies(allStrategies),
+    [allStrategies],
+  );
+
   const strategyOptions = useMemo(
     () =>
-      enabledStrategiesFirst(strategies.data ?? []).map((strategy) => ({
+      enabledStrategiesFirst(filterOperationallySelectableStrategies(allStrategies, true)).map((strategy) => ({
         label: `${strategy.name}${strategy.isEnabled ? '' : ' (disabled)'}`,
         value: strategy.id,
         disabled: !strategy.isEnabled,
       })),
-    [strategies.data],
+    [allStrategies],
   );
 
   function buildStrategyOptions(showDisabled: boolean) {
-    const list = showDisabled
-      ? strategyOptions
-      : strategyOptions.filter((option) => !option.disabled);
-    return list;
+    const selectable = filterOperationallySelectableStrategies(allStrategies, showDisabled);
+    return enabledStrategiesFirst(selectable).map((strategy) => ({
+      label: `${strategy.name}${strategy.isEnabled ? '' : ' (disabled)'}`,
+      value: strategy.id,
+      disabled: !strategy.isEnabled,
+    }));
   }
 
   const riskProfileOptions = useMemo(
@@ -124,7 +143,9 @@ export function useReferenceData(exchangeId?: number | null) {
     exchanges: exchangeList,
     symbols: symbols.data?.items ?? [],
     allSymbols: allSymbolList,
-    strategies: strategies.data ?? [],
+    strategies: allStrategies,
+    activePortfolioStrategies,
+    archivedStrategies,
     riskProfiles: riskProfiles.data ?? [],
     paperAccounts: paperAccounts.data?.items ?? [],
     exchangeOptions,

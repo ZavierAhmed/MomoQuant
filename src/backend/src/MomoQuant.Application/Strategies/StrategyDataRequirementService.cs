@@ -1,6 +1,8 @@
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Common;
+using MomoQuant.Application.MarketData;
 using MomoQuant.Application.Strategies.Dtos;
+using MomoQuant.Application.Strategies.MomoAdaptive;
 using MomoQuant.Domain.Constants;
 using MomoQuant.Domain.Enums;
 using StrategyEntity = MomoQuant.Domain.Strategies.Strategy;
@@ -69,6 +71,13 @@ public sealed class StrategyDataRequirementService : IStrategyDataRequirementSer
                     "strategyIds");
             }
 
+            if (!CanonicalStrategyPortfolio.CanCreateNewRun(strategy.Code))
+            {
+                return ServiceResult<ResolveStrategyRequirementsResponse>.Fail(
+                    CanonicalStrategyPortfolio.ArchivedCannotUseMessage(strategy.Code.ToCode()),
+                    "strategyIds");
+            }
+
             selectedStrategies.Add(strategy);
         }
 
@@ -94,6 +103,7 @@ public sealed class StrategyDataRequirementService : IStrategyDataRequirementSer
 
             var requiredDataTimeframes = ResolveRequiredDataTimeframes(requirement, executionTimeframes);
             var requiredIndicatorTimeframes = ResolveRequiredIndicatorTimeframes(requirement, executionTimeframes);
+            var anchorTimeframes = ResolveAnchorTimeframes(requirement, executionTimeframes);
 
             executionPlan.Add(new StrategyExecutionPlanItemDto
             {
@@ -104,7 +114,7 @@ public sealed class StrategyDataRequirementService : IStrategyDataRequirementSer
                 ExecutionTimeframes = executionTimeframes,
                 RequiredDataTimeframes = requiredDataTimeframes,
                 RequiredIndicatorTimeframes = requiredIndicatorTimeframes,
-                AnchorTimeframes = requirement.AnchorTimeframes
+                AnchorTimeframes = anchorTimeframes
             });
         }
 
@@ -285,7 +295,63 @@ public sealed class StrategyDataRequirementService : IStrategyDataRequirementSer
             return requirement.RequiredDataTimeframes;
         }
 
+        if (string.Equals(requirement.StrategyCode, StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout, StringComparison.OrdinalIgnoreCase))
+        {
+            return ResolveMomoAdaptiveRequiredDataTimeframes(executionTimeframes);
+        }
+
         return executionTimeframes.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static IReadOnlyList<string> ResolveAnchorTimeframes(
+        StrategyDataRequirementDto requirement,
+        IReadOnlyList<string> executionTimeframes)
+    {
+        var anchors = requirement.AnchorTimeframes.ToList();
+        if (string.Equals(requirement.StrategyCode, StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout, StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (var higherTimeframe in ResolveMomoAdaptiveHigherTimeframes(executionTimeframes))
+            {
+                if (!anchors.Contains(higherTimeframe, StringComparer.OrdinalIgnoreCase))
+                {
+                    anchors.Add(higherTimeframe);
+                }
+            }
+        }
+
+        return anchors;
+    }
+
+    private static IReadOnlyList<string> ResolveMomoAdaptiveRequiredDataTimeframes(IReadOnlyList<string> executionTimeframes)
+    {
+        var required = new HashSet<string>(executionTimeframes, StringComparer.OrdinalIgnoreCase);
+        foreach (var higherTimeframe in ResolveMomoAdaptiveHigherTimeframes(executionTimeframes))
+        {
+            required.Add(higherTimeframe);
+        }
+
+        return required
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static IEnumerable<string> ResolveMomoAdaptiveHigherTimeframes(IReadOnlyList<string> executionTimeframes)
+    {
+        foreach (var executionTimeframe in executionTimeframes)
+        {
+            if (!TimeframeParser.TryParse(executionTimeframe, out var parsedTimeframe))
+            {
+                continue;
+            }
+
+            if (parsedTimeframe is not (Timeframe.M5 or Timeframe.M15 or Timeframe.H1 or Timeframe.H4))
+            {
+                continue;
+            }
+
+            yield return TimeframeParser.ToApiString(
+                MomoAdaptiveMtfTrendBreakoutEvaluator.ResolveHigherTimeframe(parsedTimeframe));
+        }
     }
 
     private static IReadOnlyList<string> ResolveRequiredIndicatorTimeframes(
@@ -505,6 +571,31 @@ public sealed class StrategyDataRequirementService : IStrategyDataRequirementSer
                 supportsOptimization: false,
                 supportsValidation: false,
                 notes: "Price structure liquidity sweep and reclaim — OHLC candles only. Use Strategy Laboratory before validation."),
+            StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout => new RequirementProfile(
+                preferredExecutionTimeframe: "5m",
+                allowedExecutionTimeframes: ["5m", "15m", "1h", "4h"],
+                preferredTimeframes: ["5m", "15m", "1h", "4h"],
+                requiredDataTimeframes: ["5m"],
+                optionalDataTimeframes: [],
+                higherTimeframeFilters: ["5m:1h", "15m:4h", "1h:4h", "4h:1d"],
+                requiredIndicators: [],
+                requiredIndicatorTimeframes: [],
+                warmupCandles: 600,
+                supportsOptimization: false,
+                supportsValidation: false,
+                notes: "Adaptive multi-timeframe trend breakout with HTF confirmation. Supports Backtest, Benchmark, Replay, HistoricalPaper, and LivePaper. Optimization and Validation Laboratory are deferred until audited multi-timeframe research datasets exist."),
+            StrategyCode.MomoVolatilityRangeReversion => new RequirementProfile(
+                preferredExecutionTimeframe: "15m",
+                allowedExecutionTimeframes: ["5m", "15m", "30m", "1h"],
+                preferredTimeframes: ["15m"],
+                requiredDataTimeframes: [],
+                optionalDataTimeframes: [],
+                requiredIndicators: [],
+                requiredIndicatorTimeframes: [],
+                warmupCandles: 100,
+                supportsOptimization: false,
+                supportsValidation: false,
+                notes: "Range-bound mean reversion strategy with volatility-based entry filters. Supports Backtest, Benchmark, Replay, and LivePaper."),
             _ => new RequirementProfile(
                 preferredExecutionTimeframe: "5m",
                 allowedExecutionTimeframes: ["5m"],
@@ -539,8 +630,7 @@ public sealed class StrategyDataRequirementService : IStrategyDataRequirementSer
             SupportsBenchmark = true,
             SupportsValidation = profile.SupportsValidation,
             SupportsOptimization = profile.SupportsOptimization,
-            SupportsStrategyLab = strategy.Code is StrategyCode.PriceStructureBreakoutRetest
-                or StrategyCode.PriceStructureLiquiditySweepReclaim,
+            SupportsStrategyLab = strategy.Code is StrategyCode.PriceStructureBreakoutRetest,
             PreferredTimeframes = profile.PreferredTimeframes,
             Notes = profile.Notes,
             Warnings = profile.Warnings

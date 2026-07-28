@@ -40,6 +40,12 @@ public sealed class BacktestDataset
     public required IReadOnlyList<Candle> Candles { get; init; }
     public required IReadOnlyDictionary<long, IndicatorSnapshot> IndicatorSnapshots { get; init; }
     public required IReadOnlyList<int> EvaluationIndices { get; init; }
+
+    /// <summary>
+    /// Preloaded higher-timeframe candle series keyed by HTF timeframe for efficient per-candle slicing.
+    /// </summary>
+    public IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>> HigherTimeframeSeriesByTimeframe { get; init; }
+        = new Dictionary<Timeframe, IReadOnlyList<Candle>>();
 }
 
 public sealed class BacktestDataLoader : IBacktestDataLoader

@@ -298,6 +298,10 @@ export interface Strategy {
   researchStatus?: string | null;
   deploymentQualificationEligible?: boolean;
   canonicalValidationExperimentId?: number | null;
+  /** Non-persisted operational portfolio status (Active | Archived). */
+  portfolioStatus?: 'Active' | 'Archived';
+  /** True when the strategy may appear in new-run selectors. */
+  isOperationallySelectable?: boolean;
 }
 
 export interface StrategyDetail extends Strategy {

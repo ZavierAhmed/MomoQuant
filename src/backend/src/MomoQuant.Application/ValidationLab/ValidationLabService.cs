@@ -305,6 +305,14 @@ public sealed partial class ValidationLabService : IValidationLabService
 
         var strategyEnum = StrategyCodeExtensions.FromCode(request.StrategyCode);
         var strategyEntity = await _strategies.GetByCodeAsync(strategyEnum, cancellationToken);
+
+        if (!CanonicalStrategyPortfolio.CanCreateNewRun(strategyEnum))
+        {
+            return ServiceResult<ValidationExperimentDto>.Fail(
+                CanonicalStrategyPortfolio.ArchivedCannotUseMessage(request.StrategyCode),
+                "strategyCode");
+        }
+
         var version = string.IsNullOrWhiteSpace(request.StrategyVersion)
             ? strategyEntity?.Version ?? "1.0.0"
             : request.StrategyVersion!;

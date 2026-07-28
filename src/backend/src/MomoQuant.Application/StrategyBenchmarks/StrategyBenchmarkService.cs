@@ -696,6 +696,13 @@ public sealed class StrategyBenchmarkService : IStrategyBenchmarkService
                 return ServiceResult<ResolvedBenchmarkRequest>.Fail($"Strategy {strategyId} was not found.", "strategyIds");
             }
 
+            if (!CanonicalStrategyPortfolio.CanCreateNewRun(strategy.Code))
+            {
+                return ServiceResult<ResolvedBenchmarkRequest>.Fail(
+                    CanonicalStrategyPortfolio.ArchivedCannotUseMessage(strategy.Code.ToCode()),
+                    "strategyIds");
+            }
+
             if (!strategy.IsEnabled && !request.IncludeDisabledStrategies)
             {
                 return ServiceResult<ResolvedBenchmarkRequest>.Fail(

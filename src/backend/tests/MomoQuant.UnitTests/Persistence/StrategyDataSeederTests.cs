@@ -15,7 +15,7 @@ public class StrategyDataSeederTests
         Options.Create(new StrategyCatalogSettings { SeedDefaultStrategies = true });
 
     [Fact]
-    public async Task SeedAsync_WhenSeedingDisabled_StillSeedsStrategyLabStrategiesOnly()
+    public async Task SeedAsync_WhenSeedingDisabled_StillSeedsCanonicalPortfolio()
     {
         var options = new DbContextOptionsBuilder<MomoQuantDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
@@ -30,14 +30,16 @@ public class StrategyDataSeederTests
         await seeder.SeedAsync();
 
         var strategies = await context.Strategies.ToListAsync();
-        Assert.Equal(2, strategies.Count);
-        Assert.Contains(strategies, s => s.Code == StrategyCode.PriceStructureBreakoutRetest && s.IsEnabled);
-        Assert.Contains(strategies, s => s.Code == StrategyCode.PriceStructureLiquiditySweepReclaim && s.IsEnabled);
+        Assert.Equal(3, strategies.Count);
+        Assert.Contains(strategies, s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout && s.IsEnabled);
+        Assert.Contains(strategies, s => s.Code == StrategyCode.PriceStructureBreakoutRetest && s.IsEnabled && s.Version == "1.1.0");
+        Assert.Contains(strategies, s => s.Code == StrategyCode.MomoVolatilityRangeReversion && s.IsEnabled);
         Assert.DoesNotContain(strategies, s => s.Code == StrategyCode.EmaPullback);
+        Assert.DoesNotContain(strategies, s => s.Code == StrategyCode.PriceStructureLiquiditySweepReclaim);
     }
 
     [Fact]
-    public async Task SeedAsync_WhenLabStrategyAlreadyExists_DoesNotDuplicate()
+    public async Task SeedAsync_WhenCanonicalAlreadyExists_DoesNotDuplicate()
     {
         var options = new DbContextOptionsBuilder<MomoQuantDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
@@ -64,7 +66,42 @@ public class StrategyDataSeederTests
         await seeder.SeedAsync();
 
         Assert.Equal(1, await context.Strategies.CountAsync(s => s.Code == StrategyCode.PriceStructureBreakoutRetest));
-        Assert.Equal(1, await context.Strategies.CountAsync(s => s.Code == StrategyCode.PriceStructureLiquiditySweepReclaim));
+        Assert.Equal(1, await context.Strategies.CountAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout));
+        Assert.Equal(1, await context.Strategies.CountAsync(s => s.Code == StrategyCode.MomoVolatilityRangeReversion));
+        Assert.Equal("1.1.0", (await context.Strategies.SingleAsync(s => s.Code == StrategyCode.PriceStructureBreakoutRetest)).Version);
+    }
+
+    [Fact]
+    public async Task SeedAsync_WhenLegacyExists_DisablesWithoutDeleting()
+    {
+        var options = new DbContextOptionsBuilder<MomoQuantDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        await using var context = new MomoQuantDbContext(options);
+        context.Strategies.Add(new Strategy
+        {
+            Code = StrategyCode.LiquiditySweep,
+            Name = "Liquidity Sweep Reclaim",
+            Description = "Legacy.",
+            IsEnabled = true,
+            Version = "2.0.0",
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            ResearchStatus = StrategyResearchStatus.Failed
+        });
+        await context.SaveChangesAsync();
+
+        var seeder = new StrategyDataSeeder(
+            context,
+            Options.Create(new StrategyCatalogSettings { SeedDefaultStrategies = false }),
+            NullLogger<StrategyDataSeeder>.Instance);
+
+        await seeder.SeedAsync();
+
+        var liquiditySweep = await context.Strategies.SingleAsync(item => item.Code == StrategyCode.LiquiditySweep);
+        Assert.False(liquiditySweep.IsEnabled);
+        Assert.Equal(StrategyResearchStatus.Failed, liquiditySweep.ResearchStatus);
+        Assert.Equal(4, await context.Strategies.CountAsync());
     }
 
     [Fact]
@@ -92,6 +129,7 @@ public class StrategyDataSeederTests
 
         var liquiditySweep = await context.Strategies.SingleAsync(item => item.Code == StrategyCode.LiquiditySweep);
         Assert.Equal("Liquidity Sweep Reclaim", liquiditySweep.Name);
+        Assert.False(liquiditySweep.IsEnabled);
     }
 
     [Fact]
@@ -136,5 +174,6 @@ public class StrategyDataSeederTests
         Assert.True(rows.Count >= 2);
         Assert.Equal("Liquidity Sweep Reclaim", rows.First().Name);
         Assert.Contains(rows.Skip(1), item => !item.IsEnabled && item.Name.Contains("Legacy Duplicate", StringComparison.OrdinalIgnoreCase));
+        Assert.All(rows, item => Assert.False(item.IsEnabled));
     }
 }

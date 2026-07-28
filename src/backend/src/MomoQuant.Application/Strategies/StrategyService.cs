@@ -141,6 +141,11 @@ public sealed class StrategyService : IStrategyService
             return ServiceResult<StrategyDto>.Fail("Strategy was not found.");
         }
 
+        if (!CanonicalStrategyPortfolio.CanEnable(strategy.Code))
+        {
+            return ServiceResult<StrategyDto>.Fail(CanonicalStrategyPortfolio.ArchivedCannotEnableMessage);
+        }
+
         strategy.IsEnabled = true;
         strategy.UpdatedAtUtc = DateTime.UtcNow;
         await _strategyRepository.UpdateAsync(strategy, cancellationToken);
@@ -396,6 +401,17 @@ public sealed class StrategyService : IStrategyService
                 : dbStrategies.Where(strategy => strategy.IsEnabled))
             .ToList();
 
+        var archivedSelected = selectedStrategies
+            .Where(strategy => !CanonicalStrategyPortfolio.IsCanonicalActive(strategy.Code))
+            .ToList();
+        if (archivedSelected.Count > 0)
+        {
+            var archivedCodes = string.Join(", ", archivedSelected.Select(strategy => strategy.Code.ToCode()));
+            return ServiceResult<StrategyEvaluationResponse>.Fail(
+                $"Cannot evaluate archived strategies: {archivedCodes}",
+                "strategyIds");
+        }
+
         var results = new List<StrategyEvaluationResult>();
         foreach (var dbStrategy in selectedStrategies)
         {
@@ -411,19 +427,27 @@ public sealed class StrategyService : IStrategyService
                 symbol.Id,
                 cancellationToken);
 
+            var (higherTimeframe, higherTimeframeCandles) = await LoadHigherTimeframeContextAsync(
+                plugin,
+                symbol.Id,
+                timeframe,
+                candle.CloseTimeUtc,
+                cancellationToken);
+
             var context = new StrategyContext
             {
                 SymbolId = symbol.Id,
                 Symbol = symbol.SymbolName,
                 ExchangeId = symbol.ExchangeId,
                 Timeframe = timeframe,
-                HigherTimeframe = ResolveHigherTimeframe(timeframe),
+                HigherTimeframe = higherTimeframe,
+                HigherTimeframeCandles = higherTimeframeCandles,
                 MarketRegime = marketRegime,
                 Candles = recentCandles,
                 IndicatorSnapshot = indicatorSnapshot,
                 RecentIndicatorSnapshots = recentIndicatorSnapshots,
                 StrategyParameters = parameters,
-                EvaluatedAtUtc = DateTime.UtcNow
+                EvaluatedAtUtc = candle.CloseTimeUtc
             };
 
             var evaluationResults = await _strategyEngine.EvaluateAsync([plugin], context, cancellationToken);
@@ -482,13 +506,32 @@ public sealed class StrategyService : IStrategyService
         IsActive = parameter.IsActive
     };
 
-    private static Timeframe ResolveHigherTimeframe(Timeframe timeframe) =>
-        timeframe switch
+    private async Task<(Timeframe HigherTimeframe, IReadOnlyList<Domain.MarketData.Candle> HigherTimeframeCandles)> LoadHigherTimeframeContextAsync(
+        ITradingStrategy plugin,
+        long symbolId,
+        Timeframe executionTimeframe,
+        DateTime evaluationCloseTimeUtc,
+        CancellationToken cancellationToken)
+    {
+        if (!StrategyHigherTimeframeSupport.TryResolveHigherTimeframe(plugin, executionTimeframe, out var higherTimeframe))
         {
-            Timeframe.M3 or Timeframe.M5 => Timeframe.M15,
-            Timeframe.M15 => Timeframe.H1,
-            _ => Timeframe.H4
-        };
+            return (
+                StrategyHigherTimeframeSupport.ResolveGeneralHigherTimeframe(executionTimeframe),
+                Array.Empty<Domain.MarketData.Candle>());
+        }
+
+        var series = await _candleRepository.GetCandlesChronologicalAsync(
+            symbolId,
+            higherTimeframe,
+            fromUtc: null,
+            toUtc: evaluationCloseTimeUtc,
+            warmUpCount: RecentCandleCount,
+            cancellationToken) ?? Array.Empty<Domain.MarketData.Candle>();
+
+        return (
+            higherTimeframe,
+            HigherTimeframeCandleView.SliceClosedThrough(series, evaluationCloseTimeUtc));
+    }
 
     private static bool TryParseMarketRegime(string value, out MarketRegime regime) =>
         Enum.TryParse(value, ignoreCase: true, out regime);

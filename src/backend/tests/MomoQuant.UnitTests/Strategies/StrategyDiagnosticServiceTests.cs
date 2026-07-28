@@ -21,7 +21,7 @@ public class StrategyDiagnosticServiceTests
         var result = await service.EvaluateAsync(new StrategyEvaluationRequest
         {
             SymbolId = 1,
-            Timeframe = "3m",
+            Timeframe = "15m",
             CandleId = 0,
             MarketRegime = "Trending"
         });
@@ -46,7 +46,7 @@ public class StrategyDiagnosticServiceTests
         var result = await service.EvaluateAsync(new StrategyEvaluationRequest
         {
             SymbolId = 1,
-            Timeframe = "3m",
+            Timeframe = "15m",
             CandleId = 10,
             MarketRegime = "Trending"
         });
@@ -58,12 +58,12 @@ public class StrategyDiagnosticServiceTests
     [Fact]
     public async Task EvaluateAsync_AllowsMissingIndicatorSnapshot()
     {
-        var candle = CreateCandle(10, Timeframe.M3);
+        var candle = CreateCandle(10, Timeframe.M15);
         var service = CreateService(candle, indicatorSnapshot: null);
         var result = await service.EvaluateAsync(new StrategyEvaluationRequest
         {
             SymbolId = 1,
-            Timeframe = "3m",
+            Timeframe = "15m",
             CandleId = 10,
             MarketRegime = "Trending"
         });
@@ -75,8 +75,8 @@ public class StrategyDiagnosticServiceTests
     [Fact]
     public async Task EvaluateLatestAsync_UsesLatestCandleWithIndicatorSnapshot()
     {
-        var older = CreateCandle(8, Timeframe.M3, DateTime.UtcNow.AddHours(-1));
-        var latest = CreateCandle(10, Timeframe.M3, DateTime.UtcNow);
+        var older = CreateCandle(8, Timeframe.M15, DateTime.UtcNow.AddHours(-1));
+        var latest = CreateCandle(10, Timeframe.M15, DateTime.UtcNow);
         var snapshot = CreateSnapshot(latest.Id);
 
         var service = CreateService(
@@ -88,7 +88,7 @@ public class StrategyDiagnosticServiceTests
         var result = await service.EvaluateLatestAsync(new StrategyEvaluateLatestRequest
         {
             SymbolId = 1,
-            Timeframe = "3m",
+            Timeframe = "15m",
             MarketRegime = "Trending"
         });
 
@@ -106,14 +106,17 @@ public class StrategyDiagnosticServiceTests
         var strategy = new Strategy
         {
             Id = 1,
-            Code = StrategyCode.EmaPullback,
-            Name = "EMA Pullback",
-            IsEnabled = true
+            Code = StrategyCode.PriceStructureBreakoutRetest,
+            Name = "Price Structure Breakout + Retest",
+            IsEnabled = true,
+            Version = "1.1.0"
         };
 
         var strategyRepository = new Mock<IStrategyRepository>();
         strategyRepository.Setup(repo => repo.GetAllAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync([strategy]);
+        strategyRepository.Setup(repo => repo.GetByIdAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(strategy);
 
         var symbolRepository = new Mock<ISymbolRepository>();
         symbolRepository.Setup(repo => repo.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(symbol);
@@ -126,7 +129,7 @@ public class StrategyDiagnosticServiceTests
 
         candleRepository.Setup(repo => repo.GetRecentCandlesAsync(
                 1,
-                Timeframe.M3,
+                Timeframe.M15,
                 It.IsAny<DateTime>(),
                 It.IsAny<int>(),
                 It.IsAny<CancellationToken>()))
@@ -134,31 +137,41 @@ public class StrategyDiagnosticServiceTests
 
         candleRepository.Setup(repo => repo.GetCandlesAsync(
                 1,
-                Timeframe.M3,
+                Timeframe.M15,
                 null,
                 null,
                 It.IsAny<int>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(latestCandles ?? (candle is null ? [] : [candle]));
 
+        candleRepository.Setup(repo => repo.GetCandlesChronologicalAsync(
+                It.IsAny<long>(),
+                It.IsAny<Timeframe>(),
+                It.IsAny<DateTime?>(),
+                It.IsAny<DateTime?>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Array.Empty<Candle>());
+
         var indicatorRepository = new Mock<IIndicatorSnapshotRepository>();
         indicatorRepository.Setup(repo => repo.GetByKeyAsync(
                 1,
-                Timeframe.M3,
+                Timeframe.M15,
                 It.IsAny<long>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(indicatorSnapshot);
 
         indicatorRepository.Setup(repo => repo.GetRecentForSymbolAsync(
                 1,
-                Timeframe.M3,
+                Timeframe.M15,
                 It.IsAny<DateTime>(),
                 It.IsAny<int>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(indicatorSnapshot is null ? [] : [indicatorSnapshot]);
 
         var registry = new Mock<IStrategyRegistry>();
-        registry.Setup(reg => reg.GetByCode(StrategyCode.EmaPullback)).Returns(new EmaPullbackStrategy());
+        registry.Setup(reg => reg.GetByCode(StrategyCode.PriceStructureBreakoutRetest))
+            .Returns(new PriceStructureBreakoutRetestStrategy());
 
         var engine = new Mock<IStrategyEngine>();
         engine.Setup(e => e.EvaluateAsync(It.IsAny<IReadOnlyCollection<ITradingStrategy>>(), It.IsAny<StrategyContext>(), It.IsAny<CancellationToken>()))
@@ -194,13 +207,13 @@ public class StrategyDiagnosticServiceTests
         Low = 99m,
         Volume = 100m,
         OpenTimeUtc = openTimeUtc ?? DateTime.UtcNow,
-        CloseTimeUtc = (openTimeUtc ?? DateTime.UtcNow).AddMinutes(3)
+        CloseTimeUtc = (openTimeUtc ?? DateTime.UtcNow).AddMinutes(15)
     };
 
     private static IndicatorSnapshot CreateSnapshot(long candleId) => new()
     {
         SymbolId = 1,
-        Timeframe = Timeframe.M3,
+        Timeframe = Timeframe.M15,
         CandleId = candleId,
         Ema20 = 100m,
         Ema50 = 99m,

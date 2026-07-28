@@ -5,6 +5,7 @@ using MomoQuant.Application.Common;
 using MomoQuant.Application.LiveMarket;
 using MomoQuant.Application.PaperTrading;
 using MomoQuant.Application.PaperTrading.Dtos;
+using MomoQuant.Application.Strategies;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.Exchanges;
 using MomoQuant.Domain.Indicators;
@@ -244,9 +245,17 @@ public class PaperTradingEngineTests
                 MissedCountBefore = 0
             });
 
+        var enricher = new Mock<IHigherTimeframeDatasetEnricher>();
+        enricher.Setup(e => e.EnrichForStrategiesAsync(
+                It.IsAny<BacktestDataset>(),
+                It.IsAny<IReadOnlyList<PreparedStrategy>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BacktestDataset dataset, IReadOnlyList<PreparedStrategy> _, CancellationToken _) => dataset);
+
         var engine = new PaperTradingEngine(
             backtestEngine.Object,
-            new PaperExecutionProvider(new Mock<Application.Backtesting.Simulation.ISimulatedExecutionProvider>().Object));
+            new PaperExecutionProvider(new Mock<Application.Backtesting.Simulation.ISimulatedExecutionProvider>().Object),
+            enricher.Object);
 
         var result = await engine.ProcessNextCandleAsync(state);
 
@@ -263,9 +272,17 @@ public class PaperTradingEngineTests
         var state = CreateState(dataset);
         state.NextEvaluationIndex = 1;
 
+        var enricher = new Mock<IHigherTimeframeDatasetEnricher>();
+        enricher.Setup(e => e.EnrichForStrategiesAsync(
+                It.IsAny<BacktestDataset>(),
+                It.IsAny<IReadOnlyList<PreparedStrategy>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BacktestDataset dataset, IReadOnlyList<PreparedStrategy> _, CancellationToken _) => dataset);
+
         var engine = new PaperTradingEngine(
             new Mock<IBacktestEngine>().Object,
-            new PaperExecutionProvider(new Mock<Application.Backtesting.Simulation.ISimulatedExecutionProvider>().Object));
+            new PaperExecutionProvider(new Mock<Application.Backtesting.Simulation.ISimulatedExecutionProvider>().Object),
+            enricher.Object);
 
         var result = await engine.ProcessNextCandleAsync(state);
 

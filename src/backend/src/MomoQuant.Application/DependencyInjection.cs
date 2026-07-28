@@ -78,44 +78,21 @@ public static class DependencyInjection
         services.AddScoped<IRiskDecisionService, RiskDecisionService>();
         services.AddScoped<IRiskEvaluationService, RiskEvaluationService>();
 
-        services.AddSingleton<ITradingStrategy, EmaPullbackStrategy>();
-        services.AddSingleton<ITradingStrategy, VwapMeanReversionStrategy>();
-        services.AddSingleton<ITradingStrategy, LiquiditySweepStrategy>();
-        services.AddSingleton<ITradingStrategy, BollingerSqueezeBreakoutStrategy>();
-        services.AddSingleton<ITradingStrategy, DonchianBreakoutStrategy>();
-        services.AddSingleton<ITradingStrategy, RsiDivergenceReversalStrategy>();
-        services.AddSingleton<ITradingStrategy, MacdMomentumContinuationStrategy>();
-        services.AddSingleton<ITradingStrategy, AtrVolatilityBreakoutStrategy>();
-        services.AddSingleton<ITradingStrategy, SupportResistanceBreakoutRetestStrategy>();
-        services.AddSingleton<ITradingStrategy, SupertrendContinuationStrategy>();
-        services.AddSingleton<IFourHourRangeService, FourHourRangeService>();
-        services.AddSingleton<ITradingStrategy, FourHourRangeReEntryStrategy>();
+        services.AddSingleton<ITradingStrategy, MomoAdaptiveMultiTimeframeTrendBreakoutStrategy>();
+        services.AddSingleton<ITradingStrategy, PriceStructureBreakoutRetestStrategy>();
+        services.AddSingleton<ITradingStrategy, MomoVolatilityRangeReversionStrategy>();
+        services.AddSingleton<IStrategyRegistry, StrategyRegistry>();
+
+        // Legacy strategy supporting services remain registered for historical backtest/report infrastructure,
+        // but legacy ITradingStrategy plugins are not registered (canonical portfolio only).
         services.AddSingleton<IExternalLiquidityLineEngine, MomoLiquidityLineEngine>();
         services.AddSingleton<IBbLiquiditySweepContextService, BbLiquiditySweepContextService>();
         services.AddSingleton<IBbLiquiditySweepSessionTracker, BbLiquiditySweepSessionTracker>();
         services.AddSingleton<IBbLiquiditySweepFunnelTracker, BbLiquiditySweepFunnelTracker>();
         services.AddScoped<IBbLiquiditySweepBacktestBootstrap, BbLiquiditySweepBacktestBootstrap>();
-        services.AddSingleton<ITradingStrategy>(sp => new BbLiquiditySweepCisdStrategy(
-            sp.GetRequiredService<IBbLiquiditySweepContextService>(),
-            new BbLiquiditySweepEvaluator(sp.GetRequiredService<IExternalLiquidityLineEngine>()),
-            sp.GetRequiredService<IBbLiquiditySweepSessionTracker>(),
-            sp.GetRequiredService<IBbLiquiditySweepFunnelTracker>()));
-        services.AddSingleton<ITradingStrategy>(sp => new BbLiquiditySweepCisdRsiPrimedStrategy(
-            sp.GetRequiredService<IBbLiquiditySweepContextService>(),
-            new BbLiquiditySweepEvaluator(sp.GetRequiredService<IExternalLiquidityLineEngine>()),
-            sp.GetRequiredService<IBbLiquiditySweepSessionTracker>(),
-            sp.GetRequiredService<IBbLiquiditySweepFunnelTracker>()));
         services.AddSingleton<IVolatilityGatedSuperTrendContextService, VolatilityGatedSuperTrendContextService>();
         services.AddSingleton<IVolatilityGatedSuperTrendRetestTracker, VolatilityGatedSuperTrendRetestTracker>();
         services.AddSingleton<IVolatilityGatedSuperTrendFunnelTracker, VolatilityGatedSuperTrendFunnelTracker>();
-        services.AddSingleton<ITradingStrategy>(sp => new VolatilityGatedSuperTrendMomentumStrategy(
-            sp.GetRequiredService<IVolatilityGatedSuperTrendContextService>(),
-            new VolatilityGatedSuperTrendEvaluator(),
-            sp.GetRequiredService<IVolatilityGatedSuperTrendRetestTracker>(),
-            sp.GetRequiredService<IVolatilityGatedSuperTrendFunnelTracker>()));
-        services.AddSingleton<ITradingStrategy, PriceStructureBreakoutRetestStrategy>();
-        services.AddSingleton<ITradingStrategy, PriceStructureLiquiditySweepReclaimStrategy>();
-        services.AddSingleton<IStrategyRegistry, StrategyRegistry>();
 
         services.AddSingleton<IStrategyParameterDefinitionProvider, StrategyParameterDefinitionProvider>();
         services.AddScoped<IValidationDateSplitService, ValidationDateSplitService>();
@@ -138,12 +115,14 @@ public static class DependencyInjection
         services.AddScoped<IBacktestDataLoader, BacktestDataLoader>();
         services.AddSingleton<IResearchExecutionContextAccessor, ResearchExecutionContextAccessor>();
         services.AddScoped<StandardStrategyLabCandleDataSource>();
+        services.AddScoped<IHigherTimeframeDatasetEnricher, HigherTimeframeDatasetEnricher>();
         services.AddScoped<IBacktestEngine>(sp => new BacktestEngine(
             sp.GetRequiredService<IStrategyEngine>(),
             sp.GetRequiredService<IStrategyParameterProvider>(),
             sp.GetRequiredService<IRiskEngine>(),
             sp.GetRequiredService<IAiIntegrationService>(),
             sp.GetRequiredService<ISimulatedExecutionProvider>(),
+            sp.GetRequiredService<IHigherTimeframeDatasetEnricher>(),
             sp.GetRequiredService<IBacktestProgressStore>(),
             sp.GetRequiredService<IBbLiquiditySweepBacktestBootstrap>(),
             sp.GetRequiredService<IBbLiquiditySweepSessionTracker>(),

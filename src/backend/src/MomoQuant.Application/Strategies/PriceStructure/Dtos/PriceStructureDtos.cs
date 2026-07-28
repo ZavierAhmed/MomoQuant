@@ -52,12 +52,20 @@ public sealed class BreakoutRetestParameters
     public int MaxRetestBars { get; init; } = 20;
     public decimal RetestTolerancePercent { get; init; } = 0.15m;
     public string RetestToleranceMode { get; init; } = "Percent";
+    public decimal RetestToleranceAtrMultiplier { get; init; } = 0.25m;
     public bool AllowWickThroughLevel { get; init; } = true;
     public decimal MaxRetestPenetrationPercent { get; init; } = 0.30m;
-    public string ConfirmationMode { get; init; } = "BullishReactionClose";
+    public string ConfirmationMode { get; init; } = "ReactionClose";
     public decimal FixedRewardRisk { get; init; } = 2.0m;
     public decimal StopBufferPercent { get; init; } = 0.05m;
 }
+
+public sealed record BreakoutRetestStrengthBreakdown(
+    decimal Total,
+    decimal BreakoutDistanceScore,
+    decimal RetestQualityScore,
+    decimal ConfirmationQualityScore,
+    decimal RewardRiskValidityScore);
 
 public sealed class LiquiditySweepParameters
 {

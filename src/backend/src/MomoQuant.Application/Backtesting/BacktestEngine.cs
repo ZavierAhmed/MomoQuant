@@ -87,6 +87,7 @@ public sealed class BacktestEngine : IBacktestEngine
     private readonly IBbLiquiditySweepSessionTracker? _bbSessionTracker;
     private readonly IBbLiquiditySweepFunnelTracker? _bbFunnelTracker;
     private readonly IVolatilityGatedSuperTrendFunnelTracker? _vgFunnelTracker;
+    private readonly IHigherTimeframeDatasetEnricher _higherTimeframeDatasetEnricher;
     private readonly ILogger<BacktestEngine> _logger;
 
     public BacktestEngine(
@@ -95,6 +96,7 @@ public sealed class BacktestEngine : IBacktestEngine
         IRiskEngine riskEngine,
         IAiIntegrationService aiIntegrationService,
         ISimulatedExecutionProvider executionProvider,
+        IHigherTimeframeDatasetEnricher higherTimeframeDatasetEnricher,
         IBacktestProgressStore? progressStore = null,
         IBbLiquiditySweepBacktestBootstrap? bbLiquidityBootstrap = null,
         IBbLiquiditySweepSessionTracker? bbSessionTracker = null,
@@ -107,6 +109,7 @@ public sealed class BacktestEngine : IBacktestEngine
         _riskEngine = riskEngine;
         _aiIntegrationService = aiIntegrationService;
         _executionProvider = executionProvider;
+        _higherTimeframeDatasetEnricher = higherTimeframeDatasetEnricher;
         _progressStore = progressStore ?? new BacktestProgressStore();
         _bbLiquidityBootstrap = bbLiquidityBootstrap;
         _bbSessionTracker = bbSessionTracker;
@@ -149,6 +152,11 @@ public sealed class BacktestEngine : IBacktestEngine
         IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>> cachedParameters,
         CancellationToken cancellationToken)
     {
+        dataset = await _higherTimeframeDatasetEnricher.EnrichForStrategiesAsync(
+            dataset,
+            strategies,
+            cancellationToken);
+
         foreach (var prepared in strategies)
         {
             if (!cachedParameters.TryGetValue(prepared.Strategy.Id, out var strategyParams))
@@ -293,6 +301,11 @@ public sealed class BacktestEngine : IBacktestEngine
         int evaluationIndex,
         CancellationToken cancellationToken = default)
     {
+        dataset = await _higherTimeframeDatasetEnricher.EnrichForStrategiesAsync(
+            dataset,
+            strategies,
+            cancellationToken);
+
         var signalCountBefore = context.Signals.Count;
         var aiCountBefore = context.AiDecisions.Count;
         var riskCountBefore = context.RiskDecisions.Count;
@@ -339,6 +352,12 @@ public sealed class BacktestEngine : IBacktestEngine
                         cancellationToken);
                 }
 
+                var (higherTimeframe, higherTimeframeCandles) = StrategyHigherTimeframeSupport.BuildContextHigherTimeframe(
+                    prepared.Plugin,
+                    dataset.Timeframe,
+                    dataset.HigherTimeframeSeriesByTimeframe,
+                    candle.CloseTimeUtc);
+
                 var strategyContext = new StrategyContext
                 {
                     TradingSessionId = context.TradingSessionId,
@@ -346,7 +365,8 @@ public sealed class BacktestEngine : IBacktestEngine
                     SymbolId = dataset.SymbolId,
                     Symbol = dataset.SymbolName,
                     Timeframe = dataset.Timeframe,
-                    HigherTimeframe = ResolveHigherTimeframe(dataset.Timeframe),
+                    HigherTimeframe = higherTimeframe,
+                    HigherTimeframeCandles = higherTimeframeCandles,
                     MarketRegime = regime,
                     Candles = strategyCandles,
                     IndicatorSnapshot = snapshot,
@@ -1380,11 +1400,4 @@ public sealed class BacktestEngine : IBacktestEngine
         return stats;
     }
 
-    private static Timeframe ResolveHigherTimeframe(Timeframe timeframe) => timeframe switch
-    {
-        Timeframe.M1 or Timeframe.M3 or Timeframe.M5 => Timeframe.M15,
-        Timeframe.M15 or Timeframe.M30 => Timeframe.H1,
-        Timeframe.H1 => Timeframe.H4,
-        _ => Timeframe.D1
-    };
 }

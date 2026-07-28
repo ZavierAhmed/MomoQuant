@@ -28,6 +28,7 @@ import { parseApiClientError } from '@/utils/apiError';
 import { requireNumber } from '@/utils/numbers';
 import { buildUtcRange } from '@/utils/formHelpers';
 import type { MarketCandle, Strategy, StrategyParameter } from '@/api/domainTypes';
+import { isActivePortfolioStrategy, isArchivedStrategy } from '@/constants/canonicalStrategies';
 
 export function StrategiesPage() {
   const { canEdit } = useRole();
@@ -53,6 +54,7 @@ export function StrategiesPage() {
   const [loadedCandles, setLoadedCandles] = useState<MarketCandle[]>([]);
   const [candlesMessage, setCandlesMessage] = useState<string | null>(null);
   const [loadingCandles, setLoadingCandles] = useState(false);
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
 
   const strategies = useAsync(() => strategiesApi.list(), []);
   const detail = useAsync(
@@ -67,6 +69,18 @@ export function StrategiesPage() {
   useEffect(() => {
     setParameterDrafts(parameters.data ?? []);
   }, [parameters.data]);
+
+  const allStrategies = strategies.data ?? [];
+  const activeStrategies = allStrategies.filter(isActivePortfolioStrategy);
+  const archivedStrategiesList = allStrategies.filter(isArchivedStrategy);
+  const selectedStrategy = allStrategies.find((strategy) => strategy.id === selectedId);
+  const selectedIsActive = selectedStrategy ? isActivePortfolioStrategy(selectedStrategy) : false;
+
+  useEffect(() => {
+    if (selectedId && selectedStrategy && isArchivedStrategy(selectedStrategy)) {
+      setSelectedId(null);
+    }
+  }, [selectedId, selectedStrategy]);
 
   async function toggleStrategy(strategy: Strategy, enable: boolean) {
     if (!canEdit) return;
@@ -229,7 +243,7 @@ export function StrategiesPage() {
       <ApiErrorAlert message={actionError} />
       {saveMessage ? <p className="mb-4 text-sm text-emerald-300">{saveMessage}</p> : null}
 
-      {canEdit && selectedId ? (
+      {canEdit && selectedId && selectedIsActive ? (
         <FormPanel title="Diagnostic Evaluate" description="Run a one-off strategy evaluation against stored Binance candle data.">
           <ValidationSummary errors={formErrors} />
           <div className="grid gap-4 md:grid-cols-3">
@@ -358,40 +372,89 @@ export function StrategiesPage() {
       {strategies.loading ? <LoadingState /> : null}
       {strategies.error ? <ErrorState message={strategies.error} onRetry={strategies.reload} /> : null}
 
-      {(strategies.data ?? []).length === 0 && !strategies.loading ? (
+      {(activeStrategies.length === 0 && archivedStrategiesList.length === 0) && !strategies.loading ? (
         <EmptyState title="No strategies" description="No strategies are configured yet." />
       ) : (
-        <DataTable
-          columns={[
-            { key: 'name', header: 'Name', render: (row) => row.name },
-            { key: 'code', header: 'Code', render: (row) => row.code },
-            { key: 'version', header: 'Version', render: (row) => row.version },
-            { key: 'enabled', header: 'Status', render: (row) => <StatusPill status={row.isEnabled ? 'Enabled' : 'Disabled'} /> },
-            {
-              key: 'actions',
-              header: 'Actions',
-              render: (row) => (
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setSelectedId(row.id)} className="text-xs underline">View</button>
-                  <Link to={`/strategies/${row.code}`} className="text-xs underline text-sky-300">View details</Link>
-                  {canEdit ? (
-                    <button
-                      type="button"
-                      onClick={() => void toggleStrategy(row, !row.isEnabled)}
-                      className={`rounded-md px-2 py-1 text-xs ${row.isEnabled ? 'border border-rose-500/40 text-rose-300' : 'border border-emerald-500/40 text-emerald-300'}`}
-                    >
-                      {row.isEnabled ? 'Disable' : 'Enable'}
-                    </button>
-                  ) : null}
+        <>
+          <section className="mb-6">
+            <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-slate-400">Active Portfolio</h2>
+            {activeStrategies.length === 0 ? (
+              <EmptyState title="No active strategies" description="No canonical strategies are in the active portfolio." />
+            ) : (
+              <DataTable
+                columns={[
+                  { key: 'name', header: 'Name', render: (row) => row.name },
+                  { key: 'code', header: 'Code', render: (row) => row.code },
+                  { key: 'version', header: 'Version', render: (row) => row.version },
+                  { key: 'enabled', header: 'Status', render: (row) => <StatusPill status={row.isEnabled ? 'Enabled' : 'Disabled'} /> },
+                  {
+                    key: 'actions',
+                    header: 'Actions',
+                    render: (row) => (
+                      <div className="flex gap-2">
+                        <button type="button" onClick={() => setSelectedId(row.id)} className="text-xs underline">View</button>
+                        <Link to={`/strategies/${row.code}`} className="text-xs underline text-sky-300">View details</Link>
+                        {canEdit ? (
+                          <button
+                            type="button"
+                            onClick={() => void toggleStrategy(row, !row.isEnabled)}
+                            className={`rounded-md px-2 py-1 text-xs ${row.isEnabled ? 'border border-rose-500/40 text-rose-300' : 'border border-emerald-500/40 text-emerald-300'}`}
+                          >
+                            {row.isEnabled ? 'Disable' : 'Enable'}
+                          </button>
+                        ) : null}
+                      </div>
+                    ),
+                  },
+                ]}
+                rows={activeStrategies}
+              />
+            )}
+          </section>
+
+          {archivedStrategiesList.length > 0 ? (
+            <section className="mb-6">
+              <button
+                type="button"
+                onClick={() => setArchivedExpanded((current) => !current)}
+                className="mb-3 flex w-full items-center justify-between rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-left"
+              >
+                <span className="text-sm font-medium uppercase tracking-wide text-slate-400">
+                  Archived Strategies ({archivedStrategiesList.length})
+                </span>
+                <span className="text-xs text-slate-500">{archivedExpanded ? 'Collapse' : 'Expand'}</span>
+              </button>
+              {archivedExpanded ? (
+                <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-2">
+                  <p className="mb-3 px-2 text-xs text-slate-500">
+                    Read-only catalog. Archived strategies cannot be enabled or used for new runs.
+                  </p>
+                  <DataTable
+                    columns={[
+                      { key: 'name', header: 'Name', render: (row) => row.name },
+                      { key: 'code', header: 'Code', render: (row) => row.code },
+                      { key: 'version', header: 'Version', render: (row) => row.version },
+                      { key: 'status', header: 'Portfolio', render: () => <StatusPill status="Archived" /> },
+                      {
+                        key: 'actions',
+                        header: 'Actions',
+                        render: (row) => (
+                          <div className="flex gap-2">
+                            <Link to={`/strategies/${row.code}`} className="text-xs underline text-sky-300">View details</Link>
+                          </div>
+                        ),
+                      },
+                    ]}
+                    rows={archivedStrategiesList}
+                  />
                 </div>
-              ),
-            },
-          ]}
-          rows={strategies.data ?? []}
-        />
+              ) : null}
+            </section>
+          ) : null}
+        </>
       )}
 
-      {selectedId && detail.data ? (
+      {selectedId && selectedIsActive && detail.data ? (
         <section className="mt-6 space-y-4">
           <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
             <h2 className="text-lg font-medium text-slate-100">{detail.data.name}</h2>

@@ -19,6 +19,7 @@ import { useReferenceData } from '@/hooks/useReferenceData';
 import { useRole } from '@/hooks/useRole';
 import { aiApi } from '@/api/aiApi';
 import { reportsApi } from '@/api/reportsApi';
+import { DEFAULT_SAMPLE_STRATEGY_CODE } from '@/constants/canonicalStrategies';
 import { parseApiClientError } from '@/utils/apiError';
 
 export function AiAnalyticsPage() {
@@ -44,7 +45,7 @@ export function AiAnalyticsPage() {
       const basePayload = {
         symbol: symbolCode,
         timeframe,
-        strategyCode: 'EmaPullback',
+        strategyCode: DEFAULT_SAMPLE_STRATEGY_CODE,
         signalDirection: 'Long',
         marketRegime: 'Trending',
         strategyStrength: 75,

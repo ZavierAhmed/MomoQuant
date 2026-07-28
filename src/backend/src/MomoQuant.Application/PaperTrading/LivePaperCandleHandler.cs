@@ -1,6 +1,7 @@
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Backtesting;
 using MomoQuant.Application.LiveMarket;
+using MomoQuant.Application.Strategies;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.PaperTrading;
@@ -22,19 +23,22 @@ public sealed class LivePaperCandleHandler : ILivePaperCandleHandler
     private readonly IBacktestDataLoader _dataLoader;
     private readonly IPaperTradingEngine _paperEngine;
     private readonly IPaperPersistenceService _persistenceService;
+    private readonly IHigherTimeframeDatasetEnricher _higherTimeframeDatasetEnricher;
 
     public LivePaperCandleHandler(
         IPaperStateStore stateStore,
         IPaperTradingSessionRepository sessionRepository,
         IBacktestDataLoader dataLoader,
         IPaperTradingEngine paperEngine,
-        IPaperPersistenceService persistenceService)
+        IPaperPersistenceService persistenceService,
+        IHigherTimeframeDatasetEnricher higherTimeframeDatasetEnricher)
     {
         _stateStore = stateStore;
         _sessionRepository = sessionRepository;
         _dataLoader = dataLoader;
         _paperEngine = paperEngine;
         _persistenceService = persistenceService;
+        _higherTimeframeDatasetEnricher = higherTimeframeDatasetEnricher;
     }
 
     public async Task HandleClosedCandleAsync(
@@ -97,8 +101,11 @@ public sealed class LivePaperCandleHandler : ILivePaperCandleHandler
             return;
         }
 
-        state.Dataset = dataset;
-        state.NextEvaluationIndex = dataset.EvaluationIndices.Count - 1;
+        state.Dataset = await _higherTimeframeDatasetEnricher.EnrichForStrategiesAsync(
+            dataset,
+            state.Strategies,
+            cancellationToken);
+        state.NextEvaluationIndex = state.Dataset.EvaluationIndices.Count - 1;
 
         var result = await _paperEngine.ProcessNextCandleAsync(state, cancellationToken);
         if (result is null)

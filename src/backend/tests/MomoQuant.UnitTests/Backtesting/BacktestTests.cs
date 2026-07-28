@@ -830,7 +830,24 @@ public class BacktestEngineTests
             parameterProvider.Object,
             risk,
             aiIntegration.Object,
-            executionProvider);
+            executionProvider,
+            CreatePassthroughHigherTimeframeEnricher());
+    }
+
+    private static IHigherTimeframeDatasetEnricher CreatePassthroughHigherTimeframeEnricher()
+    {
+        var enricher = new Mock<IHigherTimeframeDatasetEnricher>();
+        enricher.Setup(e => e.EnrichForStrategiesAsync(
+                It.IsAny<BacktestDataset>(),
+                It.IsAny<IReadOnlyList<PreparedStrategy>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BacktestDataset dataset, IReadOnlyList<PreparedStrategy> _, CancellationToken _) => dataset);
+        enricher.Setup(e => e.EnrichAsync(
+                It.IsAny<BacktestDataset>(),
+                It.IsAny<IReadOnlyCollection<Timeframe>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BacktestDataset dataset, IReadOnlyCollection<Timeframe> _, CancellationToken _) => dataset);
+        return enricher.Object;
     }
 
     private static Mock<IRiskEngine> CreateApprovingRiskEngine()
@@ -1078,9 +1095,9 @@ public class BacktestRunnerValidationTests
         };
 
         var symbol = new MomoQuant.Domain.Exchanges.Symbol { Id = 1, ExchangeId = 1, SymbolName = "BTCUSDT" };
-        var strategy = new Strategy { Id = 1, Code = StrategyCode.EmaPullback, Name = "EMA Pullback", IsEnabled = true };
+        var strategy = new Strategy { Id = 1, Code = StrategyCode.PriceStructureBreakoutRetest, Name = "Price Structure Breakout + Retest", IsEnabled = true, Version = "1.1.0" };
         var plugin = new Mock<ITradingStrategy>();
-        plugin.Setup(p => p.Code).Returns(StrategyCode.EmaPullback);
+        plugin.Setup(p => p.Code).Returns(StrategyCode.PriceStructureBreakoutRetest);
 
         var exchangeRepository = new Mock<IExchangeRepository>();
         exchangeRepository.Setup(repo => repo.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(exchange);
@@ -1097,7 +1114,7 @@ public class BacktestRunnerValidationTests
         strategyRepository.Setup(repo => repo.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new[] { strategy });
 
         var strategyRegistry = new Mock<IStrategyRegistry>();
-        strategyRegistry.Setup(registry => registry.GetByCode(StrategyCode.EmaPullback)).Returns(plugin.Object);
+        strategyRegistry.Setup(registry => registry.GetByCode(StrategyCode.PriceStructureBreakoutRetest)).Returns(plugin.Object);
 
         var sessionRepository = new Mock<ITradingSessionRepository>();
         sessionRepository.Setup(repo => repo.AddAsync(It.IsAny<TradingSession>(), It.IsAny<CancellationToken>()))

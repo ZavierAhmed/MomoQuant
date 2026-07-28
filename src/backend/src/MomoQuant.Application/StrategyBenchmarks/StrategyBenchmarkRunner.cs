@@ -9,6 +9,7 @@ using MomoQuant.Application.Indicators.Dtos;
 using MomoQuant.Application.MarketData;
 using MomoQuant.Application.MarketData.Dtos;
 using MomoQuant.Application.Options;
+using MomoQuant.Application.Strategies;
 using MomoQuant.Application.StrategyBenchmarks.Dtos;
 using MomoQuant.Domain.Benchmarks;
 using MomoQuant.Domain.Enums;
@@ -133,6 +134,22 @@ public sealed class StrategyBenchmarkRunner : IStrategyBenchmarkRunner
             var strategyMap = strategies
                 .Where(strategy => strategyIds.Contains(strategy.Id))
                 .ToDictionary(strategy => strategy.Id);
+
+            foreach (var strategyId in strategyIds)
+            {
+                if (strategyMap.TryGetValue(strategyId, out var strategy) &&
+                    !CanonicalStrategyPortfolio.CanCreateNewRun(strategy.Code))
+                {
+                    var errorMsg = CanonicalStrategyPortfolio.ArchivedCannotUseMessage(strategy.Code.ToCode());
+                    run.Status = StrategyBenchmarkStatus.Failed;
+                    run.Message = errorMsg;
+                    run.CompletedAtUtc = DateTime.UtcNow;
+                    run.UpdatedAtUtc = DateTime.UtcNow;
+                    await SaveRunAsync(run, cancellationToken);
+                    _logger.LogWarning("Benchmark run {BenchmarkRunId} rejected: {Message}", run.Id, errorMsg);
+                    return;
+                }
+            }
 
             if (!skipPreparation && request.ImportMissingData)
             {

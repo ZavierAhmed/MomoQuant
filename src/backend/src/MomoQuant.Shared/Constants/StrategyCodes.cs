@@ -17,4 +17,8 @@ public static class StrategyCodes
     public const string BbLiquiditySweepCisd = "BB_LIQUIDITY_SWEEP_CISD";
     public const string BbLiquiditySweepCisdRsiPrimed = "BB_LIQUIDITY_SWEEP_CISD_RSI_PRIMED";
     public const string VolatilityGatedSupertrendMomentum = "VOLATILITY_GATED_SUPERTREND_MOMENTUM";
+    public const string PriceStructureBreakoutRetest = "PRICE_STRUCTURE_BREAKOUT_RETEST";
+    public const string PriceStructureLiquiditySweepReclaim = "PRICE_STRUCTURE_LIQUIDITY_SWEEP_RECLAIM";
+    public const string MomoAdaptiveMultiTimeframeTrendBreakout = "MOMO_ADAPTIVE_MTF_TREND_BREAKOUT";
+    public const string MomoVolatilityRangeReversion = "MOMO_VOLATILITY_RANGE_REVERSION";
 }

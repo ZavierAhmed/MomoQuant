@@ -768,6 +768,13 @@ public sealed class BacktestRunner : IBacktestRunner
                 return ServiceResult<RunBacktestSettings>.Fail($"Strategy {strategyId} was not found.", "strategyIds");
             }
 
+            if (!CanonicalStrategyPortfolio.CanCreateNewRun(strategy.Code))
+            {
+                return ServiceResult<RunBacktestSettings>.Fail(
+                    CanonicalStrategyPortfolio.ArchivedCannotUseMessage(strategy.Code.ToCode()),
+                    "strategyIds");
+            }
+
             if (!strategy.IsEnabled)
             {
                 return ServiceResult<RunBacktestSettings>.Fail(

@@ -1,3 +1,4 @@
+using MomoQuant.Application.Indicators.Calculators;
 using MomoQuant.Application.Strategies.PriceStructure.Dtos;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
@@ -6,7 +7,8 @@ namespace MomoQuant.Application.Strategies.PriceStructure;
 
 public static class PriceStructureBreakoutRetestEvaluator
 {
-    public const string StrategyVersion = "1.0.0";
+    public const string StrategyVersion = "1.1.0";
+    public const string StrategyVersionV10 = "1.0.0";
 
     public static BreakoutRetestParameters ReadParameters(IReadOnlyDictionary<string, string> parameters) => new()
     {
@@ -19,9 +21,10 @@ public static class PriceStructureBreakoutRetestEvaluator
         MaxRetestBars = StrategyParameterReader.GetInt(parameters, "maxRetestBars", 20),
         RetestTolerancePercent = StrategyParameterReader.GetDecimal(parameters, "retestTolerancePercent", 0.15m),
         RetestToleranceMode = StrategyParameterReader.GetString(parameters, "retestToleranceMode", "Percent"),
+        RetestToleranceAtrMultiplier = StrategyParameterReader.GetDecimal(parameters, "retestToleranceAtrMultiplier", 0.25m),
         AllowWickThroughLevel = StrategyParameterReader.GetBool(parameters, "allowWickThroughLevel", true),
         MaxRetestPenetrationPercent = StrategyParameterReader.GetDecimal(parameters, "maxRetestPenetrationPercent", 0.30m),
-        ConfirmationMode = StrategyParameterReader.GetString(parameters, "confirmationMode", "BullishReactionClose"),
+        ConfirmationMode = StrategyParameterReader.GetString(parameters, "confirmationMode", "ReactionClose"),
         FixedRewardRisk = StrategyParameterReader.GetDecimal(parameters, "fixedRewardRisk", 2.0m),
         StopBufferPercent = StrategyParameterReader.GetDecimal(parameters, "stopBufferPercent", 0.05m)
     };
@@ -157,7 +160,8 @@ public static class PriceStructureBreakoutRetestEvaluator
                 return (null, PriceStructureRejectionCodes.RetestInvalidated);
             }
 
-            if (IsBullishRetestTouch(candle, swing.Price, settings))
+            var tolerance = ComputeRetestTolerance(candles, i, swing.Price, settings);
+            if (IsBullishRetestTouch(candle, swing.Price, tolerance, settings))
             {
                 retestIndex = i;
                 retestLow = candle.Low;
@@ -298,7 +302,8 @@ public static class PriceStructureBreakoutRetestEvaluator
                 return (null, PriceStructureRejectionCodes.RetestInvalidated);
             }
 
-            if (IsBearishRetestTouch(candle, swing.Price, settings))
+            var tolerance = ComputeRetestTolerance(candles, i, swing.Price, settings);
+            if (IsBearishRetestTouch(candle, swing.Price, tolerance, settings))
             {
                 retestIndex = i;
                 retestHigh = candle.High;
@@ -427,20 +432,53 @@ public static class PriceStructureBreakoutRetestEvaluator
         return true;
     }
 
-    private static bool IsBullishRetestTouch(Candle candle, decimal level, BreakoutRetestParameters settings)
+    private static bool IsBullishRetestTouch(Candle candle, decimal level, decimal tolerance, BreakoutRetestParameters settings)
     {
-        var tolerance = level * settings.RetestTolerancePercent / 100m;
         var upper = level + tolerance;
         var lower = settings.AllowWickThroughLevel ? level - tolerance : level;
-        return candle.Low <= upper && candle.Low >= lower - tolerance;
+        return candle.Low <= upper && candle.Low >= lower;
     }
 
-    private static bool IsBearishRetestTouch(Candle candle, decimal level, BreakoutRetestParameters settings)
+    private static bool IsBearishRetestTouch(Candle candle, decimal level, decimal tolerance, BreakoutRetestParameters settings)
     {
-        var tolerance = level * settings.RetestTolerancePercent / 100m;
         var lower = level - tolerance;
         var upper = settings.AllowWickThroughLevel ? level + tolerance : level;
-        return candle.High >= lower && candle.High <= upper + tolerance;
+        return candle.High >= lower && candle.High <= upper;
+    }
+
+    private static decimal ComputeRetestTolerance(
+        IReadOnlyList<Candle> candles,
+        int candleIndex,
+        decimal level,
+        BreakoutRetestParameters settings)
+    {
+        if (string.Equals(settings.RetestToleranceMode, "Atr", StringComparison.OrdinalIgnoreCase))
+        {
+            var atr = ComputeAtr14AtIndex(candles, candleIndex);
+            if (atr is > 0m)
+            {
+                return atr.Value * settings.RetestToleranceAtrMultiplier;
+            }
+        }
+
+        return level * settings.RetestTolerancePercent / 100m;
+    }
+
+    public static decimal? ComputeAtr14AtIndex(IReadOnlyList<Candle> candles, int index)
+    {
+        if (index < 0 || index >= candles.Count)
+        {
+            return null;
+        }
+
+        var state = new AtrCalculator.State();
+        decimal? atr = null;
+        for (var i = 0; i <= index; i++)
+        {
+            atr = AtrCalculator.CalculateNext(candles[i], state);
+        }
+
+        return atr;
     }
 
     private static bool IsRetestInvalidatedLong(Candle candle, decimal level, BreakoutRetestParameters settings)
@@ -467,14 +505,14 @@ public static class PriceStructureBreakoutRetestEvaluator
             return false;
         }
 
-        var mode = settings.ConfirmationMode;
+        var mode = NormalizeConfirmationMode(settings.ConfirmationMode);
         if (string.Equals(mode, "NoConfirmation", StringComparison.OrdinalIgnoreCase))
         {
             return currentIndex == retestIndex;
         }
 
         var confirmCandle = candles[currentIndex];
-        if (string.Equals(mode, "BullishEngulfing", StringComparison.OrdinalIgnoreCase) && currentIndex > 0)
+        if (string.Equals(mode, "Engulfing", StringComparison.OrdinalIgnoreCase) && currentIndex > 0)
         {
             var prev = candles[currentIndex - 1];
             return confirmCandle.Close > level
@@ -483,7 +521,7 @@ public static class PriceStructureBreakoutRetestEvaluator
                    && confirmCandle.Open <= prev.Close;
         }
 
-        if (string.Equals(mode, "CloseAbovePreviousHigh", StringComparison.OrdinalIgnoreCase) && currentIndex > 0)
+        if (string.Equals(mode, "CloseBeyondPreviousExtreme", StringComparison.OrdinalIgnoreCase) && currentIndex > 0)
         {
             var prev = candles[currentIndex - 1];
             return confirmCandle.Close > level && confirmCandle.Close > prev.High;
@@ -504,14 +542,14 @@ public static class PriceStructureBreakoutRetestEvaluator
             return false;
         }
 
-        var mode = settings.ConfirmationMode;
+        var mode = NormalizeConfirmationMode(settings.ConfirmationMode);
         if (string.Equals(mode, "NoConfirmation", StringComparison.OrdinalIgnoreCase))
         {
             return currentIndex == retestIndex;
         }
 
         var confirmCandle = candles[currentIndex];
-        if (string.Equals(mode, "BullishEngulfing", StringComparison.OrdinalIgnoreCase) && currentIndex > 0)
+        if (string.Equals(mode, "Engulfing", StringComparison.OrdinalIgnoreCase) && currentIndex > 0)
         {
             var prev = candles[currentIndex - 1];
             return confirmCandle.Close < level
@@ -520,7 +558,7 @@ public static class PriceStructureBreakoutRetestEvaluator
                    && confirmCandle.Open >= prev.Close;
         }
 
-        if (string.Equals(mode, "CloseAbovePreviousHigh", StringComparison.OrdinalIgnoreCase) && currentIndex > 0)
+        if (string.Equals(mode, "CloseBeyondPreviousExtreme", StringComparison.OrdinalIgnoreCase) && currentIndex > 0)
         {
             var prev = candles[currentIndex - 1];
             return confirmCandle.Close < level && confirmCandle.Close < prev.Low;
@@ -528,6 +566,239 @@ public static class PriceStructureBreakoutRetestEvaluator
 
         return confirmCandle.Close < level && confirmCandle.Close < confirmCandle.Open;
     }
+
+    internal static string NormalizeConfirmationMode(string mode)
+    {
+        if (string.IsNullOrWhiteSpace(mode))
+        {
+            return "ReactionClose";
+        }
+
+        if (string.Equals(mode, "ReactionClose", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(mode, "BullishReactionClose", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ReactionClose";
+        }
+
+        if (string.Equals(mode, "Engulfing", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(mode, "BullishEngulfing", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Engulfing";
+        }
+
+        if (string.Equals(mode, "CloseBeyondPreviousExtreme", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(mode, "CloseAbovePreviousHigh", StringComparison.OrdinalIgnoreCase))
+        {
+            return "CloseBeyondPreviousExtreme";
+        }
+
+        if (string.Equals(mode, "NoConfirmation", StringComparison.OrdinalIgnoreCase))
+        {
+            return "NoConfirmation";
+        }
+
+        return "ReactionClose";
+    }
+
+    public static BreakoutRetestStrengthBreakdown ComputeStrengthBreakdown(
+        IReadOnlyList<Candle> candles,
+        PriceStructureCandidateDto candidate,
+        BreakoutRetestParameters settings)
+    {
+        var structure = candidate.Structure;
+        var level = structure.BrokenOrSweptLevel;
+        var breakoutIdx = structure.BreakoutIndex;
+        var retestIdx = structure.RetestIndex;
+        var confirmIdx = structure.ConfirmationIndex ?? candles.Count - 1;
+        var breakout = SafeCandle(candles, breakoutIdx);
+        var retest = SafeCandle(candles, retestIdx);
+        var confirm = SafeCandle(candles, confirmIdx);
+        var prior = confirmIdx > 0 ? SafeCandle(candles, confirmIdx - 1) : null;
+
+        var breakoutDistanceScore = ScoreBreakoutDistance(candidate.Direction, level, breakout, maxPoints: 25m);
+        var retestQualityScore = ScoreRetestQuality(candidate.Direction, level, breakoutIdx, retestIdx, retest, maxPoints: 25m);
+        var confirmationQualityScore = ScoreConfirmationQuality(
+            candidate.Direction,
+            settings.ConfirmationMode,
+            confirm,
+            prior,
+            maxPoints: 25m);
+        var rewardRiskValidityScore = ScoreRewardRiskValidity(
+            candidate.EntryPrice,
+            candidate.StopLoss,
+            candidate.Target1,
+            candidate.RewardRisk,
+            settings.FixedRewardRisk,
+            maxPoints: 25m);
+
+        var total = Math.Clamp(
+            Math.Round(
+                breakoutDistanceScore + retestQualityScore + confirmationQualityScore + rewardRiskValidityScore,
+                2),
+            0m,
+            100m);
+
+        return new BreakoutRetestStrengthBreakdown(
+            total,
+            breakoutDistanceScore,
+            retestQualityScore,
+            confirmationQualityScore,
+            rewardRiskValidityScore);
+    }
+
+    private static decimal ScoreBreakoutDistance(
+        TradeDirection direction,
+        decimal level,
+        Candle? breakout,
+        decimal maxPoints)
+    {
+        if (breakout is null || level <= 0)
+        {
+            return maxPoints * 0.25m;
+        }
+
+        var beyond = direction == TradeDirection.Long
+            ? (breakout.Close - level) / level * 100m
+            : (level - breakout.Close) / level * 100m;
+        beyond = Math.Max(0m, beyond);
+
+        var range = Math.Max(breakout.High - breakout.Low, 0.0000001m);
+        var bodyRatio = Math.Abs(breakout.Close - breakout.Open) / range;
+        var score = Clamp01(beyond / 0.35m) * (maxPoints * 0.55m) + Clamp01(bodyRatio) * (maxPoints * 0.45m);
+        if (beyond <= 0.02m && bodyRatio < 0.35m)
+        {
+            score *= 0.55m;
+        }
+
+        return Math.Clamp(Math.Round(score, 2), 0m, maxPoints);
+    }
+
+    private static decimal ScoreRetestQuality(
+        TradeDirection direction,
+        decimal level,
+        int? breakoutIdx,
+        int? retestIdx,
+        Candle? retest,
+        decimal maxPoints)
+    {
+        if (retest is null || level <= 0)
+        {
+            return maxPoints * 0.25m;
+        }
+
+        var distancePct = Math.Abs(retest.Close - level) / level * 100m;
+        var penetration = direction == TradeDirection.Long
+            ? Math.Max(0m, (level - retest.Low) / level * 100m)
+            : Math.Max(0m, (retest.High - level) / level * 100m);
+        var bars = breakoutIdx.HasValue && retestIdx.HasValue
+            ? Math.Max(0, retestIdx.Value - breakoutIdx.Value)
+            : 10;
+
+        var score = (1m - Clamp01(distancePct / 0.40m)) * (maxPoints * 0.40m)
+                    + (1m - Clamp01(penetration / 0.50m)) * (maxPoints * 0.40m)
+                    + (1m - Clamp01(bars / 20m)) * (maxPoints * 0.20m);
+        return Math.Clamp(Math.Round(score, 2), 0m, maxPoints);
+    }
+
+    private static decimal ScoreConfirmationQuality(
+        TradeDirection direction,
+        string confirmationMode,
+        Candle? confirm,
+        Candle? prior,
+        decimal maxPoints)
+    {
+        var mode = NormalizeConfirmationMode(confirmationMode);
+        if (string.Equals(mode, "NoConfirmation", StringComparison.OrdinalIgnoreCase))
+        {
+            return maxPoints * 0.50m;
+        }
+
+        if (confirm is null)
+        {
+            return maxPoints * 0.25m;
+        }
+
+        var range = Math.Max(confirm.High - confirm.Low, 0.0000001m);
+        var bodyRatio = Math.Abs(confirm.Close - confirm.Open) / range;
+        var bullish = confirm.Close > confirm.Open;
+        var directionOk = direction == TradeDirection.Long ? bullish : !bullish;
+        var closeLoc = direction == TradeDirection.Long
+            ? (confirm.Close - confirm.Low) / range
+            : (confirm.High - confirm.Close) / range;
+
+        var score = (directionOk ? maxPoints * 0.24m : maxPoints * 0.04m)
+                    + Clamp01(bodyRatio) * (maxPoints * 0.24m)
+                    + Clamp01(closeLoc) * (maxPoints * 0.16m);
+
+        if (string.Equals(mode, "Engulfing", StringComparison.OrdinalIgnoreCase) && prior is not null)
+        {
+            var engulfed = direction == TradeDirection.Long
+                ? confirm.Close >= prior.Open && confirm.Open <= prior.Close
+                : confirm.Close <= prior.Open && confirm.Open >= prior.Close;
+            if (engulfed)
+            {
+                score += maxPoints * 0.12m;
+            }
+        }
+        else if (string.Equals(mode, "CloseBeyondPreviousExtreme", StringComparison.OrdinalIgnoreCase) && prior is not null)
+        {
+            var beyondPrior = direction == TradeDirection.Long
+                ? confirm.Close > prior.High
+                : confirm.Close < prior.Low;
+            if (beyondPrior)
+            {
+                score += maxPoints * 0.12m;
+            }
+        }
+
+        return Math.Clamp(Math.Round(score, 2), 0m, maxPoints);
+    }
+
+    private static decimal ScoreRewardRiskValidity(
+        decimal entry,
+        decimal stop,
+        decimal target,
+        decimal rewardRisk,
+        decimal fixedRewardRisk,
+        decimal maxPoints)
+    {
+        if (entry <= 0 || stop <= 0 || target <= 0)
+        {
+            return 0m;
+        }
+
+        var risk = Math.Abs(entry - stop);
+        if (risk <= 0)
+        {
+            return 0m;
+        }
+
+        var reward = Math.Abs(target - entry);
+        var actualRr = reward / risk;
+        var stopPct = risk / entry * 100m;
+
+        var rrScore = actualRr >= fixedRewardRisk
+            ? maxPoints * 0.55m
+            : maxPoints * Clamp01(actualRr / Math.Max(fixedRewardRisk, 0.0001m)) * 0.55m;
+        var stopScore = stopPct is >= 0.08m and <= 1.8m
+            ? maxPoints * 0.30m
+            : maxPoints * Math.Max(0.15m, 1m - Clamp01((Math.Abs(stopPct - 0.94m)) / 3m) * 0.55m) * 0.30m;
+        var validityScore = rewardRisk >= fixedRewardRisk ? maxPoints * 0.15m : maxPoints * 0.05m;
+
+        return Math.Clamp(Math.Round(rrScore + stopScore + validityScore, 2), 0m, maxPoints);
+    }
+
+    private static Candle? SafeCandle(IReadOnlyList<Candle> candles, int? index)
+    {
+        if (!index.HasValue || index.Value < 0 || index.Value >= candles.Count)
+        {
+            return null;
+        }
+
+        return candles[index.Value];
+    }
+
+    private static decimal Clamp01(decimal value) => Math.Clamp(value, 0m, 1m);
 
     public static string BuildFingerprint(
         string strategyCode,

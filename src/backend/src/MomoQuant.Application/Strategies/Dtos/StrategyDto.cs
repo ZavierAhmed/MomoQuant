@@ -29,6 +29,12 @@ public class StrategyDto
     public string? ResearchStatus { get; init; }
     public bool DeploymentQualificationEligible { get; init; } = true;
     public long? CanonicalValidationExperimentId { get; init; }
+
+    /// <summary>Non-persisted operational portfolio status (Active | Archived).</summary>
+    public string PortfolioStatus { get; init; } = "Archived";
+
+    /// <summary>True when the strategy may appear in new-run selectors.</summary>
+    public bool IsOperationallySelectable { get; init; }
 }
 
 public sealed class StrategyDetailDto : StrategyDto

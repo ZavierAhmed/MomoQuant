@@ -14,6 +14,7 @@ import { CheckboxField, DateField, MultiSelectField, NumberField, SelectField, T
 import { EXECUTION_MODE_OPTIONS } from '@/constants/tradingOptions';
 import { formatDate, formatNumber } from '@/components/common/utils';
 import { useAsync } from '@/hooks/useAsync';
+import { isOperationallySelectableStrategy } from '@/constants/canonicalStrategies';
 import { useReferenceData } from '@/hooks/useReferenceData';
 import { useRole } from '@/hooks/useRole';
 import { useShowDisabledStrategies } from '@/hooks/useSessionPolling';
@@ -127,7 +128,9 @@ export function StrategyBenchmarksPage() {
   }, [exchangeSymbols.symbols, form.symbolIds.length]);
 
   useEffect(() => {
-    const enabledIds = (reference.strategies ?? []).filter((strategy) => strategy.isEnabled).map((strategy) => strategy.id);
+    const enabledIds = (reference.strategies ?? [])
+      .filter((strategy) => strategy.isEnabled && isOperationallySelectableStrategy(strategy))
+      .map((strategy) => strategy.id);
     setForm((current) => {
       if (current.strategyIds.length) return current;
       return { ...current, strategyIds: enabledIds };
@@ -419,7 +422,9 @@ export function StrategyBenchmarksPage() {
               onClick={() =>
                 setForm((c) => ({
                   ...c,
-                  strategyIds: (reference.strategies ?? []).filter((s) => s.isEnabled).map((s) => s.id),
+                  strategyIds: (reference.strategies ?? [])
+                    .filter((s) => s.isEnabled && isOperationallySelectableStrategy(s))
+                    .map((s) => s.id),
                 }))
               }
             >

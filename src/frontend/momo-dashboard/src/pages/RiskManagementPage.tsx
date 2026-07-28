@@ -18,6 +18,7 @@ import { useRole } from '@/hooks/useRole';
 import { riskApi } from '@/api/riskApi';
 import { parseApiClientError } from '@/utils/apiError';
 import { requireNumber } from '@/utils/numbers';
+import { DEFAULT_SAMPLE_STRATEGY_CODE } from '@/constants/canonicalStrategies';
 import type { RiskRule } from '@/api/domainTypes';
 
 export function RiskManagementPage() {
@@ -90,7 +91,7 @@ export function RiskManagementPage() {
         suggestedStopLoss: evaluateForm.suggestedStopLoss === '' ? undefined : Number(evaluateForm.suggestedStopLoss),
         suggestedTakeProfit: evaluateForm.suggestedTakeProfit === '' ? undefined : Number(evaluateForm.suggestedTakeProfit),
         confidenceScore: requireNumber(evaluateForm.confidenceScore, 'Confidence score'),
-        strategyCode: 'EmaPullback',
+        strategyCode: DEFAULT_SAMPLE_STRATEGY_CODE,
         accountBalance: 10000,
         dailyPnl: 0,
         weeklyPnl: 0,

@@ -50,6 +50,23 @@ public sealed class StrategyValidationService : IStrategyValidationService
         RunStrategyValidationRequest request,
         CancellationToken cancellationToken = default)
     {
+        StrategyCode strategyEnum;
+        try
+        {
+            strategyEnum = StrategyCodeExtensions.FromCode(request.StrategyCode);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return ServiceResult<StrategyValidationResultDto>.Fail("Strategy code is invalid.", "strategyCode");
+        }
+
+        if (!CanonicalStrategyPortfolio.CanCreateNewRun(strategyEnum))
+        {
+            return ServiceResult<StrategyValidationResultDto>.Fail(
+                CanonicalStrategyPortfolio.ArchivedCannotUseMessage(request.StrategyCode),
+                "strategyCode");
+        }
+
         var symbol = await _symbolRepository.GetByIdAsync(request.SymbolId, cancellationToken);
         if (symbol is null)
         {
