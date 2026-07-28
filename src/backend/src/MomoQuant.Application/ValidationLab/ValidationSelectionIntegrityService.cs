@@ -199,12 +199,8 @@ public sealed class ValidationSelectionIntegrityService : IValidationSelectionIn
     public bool CanStartValidation(ValidationExperiment experiment, IReadOnlyList<ValidationParameterTrial> trials, out string? reason)
     {
         reason = null;
-        if (!CanFreeze(experiment, trials, out reason))
-        {
-            reason = $"ValidationStartedWithoutEligibleTrainingWinner: {reason}";
-            return false;
-        }
 
+        // 1. Common frozen snapshot / fingerprint integrity (all experiment types).
         var snapshotStatus = _fingerprints.ValidateParameterSnapshot(
             experiment.FrozenStrategyParameterSnapshotJson,
             requireNonEmptyParameters: true);
@@ -214,9 +210,23 @@ public sealed class ValidationSelectionIntegrityService : IValidationSelectionIn
             return false;
         }
 
-        if (_fingerprints.IsEmptyContentFingerprint(experiment.FrozenParameterFingerprint))
+        if (string.IsNullOrWhiteSpace(experiment.FrozenParameterFingerprint)
+            || _fingerprints.IsEmptyContentFingerprint(experiment.FrozenParameterFingerprint))
         {
             reason = "ValidationStartedWithoutEligibleTrainingWinner: frozen fingerprint is invalid empty-content hash.";
+            return false;
+        }
+
+        // 2. Existing-frozen: generic configuration integrity only — no training selection artifacts.
+        if (experiment.ExperimentType == ValidationExperimentType.ValidateExistingFrozenConfiguration)
+        {
+            return true;
+        }
+
+        // 3. Training-search: selection-integrity and selected-trial requirements.
+        if (!CanFreeze(experiment, trials, out reason))
+        {
+            reason = $"ValidationStartedWithoutEligibleTrainingWinner: {reason}";
             return false;
         }
 

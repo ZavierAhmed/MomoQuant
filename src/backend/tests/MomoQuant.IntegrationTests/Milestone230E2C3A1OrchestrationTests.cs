@@ -652,7 +652,7 @@ public sealed class Milestone230E2C3A1OrchestrationTests
     }
 
     [Fact]
-    public async Task ValidateExistingFrozenConfiguration_ApplicabilityRemainsUnchanged()
+    public async Task ValidateExistingFrozenConfiguration_GenuineNoTrainingArtifacts_CompletesAndReveals()
     {
         await using var factory = new E2C2OrchestrationFactory();
         factory.Controls.AllowNonTrainingRuns = true;
@@ -660,40 +660,46 @@ public sealed class Milestone230E2C3A1OrchestrationTests
 
         try
         {
-            var (id, combo) = await E2C2ExperimentFactory.CreatePreparedSingleTrialExperimentAsync(
-                factory, "e2c3a1-existing-frozen");
+            var id = await E2C2ExperimentFactory.CreateGenuineExistingFrozenExperimentAsync(
+                factory, "e2c3a1-genuine-frozen");
             experimentId = id;
-            await RunSuccessfulTrainingAndFreezeAsync(factory, id, combo);
 
-            await using (var seedScope = factory.Services.CreateAsyncScope())
+            await using (var preloadScope = factory.Services.CreateAsyncScope())
             {
-                var experiments = seedScope.ServiceProvider.GetRequiredService<IValidationExperimentRepository>();
-                var seeded = await experiments.GetByIdAsync(id)
-                    ?? throw new InvalidOperationException("Experiment missing.");
-                seeded.ExperimentType = ValidationExperimentType.ValidateExistingFrozenConfiguration;
-                seeded.IsQualificationCapable = false;
-                await experiments.UpdateAsync(seeded);
-
-                var db = seedScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-                await db.ValidationCandleAccessAudits
-                    .Where(a => a.ValidationExperimentId == id)
-                    .ExecuteDeleteAsync();
+                var experiment = await ReloadExperimentAsync(preloadScope, id);
+                Assert.Equal(ValidationExperimentType.ValidateExistingFrozenConfiguration, experiment.ExperimentType);
+                Assert.Equal(ValidationExperimentStatus.ConfigurationFrozen, experiment.Status);
+                Assert.Null(experiment.SelectedTrialId);
+                Assert.Equal(ValidationSelectionIntegrityStatus.NotEvaluated, experiment.SelectionIntegrityStatus);
+                Assert.False(experiment.IsQualificationCapable);
+                Assert.Empty(await preloadScope.ServiceProvider
+                    .GetRequiredService<IValidationParameterTrialRepository>()
+                    .GetByExperimentIdAsync(id));
             }
 
-            await using var scope = factory.Services.CreateAsyncScope();
-            var validation = await scope.ServiceProvider.GetRequiredService<IValidationLabService>()
-                .RunValidationAsync(id);
+            factory.Controls.ArmTrialPopulationGetFailure = true;
+            var runnerBefore = factory.Controls.RunnerInvocationCount;
+            var trialGetsBefore = factory.Controls.TrialPopulationGetInvocationCount;
+            var auditEvalBefore = factory.Controls.AuthoritativeAuditEvaluateTrialInvocationCount;
 
-            // Must not be rejected solely for missing training-audit qualification or capability.
-            Assert.True(
-                validation.Succeeded
-                || !(validation.ErrorMessage ?? string.Empty).Contains(
-                    "Authoritative validation audit", StringComparison.OrdinalIgnoreCase),
-                validation.ErrorMessage);
-            Assert.DoesNotContain(
-                ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed,
-                validation.ErrorField ?? string.Empty,
-                StringComparison.Ordinal);
+            await using (var runScope = factory.Services.CreateAsyncScope())
+            {
+                var validation = await runScope.ServiceProvider.GetRequiredService<IValidationLabService>()
+                    .RunValidationAsync(id);
+                Assert.True(validation.Succeeded, validation.ErrorMessage);
+            }
+
+            Assert.Equal(runnerBefore + 1, factory.Controls.RunnerInvocationCount);
+            Assert.Equal(trialGetsBefore, factory.Controls.TrialPopulationGetInvocationCount);
+            Assert.Equal(auditEvalBefore, factory.Controls.AuthoritativeAuditEvaluateTrialInvocationCount);
+
+            await using var assertScope = factory.Services.CreateAsyncScope();
+            var after = await ReloadExperimentAsync(assertScope, id);
+            Assert.Equal(ValidationExperimentStatus.Completed, after.Status);
+            Assert.Equal(ValidationRevealStatus.Revealed, after.ValidationRevealStatus);
+            Assert.NotNull(after.ValidationRevealedAtUtc);
+            Assert.False(after.IsQualificationCapable);
+            Assert.Null(after.SelectedTrialId);
         }
         finally
         {

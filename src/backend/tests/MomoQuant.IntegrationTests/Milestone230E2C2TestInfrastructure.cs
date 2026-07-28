@@ -134,6 +134,21 @@ public sealed class E2C2SeamControls
 
     public void IncrementRunnerInvocation() => Interlocked.Increment(ref _runnerInvocationCount);
 
+    private int _trialPopulationGetInvocationCount;
+
+    public int TrialPopulationGetInvocationCount => Volatile.Read(ref _trialPopulationGetInvocationCount);
+
+    public void IncrementTrialPopulationGetInvocation() =>
+        Interlocked.Increment(ref _trialPopulationGetInvocationCount);
+
+    private int _authoritativeAuditEvaluateTrialInvocationCount;
+
+    public int AuthoritativeAuditEvaluateTrialInvocationCount =>
+        Volatile.Read(ref _authoritativeAuditEvaluateTrialInvocationCount);
+
+    public void IncrementAuthoritativeAuditEvaluateTrialInvocation() =>
+        Interlocked.Increment(ref _authoritativeAuditEvaluateTrialInvocationCount);
+
     public void Reset()
     {
         RunnerMode = E2C2RunnerMode.AllowedComplete;
@@ -170,6 +185,8 @@ public sealed class E2C2SeamControls
         CorruptAuthoritativeAuditAfterNonTrainingRunForExperimentId = null;
         NonTrainingAuditCorruption = AuditCorruptionMode.DeleteAccessRows;
         Volatile.Write(ref _runnerInvocationCount, 0);
+        Volatile.Write(ref _trialPopulationGetInvocationCount, 0);
+        Volatile.Write(ref _authoritativeAuditEvaluateTrialInvocationCount, 0);
     }
 }
 
@@ -397,6 +414,13 @@ public sealed class E2C2OrchestrationFactory : MomoQuantWebApplicationFactory
                 var inner = ActivatorUtilities.CreateInstance<MomoQuant.Persistence.Repositories.ValidationCandleAccessAuditRepository>(sp);
                 return new E2C2AccessAuditRepositoryDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
             });
+
+            services.RemoveAll<IValidationAuthoritativeAuditQualificationEvaluator>();
+            services.AddScoped<IValidationAuthoritativeAuditQualificationEvaluator>(sp =>
+            {
+                var inner = ActivatorUtilities.CreateInstance<ValidationAuthoritativeAuditQualificationEvaluator>(sp);
+                return new E2C2AuthoritativeAuditEvaluatorDecorator(inner, sp.GetRequiredService<E2C2SeamControls>());
+            });
         });
     }
 }
@@ -471,6 +495,129 @@ internal static class E2C2ExperimentFactory
 
         var combos = BuildSingleTrialCombo(definitions);
         return (create.Data.Id, combos);
+    }
+
+    /// <summary>
+    /// Creates a genuine <see cref="ValidationExperimentType.ValidateExistingFrozenConfiguration"/> experiment
+    /// already frozen with no training trials or selection artifacts. Does not train-then-mutate type.
+    /// </summary>
+    public static async Task<long> CreateGenuineExistingFrozenExperimentAsync(
+        MomoQuantWebApplicationFactory factory,
+        string suffix,
+        Action<ValidationExperiment>? mutateBeforePersist = null)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var sp = scope.ServiceProvider;
+        var lab = sp.GetRequiredService<IValidationLabService>();
+        var expRepo = sp.GetRequiredService<IValidationExperimentRepository>();
+        var symbolsRepo = sp.GetRequiredService<ISymbolRepository>();
+        var definitions = sp.GetRequiredService<IStrategyParameterDefinitionProvider>();
+        var fingerprints = sp.GetRequiredService<IValidationParameterFingerprintService>();
+
+        long exchangeId;
+        long symbolId;
+        var reference = await expRepo.GetByIdAsync(23) ?? (await expRepo.GetRecentAsync(1)).FirstOrDefault();
+        if (reference is not null)
+        {
+            exchangeId = reference.ExchangeId;
+            symbolId = reference.SymbolId;
+        }
+        else
+        {
+            var (symbols, _) = await symbolsRepo.GetPagedAsync(
+                new PagedRequest { Page = 1, PageSize = 20 }, null);
+            var symbol = symbols.First();
+            exchangeId = symbol.ExchangeId;
+            symbolId = symbol.Id;
+        }
+
+        var combo = BuildSingleTrialCombo(definitions);
+        var end = DateTime.UtcNow.Date.AddDays(-1);
+        var start = end.AddDays(-14);
+        var create = await lab.CreateExperimentAsync(new CreateValidationExperimentRequest
+        {
+            Name = $"VL-E2C3A2 {suffix} {Guid.NewGuid():N}",
+            ExperimentType = ValidationExperimentType.ValidateExistingFrozenConfiguration,
+            StrategyCode = StrategyCodes.PriceStructureBreakoutRetest,
+            StrategyVersion = "1.0.0",
+            ExchangeId = exchangeId,
+            SymbolId = symbolId,
+            Timeframe = "15m",
+            RequestedStartUtc = start,
+            RequestedEndUtc = end,
+            SplitRatio = 0.70m,
+            RequiredWarmupCandles = 20,
+            MaximumTrials = 1,
+            DeterministicSeed = 23032,
+            AutoImportMissingCandles = true,
+            StrategyParameters = new Dictionary<string, string>(combo, StringComparer.OrdinalIgnoreCase),
+            QualificationProfile = new ValidationQualificationProfileDto
+            {
+                MinimumTrainingClosedTrades = 0,
+                MinimumTrainingProfitFactor = 0m,
+                MinimumTrainingNetExpectancyR = -999m,
+                MaximumTrainingDrawdownPercent = 100m,
+                MinimumValidationClosedTrades = 0,
+                MinimumValidationProfitFactor = 0m,
+                MinimumValidationNetExpectancyR = -999m,
+                MaximumValidationDrawdownPercent = 100m,
+                RequirePositiveValidationNetPnl = false,
+                RequirePositiveValidationNetExpectancy = false,
+                RequireParameterStability = false
+            }
+        });
+        if (!create.Succeeded || create.Data is null)
+        {
+            throw new InvalidOperationException(create.ErrorMessage ?? "Create failed.");
+        }
+
+        var prepare = await lab.PrepareDataAsync(create.Data.Id);
+        if (!prepare.Succeeded)
+        {
+            throw new InvalidOperationException(prepare.ErrorMessage ?? "Prepare failed.");
+        }
+
+        var experiment = await expRepo.GetByIdAsync(create.Data.Id)
+            ?? throw new InvalidOperationException("Experiment missing after prepare.");
+
+        var snapshotJson = JsonSerializer.Serialize(
+            combo,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        var fingerprint = fingerprints.ComputeFingerprint(combo);
+        if (fingerprints.IsEmptyContentFingerprint(fingerprint)
+            || fingerprints.ValidateParameterSnapshot(snapshotJson) != FrozenSnapshotValidationStatus.Valid)
+        {
+            throw new InvalidOperationException("Failed to build a valid frozen snapshot for existing-frozen fixture.");
+        }
+
+        experiment.Status = ValidationExperimentStatus.ConfigurationFrozen;
+        experiment.ValidationRevealStatus = ValidationRevealStatus.Frozen;
+        experiment.FrozenStrategyParameterSnapshotJson = snapshotJson;
+        experiment.FrozenParameterFingerprint = fingerprint;
+        experiment.FrozenSnapshotValidationStatus = FrozenSnapshotValidationStatus.Valid;
+        experiment.FreezeSource = "ExistingFrozenConfiguration";
+        experiment.FrozenAtUtc = DateTime.UtcNow;
+        experiment.SelectedTrialId = null;
+        experiment.SelectedTrialNumber = null;
+        experiment.SelectedTrialParameterFingerprint = null;
+        experiment.SelectedTrialParameterSnapshotJson = null;
+        experiment.SelectionIntegrityStatus = ValidationSelectionIntegrityStatus.NotEvaluated;
+        experiment.IsQualificationCapable = false;
+        experiment.CurrentStage = "ConfigurationFrozen";
+        experiment.PercentComplete = 80m;
+        experiment.ParameterStabilityApplicability = ParameterStabilityApplicability.NotApplicable;
+        experiment.UpdatedAtUtc = DateTime.UtcNow;
+        mutateBeforePersist?.Invoke(experiment);
+        await expRepo.UpdateAsync(experiment);
+
+        var trials = await sp.GetRequiredService<IValidationParameterTrialRepository>()
+            .GetByExperimentIdAsync(experiment.Id);
+        if (trials.Count != 0)
+        {
+            throw new InvalidOperationException("Genuine existing-frozen fixture must not have training trials.");
+        }
+
+        return experiment.Id;
     }
 
     public static Dictionary<string, string> BuildSingleTrialOverrides() =>
@@ -1193,6 +1340,7 @@ internal sealed class E2C2TrialRepositoryDecorator : IValidationParameterTrialRe
         long experimentId,
         CancellationToken cancellationToken = default)
     {
+        _controls.IncrementTrialPopulationGetInvocation();
         if (_controls.TryConsumeTrialPopulationGetFailure())
         {
             throw new InvalidOperationException("E2C2 simulated trial population repository failure.");
@@ -1357,4 +1505,33 @@ internal sealed class E2C2AuditRecoveryDecorator : IValidationAuditExecutionReco
 
         return _inner.RecoverAsync(auditExecutionId, request, cancellationToken);
     }
+}
+
+internal sealed class E2C2AuthoritativeAuditEvaluatorDecorator : IValidationAuthoritativeAuditQualificationEvaluator
+{
+    private readonly IValidationAuthoritativeAuditQualificationEvaluator _inner;
+    private readonly E2C2SeamControls _controls;
+
+    public E2C2AuthoritativeAuditEvaluatorDecorator(
+        IValidationAuthoritativeAuditQualificationEvaluator inner,
+        E2C2SeamControls controls)
+    {
+        _inner = inner;
+        _controls = controls;
+    }
+
+    public Task<ValidationAuthoritativeAuditQualificationResult> EvaluateTrialAsync(
+        ValidationExperiment experiment,
+        ValidationParameterTrial trial,
+        CancellationToken cancellationToken = default)
+    {
+        _controls.IncrementAuthoritativeAuditEvaluateTrialInvocation();
+        return _inner.EvaluateTrialAsync(experiment, trial, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<ValidationAuthoritativeAuditQualificationResult>> RevalidatePopulationAsync(
+        ValidationExperiment experiment,
+        IList<ValidationParameterTrial> trials,
+        CancellationToken cancellationToken = default) =>
+        _inner.RevalidatePopulationAsync(experiment, trials, cancellationToken);
 }

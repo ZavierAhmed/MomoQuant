@@ -1002,42 +1002,45 @@ public sealed partial class ValidationLabService : IValidationLabService
                 validationNegativeBlock.ErrorField);
         }
 
-        var trialPopulationLoad = await ValidationAuthoritativeEvaluationSafety.TryGetTrialsByExperimentIdAsync(
-            _trials, experiment, cancellationToken);
-        if (!trialPopulationLoad.Succeeded)
-        {
-            var loadAggregate = trialPopulationLoad.FailureAggregate!;
-            ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
-            experiment.IsQualificationCapable = false;
-            experiment.UpdatedAtUtc = DateTime.UtcNow;
-            await _experiments.UpdateAsync(experiment, cancellationToken);
-            return ServiceResult<ValidationExperimentDetailDto>.Fail(
-                loadAggregate.PrimaryFailure?.UserSafeMessage
-                ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
-                loadAggregate.PrimaryFailure?.Code
-                ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
-        }
+        // Milestone 23.0E2C3A2 — split applicability before any training trial-repository load.
+        var trainingAuditApplicable =
+            ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment);
 
-        var trialEntities = trialPopulationLoad.Trials!.ToList();
-        if (!_selectionIntegrity.CanStartValidation(experiment, trialEntities, out var validationBlockReason))
+        if (trainingAuditApplicable)
         {
-            AppendDiagnostic(experiment, "ValidationStartedWithoutEligibleTrainingWinner", validationBlockReason ?? string.Empty);
-            experiment.UpdatedAtUtc = DateTime.UtcNow;
-            await _experiments.UpdateAsync(experiment, cancellationToken);
-            return ServiceResult<ValidationExperimentDetailDto>.Fail(validationBlockReason ?? "Validation blocked by selection integrity.");
-        }
+            var trialPopulationLoad = await ValidationAuthoritativeEvaluationSafety.TryGetTrialsByExperimentIdAsync(
+                _trials, experiment, cancellationToken);
+            if (!trialPopulationLoad.Succeeded)
+            {
+                var loadAggregate = trialPopulationLoad.FailureAggregate!;
+                ValidationTrainingFailurePersistence.ApplyToExperiment(experiment, loadAggregate);
+                experiment.IsQualificationCapable = false;
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                    loadAggregate.PrimaryFailure?.UserSafeMessage
+                    ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
+                    loadAggregate.PrimaryFailure?.Code
+                    ?? ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+            }
 
-        // Training-search qualification capability does not apply to ValidateExistingFrozenConfiguration.
-        if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment)
-            && !experiment.IsQualificationCapable)
-        {
-            return ServiceResult<ValidationExperimentDetailDto>.Fail(
-                "Validation blocked: experiment is not qualification-capable.");
-        }
+            var trialEntities = trialPopulationLoad.Trials!.ToList();
+            if (!_selectionIntegrity.CanStartValidation(experiment, trialEntities, out var validationBlockReason))
+            {
+                AppendDiagnostic(experiment, "ValidationStartedWithoutEligibleTrainingWinner", validationBlockReason ?? string.Empty);
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                    validationBlockReason ?? "Validation blocked by selection integrity.");
+            }
 
-        // Milestone 23.0E2C3 — revalidate authoritative audit before ValidationRunning / runner.
-        if (ValidationAuthoritativeAuditQualificationEvaluator.IsTrainingAuditQualificationApplicable(experiment))
-        {
+            if (!experiment.IsQualificationCapable)
+            {
+                return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                    "Validation blocked: experiment is not qualification-capable.");
+            }
+
+            // Milestone 23.0E2C3 — revalidate authoritative audit before ValidationRunning / runner.
             var selected = trialEntities.FirstOrDefault(t => t.Id == experiment.SelectedTrialId);
             if (selected is null)
             {
@@ -1089,6 +1092,24 @@ public sealed partial class ValidationLabService : IValidationLabService
                     auditGate.UserSafeBlockingReason
                     ?? ValidationAuthoritativeAuditQualificationEvaluator.UserSafeIncompleteMessage,
                     ValidationTrainingFailureCodes.ValidationAccessAuditPersistenceFailed);
+            }
+        }
+        else
+        {
+            // ValidateExistingFrozenConfiguration: generic frozen checks only — no trial population load.
+            if (!_selectionIntegrity.CanStartValidation(
+                    experiment,
+                    Array.Empty<ValidationParameterTrial>(),
+                    out var existingFrozenBlockReason))
+            {
+                AppendDiagnostic(
+                    experiment,
+                    "ValidationStartedWithoutEligibleTrainingWinner",
+                    existingFrozenBlockReason ?? string.Empty);
+                experiment.UpdatedAtUtc = DateTime.UtcNow;
+                await _experiments.UpdateAsync(experiment, cancellationToken);
+                return ServiceResult<ValidationExperimentDetailDto>.Fail(
+                    existingFrozenBlockReason ?? "Validation blocked by frozen configuration integrity.");
             }
         }
 
@@ -1464,7 +1485,10 @@ public sealed partial class ValidationLabService : IValidationLabService
                     $"{verdict.PrimaryFailureReason}: {verdict.Explanation}");
             }
 
-            if (verdict.Decision == StrategyRobustnessDecision.Passed && !experiment.IsQualificationCapable)
+            // Qualification capability is a training-search gate; existing-frozen must not be blocked by it.
+            if (verdict.Decision == StrategyRobustnessDecision.Passed
+                && trainingAuditApplicable
+                && !experiment.IsQualificationCapable)
             {
                 experiment.StrategyRobustnessDecision = StrategyRobustnessDecision.FailedDataIntegrity;
                 experiment.DecisionExplanation =
