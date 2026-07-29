@@ -2,6 +2,7 @@ namespace MomoQuant.Application.Strategies.PriceStructure;
 
 public static class PriceStructureRejectionCodes
 {
+    public const string InvalidParameters = "InvalidParameters";
     public const string NoConfirmedSwing = "NoConfirmedSwing";
     public const string NoBreakout = "NoBreakout";
     public const string WaitingForRetest = "WaitingForRetest";
@@ -9,6 +10,7 @@ public static class PriceStructureRejectionCodes
     public const string RetestInvalidated = "RetestInvalidated";
     public const string NoConfirmation = "NoConfirmation";
     public const string InvalidStop = "InvalidStop";
+    public const string InvalidTarget = "InvalidTarget";
     public const string DuplicateSetup = "DuplicateSetup";
     public const string NoLiquidityLevel = "NoLiquidityLevel";
     public const string NoSweep = "NoSweep";

@@ -44,6 +44,12 @@ public static class PriceStructureBreakoutRetestEvaluator
         }
 
         var settings = ReadParameters(parameters);
+        var validation = ValidateParameters(settings);
+        if (validation is not null)
+        {
+            return (null, validation);
+        }
+
         var currentIndex = candles.Count - 1;
         var maxConfirmed = currentIndex - settings.SwingRightBars;
         if (maxConfirmed < settings.SwingLeftBars)
@@ -148,6 +154,7 @@ public static class PriceStructureBreakoutRetestEvaluator
 
         var retestSearchEnd = Math.Min(currentIndex, breakoutIndex.Value + settings.MaxRetestBars);
         int? retestIndex = null;
+        var retestTouched = false;
         decimal retestLow = decimal.MaxValue;
 
         for (var i = breakoutIndex.Value + 1; i <= retestSearchEnd; i++)
@@ -160,10 +167,21 @@ public static class PriceStructureBreakoutRetestEvaluator
                 return (null, PriceStructureRejectionCodes.RetestInvalidated);
             }
 
-            var tolerance = ComputeRetestTolerance(candles, i, swing.Price, settings);
-            if (IsBullishRetestTouch(candle, swing.Price, tolerance, settings))
+            var toleranceResult = TryComputeRetestTolerance(candles, i, swing.Price, settings);
+            if (!toleranceResult.Succeeded)
             {
+                return (null, toleranceResult.Reason);
+            }
+
+            if (!retestTouched
+                && IsBullishRetestTouch(candle, swing.Price, toleranceResult.Tolerance, settings))
+            {
+                retestTouched = true;
                 retestIndex = i;
+            }
+
+            if (retestTouched)
+            {
                 retestLow = Math.Min(retestLow, candle.Low);
             }
         }
@@ -177,6 +195,11 @@ public static class PriceStructureBreakoutRetestEvaluator
             }
 
             return (null, PriceStructureRejectionCodes.WaitingForRetest);
+        }
+
+        if (currentIndex > breakoutIndex.Value + settings.MaxRetestBars)
+        {
+            return (null, PriceStructureRejectionCodes.RetestExpired);
         }
 
         var retestCandle = candles[retestIndex.Value];
@@ -201,6 +224,11 @@ public static class PriceStructureBreakoutRetestEvaluator
 
         var risk = entry - stop;
         var target = entry + (risk * settings.FixedRewardRisk);
+        if (risk <= 0m || target <= entry)
+        {
+            return (null, PriceStructureRejectionCodes.InvalidTarget);
+        }
+
         var fingerprint = BuildFingerprint(
             strategyCode,
             symbolId,
@@ -290,6 +318,7 @@ public static class PriceStructureBreakoutRetestEvaluator
 
         var retestSearchEnd = Math.Min(currentIndex, breakoutIndex.Value + settings.MaxRetestBars);
         int? retestIndex = null;
+        var retestTouched = false;
         decimal retestHigh = decimal.MinValue;
 
         for (var i = breakoutIndex.Value + 1; i <= retestSearchEnd; i++)
@@ -302,10 +331,21 @@ public static class PriceStructureBreakoutRetestEvaluator
                 return (null, PriceStructureRejectionCodes.RetestInvalidated);
             }
 
-            var tolerance = ComputeRetestTolerance(candles, i, swing.Price, settings);
-            if (IsBearishRetestTouch(candle, swing.Price, tolerance, settings))
+            var toleranceResult = TryComputeRetestTolerance(candles, i, swing.Price, settings);
+            if (!toleranceResult.Succeeded)
             {
+                return (null, toleranceResult.Reason);
+            }
+
+            if (!retestTouched
+                && IsBearishRetestTouch(candle, swing.Price, toleranceResult.Tolerance, settings))
+            {
+                retestTouched = true;
                 retestIndex = i;
+            }
+
+            if (retestTouched)
+            {
                 retestHigh = Math.Max(retestHigh, candle.High);
             }
         }
@@ -319,6 +359,11 @@ public static class PriceStructureBreakoutRetestEvaluator
             }
 
             return (null, PriceStructureRejectionCodes.WaitingForRetest);
+        }
+
+        if (currentIndex > breakoutIndex.Value + settings.MaxRetestBars)
+        {
+            return (null, PriceStructureRejectionCodes.RetestExpired);
         }
 
         var retestCandle = candles[retestIndex.Value];
@@ -343,6 +388,11 @@ public static class PriceStructureBreakoutRetestEvaluator
 
         var risk = stop - entry;
         var target = entry - (risk * settings.FixedRewardRisk);
+        if (risk <= 0m || target >= entry || target <= 0m)
+        {
+            return (null, PriceStructureRejectionCodes.InvalidTarget);
+        }
+
         var fingerprint = BuildFingerprint(
             strategyCode,
             symbolId,
@@ -446,7 +496,13 @@ public static class PriceStructureBreakoutRetestEvaluator
         return candle.High >= lower && candle.High <= upper;
     }
 
-    private static decimal ComputeRetestTolerance(
+    private sealed record RetestToleranceResult(bool Succeeded, decimal Tolerance, string Reason)
+    {
+        public static RetestToleranceResult Success(decimal tolerance) => new(true, tolerance, string.Empty);
+        public static RetestToleranceResult Failure(string reason) => new(false, 0m, reason);
+    }
+
+    private static RetestToleranceResult TryComputeRetestTolerance(
         IReadOnlyList<Candle> candles,
         int candleIndex,
         decimal level,
@@ -455,13 +511,12 @@ public static class PriceStructureBreakoutRetestEvaluator
         if (string.Equals(settings.RetestToleranceMode, "Atr", StringComparison.OrdinalIgnoreCase))
         {
             var atr = ComputeAtr14AtIndex(candles, candleIndex);
-            if (atr is > 0m)
-            {
-                return atr.Value * settings.RetestToleranceAtrMultiplier;
-            }
+            return atr is > 0m
+                ? RetestToleranceResult.Success(atr.Value * settings.RetestToleranceAtrMultiplier)
+                : RetestToleranceResult.Failure(PriceStructureRejectionCodes.InsufficientData);
         }
 
-        return level * settings.RetestTolerancePercent / 100m;
+        return RetestToleranceResult.Success(level * settings.RetestTolerancePercent / 100m);
     }
 
     public static decimal? ComputeAtr14AtIndex(IReadOnlyList<Candle> candles, int index)
@@ -505,7 +560,7 @@ public static class PriceStructureBreakoutRetestEvaluator
             return false;
         }
 
-        var mode = NormalizeConfirmationMode(settings.ConfirmationMode);
+        var mode = NormalizeConfirmationMode(settings.ConfirmationMode) ?? string.Empty;
         if (string.Equals(mode, "NoConfirmation", StringComparison.OrdinalIgnoreCase))
         {
             return currentIndex == retestIndex;
@@ -542,7 +597,7 @@ public static class PriceStructureBreakoutRetestEvaluator
             return false;
         }
 
-        var mode = NormalizeConfirmationMode(settings.ConfirmationMode);
+        var mode = NormalizeConfirmationMode(settings.ConfirmationMode) ?? string.Empty;
         if (string.Equals(mode, "NoConfirmation", StringComparison.OrdinalIgnoreCase))
         {
             return currentIndex == retestIndex;
@@ -567,11 +622,11 @@ public static class PriceStructureBreakoutRetestEvaluator
         return confirmCandle.Close < level && confirmCandle.Close < confirmCandle.Open;
     }
 
-    internal static string NormalizeConfirmationMode(string mode)
+    internal static string? NormalizeConfirmationMode(string mode)
     {
         if (string.IsNullOrWhiteSpace(mode))
         {
-            return "ReactionClose";
+            return null;
         }
 
         if (string.Equals(mode, "ReactionClose", StringComparison.OrdinalIgnoreCase)
@@ -597,7 +652,38 @@ public static class PriceStructureBreakoutRetestEvaluator
             return "NoConfirmation";
         }
 
-        return "ReactionClose";
+        return null;
+    }
+
+    private static string? ValidateParameters(BreakoutRetestParameters settings)
+    {
+        if (settings.SwingLeftBars <= 0
+            || settings.SwingRightBars <= 0
+            || settings.MinSwingDistanceBars < 0
+            || settings.MaxRetestBars <= 0)
+        {
+            return PriceStructureRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.MinBreakoutClosePercent < 0m
+            || settings.RetestTolerancePercent < 0m
+            || settings.RetestToleranceAtrMultiplier < 0m
+            || settings.MaxRetestPenetrationPercent < 0m
+            || settings.StopBufferPercent < 0m
+            || settings.FixedRewardRisk <= 0m)
+        {
+            return PriceStructureRejectionCodes.InvalidParameters;
+        }
+
+        if (!string.Equals(settings.RetestToleranceMode, "Percent", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(settings.RetestToleranceMode, "Atr", StringComparison.OrdinalIgnoreCase))
+        {
+            return PriceStructureRejectionCodes.InvalidParameters;
+        }
+
+        return NormalizeConfirmationMode(settings.ConfirmationMode) is null
+            ? PriceStructureRejectionCodes.InvalidParameters
+            : null;
     }
 
     public static BreakoutRetestStrengthBreakdown ComputeStrengthBreakdown(
@@ -707,7 +793,7 @@ public static class PriceStructureBreakoutRetestEvaluator
         Candle? prior,
         decimal maxPoints)
     {
-        var mode = NormalizeConfirmationMode(confirmationMode);
+        var mode = NormalizeConfirmationMode(confirmationMode) ?? string.Empty;
         if (string.Equals(mode, "NoConfirmation", StringComparison.OrdinalIgnoreCase))
         {
             return maxPoints * 0.50m;

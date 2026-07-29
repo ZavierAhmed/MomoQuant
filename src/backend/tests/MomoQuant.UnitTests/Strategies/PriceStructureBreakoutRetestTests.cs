@@ -1,500 +1,502 @@
-using MomoQuant.Application.Strategies.Implementations;
 using MomoQuant.Application.Strategies.PriceStructure;
+using MomoQuant.Application.Strategies.PriceStructure.Dtos;
 using MomoQuant.Domain.Constants;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
-using MomoQuant.Domain.Strategies;
 
 namespace MomoQuant.UnitTests.Strategies;
 
-/// <summary>
-/// Milestone 23.1A — Price Structure Breakout + Retest Strategy Unit Tests (v1.1.0).
-/// </summary>
 public sealed class PriceStructureBreakoutRetestTests
 {
+    private static readonly DateTime StartUtc = new(2026, 01, 01, 0, 0, 0, DateTimeKind.Utc);
+
     [Fact]
-    public void Strategy_HasCorrectCode()
+    public void EvaluateAtCurrentCandle_ValidLong_UsesExpectedGeometry()
     {
-        var strategy = new PriceStructureBreakoutRetestStrategy();
-        Assert.Equal(StrategyCode.PriceStructureBreakoutRetest, strategy.Code);
+        var candles = BuildLongScenario();
+
+        var (candidate, reason) = Evaluate(candles);
+
+        Assert.Equal("Bullish breakout retest confirmed.", reason);
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+        Assert.Equal(100.80m, candidate.EntryPrice);
+        Assert.Equal(99.95m, candidate.StopLoss);
+        Assert.Equal(102.50m, candidate.Target1);
     }
 
     [Fact]
-    public void Strategy_SupportsMultipleRegimes()
+    public void EvaluateAtCurrentCandle_ValidShort_UsesExpectedGeometry()
     {
-        var strategy = new PriceStructureBreakoutRetestStrategy();
-        Assert.Contains(MarketRegime.Breakout, strategy.SupportedRegimes);
-        Assert.Contains(MarketRegime.Trending, strategy.SupportedRegimes);
-        Assert.Contains(MarketRegime.Ranging, strategy.SupportedRegimes);
+        var candles = BuildShortScenario();
+
+        var (candidate, reason) = Evaluate(candles);
+
+        Assert.Equal("Bearish breakout retest confirmed.", reason);
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Short, candidate.Direction);
+        Assert.Equal(99.20m, candidate.EntryPrice);
+        Assert.Equal(100.05m, candidate.StopLoss);
+        Assert.Equal(97.50m, candidate.Target1);
     }
 
     [Fact]
-    public void Strategy_SupportsMultipleTimeframes()
+    public void EvaluateAtCurrentCandle_PercentToleranceJustInside_ReturnsCandidate()
     {
-        var strategy = new PriceStructureBreakoutRetestStrategy();
-        Assert.Contains(Timeframe.M5, strategy.SupportedTimeframes);
-        Assert.Contains(Timeframe.M15, strategy.SupportedTimeframes);
-        Assert.Contains(Timeframe.M30, strategy.SupportedTimeframes);
-        Assert.Contains(Timeframe.H1, strategy.SupportedTimeframes);
-        Assert.Contains(Timeframe.H4, strategy.SupportedTimeframes);
+        var candles = BuildLongScenario(retestLow: 99.86m, confirmationLow: 100.30m);
+
+        var (candidate, _) = Evaluate(candles);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+        Assert.Equal(100.80m, candidate.EntryPrice);
+        Assert.Equal(99.81007m, candidate.StopLoss);
+        Assert.Equal(102.77986m, candidate.Target1);
     }
 
     [Fact]
-    public void Evaluate_InsufficientCandles_RejectsInsufficientData()
+    public void EvaluateAtCurrentCandle_PercentToleranceJustOutside_WaitsForRetest()
     {
-        var strategy = new PriceStructureBreakoutRetestStrategy();
-        var context = new StrategyContext
-        {
-            SymbolId = 1,
-            Symbol = "BTCUSDT",
-            Timeframe = Timeframe.M5,
-            HigherTimeframe = Timeframe.H1,
-            MarketRegime = MarketRegime.Breakout,
-            Candles = BuildMinimalCandles(5),
-            IndicatorSnapshot = null,
-            EvaluatedAtUtc = DateTime.UtcNow
-        };
+        var candles = BuildLongScenario(retestLow: 99.84m, confirmationLow: 100.30m);
 
-        var result = strategy.Evaluate(context);
+        var (candidate, reason) = Evaluate(candles);
 
-        Assert.Equal(TradeDirection.None, result.Direction);
-        Assert.Contains(PriceStructureRejectionCodes.InsufficientData, result.Reason ?? string.Empty);
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.WaitingForRetest, reason);
     }
 
     [Fact]
-    public void Evaluate_UnsupportedTimeframe_RejectsInsufficientData()
+    public void EvaluateAtCurrentCandle_AtrToleranceJustInside_ReturnsCandidate()
     {
-        var strategy = new PriceStructureBreakoutRetestStrategy();
-        var context = new StrategyContext
-        {
-            SymbolId = 1,
-            Symbol = "BTCUSDT",
-            Timeframe = Timeframe.M1,
-            HigherTimeframe = Timeframe.M5,
-            MarketRegime = MarketRegime.Breakout,
-            Candles = BuildMinimalCandles(100),
-            IndicatorSnapshot = null,
-            EvaluatedAtUtc = DateTime.UtcNow
-        };
+        var candles = BuildLongScenario();
+        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "1.00"));
 
-        var result = strategy.Evaluate(context);
+        var (candidate, _) = Evaluate(candles, parameters);
 
-        Assert.Equal(TradeDirection.None, result.Direction);
-        Assert.Contains(PriceStructureRejectionCodes.InsufficientData, result.Reason ?? string.Empty);
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+        Assert.Equal(100.80m, candidate.EntryPrice);
+        Assert.Equal(99.95m, candidate.StopLoss);
+        Assert.Equal(102.50m, candidate.Target1);
     }
 
     [Fact]
-    public void Parameters_HaveReasonableDefaults()
+    public void EvaluateAtCurrentCandle_AtrToleranceJustOutside_WaitsForRetest()
     {
-        var parameters = PriceStructureBreakoutRetestEvaluator.ReadParameters(new Dictionary<string, string>());
+        var candles = BuildLongScenario(retestLow: 98.90m, confirmationLow: 100.60m);
+        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "0.20"));
 
-        Assert.Equal(2, parameters.SwingLeftBars);
-        Assert.Equal(2, parameters.SwingRightBars);
-        Assert.Equal(3, parameters.MinSwingDistanceBars);
-        Assert.True(parameters.UseWicksForSwing);
-        Assert.True(parameters.BreakoutMustCloseBeyondLevel);
-        Assert.Equal(20, parameters.MaxRetestBars);
-        Assert.Equal(0.15m, parameters.RetestTolerancePercent);
-        Assert.Equal("Percent", parameters.RetestToleranceMode);
-        Assert.Equal(0.25m, parameters.RetestToleranceAtrMultiplier);
-        Assert.True(parameters.AllowWickThroughLevel);
-        Assert.Equal(0.30m, parameters.MaxRetestPenetrationPercent);
-        Assert.Equal("ReactionClose", parameters.ConfirmationMode);
-        Assert.Equal(2.0m, parameters.FixedRewardRisk);
-        Assert.Equal(0.05m, parameters.StopBufferPercent);
+        var (candidate, reason) = Evaluate(candles, parameters);
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.WaitingForRetest, reason);
     }
 
     [Fact]
-    public void Parameters_V11_SupportsPercentTolerance()
+    public void EvaluateAtCurrentCandle_AtrUnavailable_DoesNotFallBackToPercent()
     {
-        var parameters = PriceStructureBreakoutRetestEvaluator.ReadParameters(new Dictionary<string, string>
-        {
-            ["retestToleranceMode"] = "Percent",
-            ["retestTolerancePercent"] = "0.20"
-        });
+        var candles = BuildAtrUnavailableLongScenario();
+        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "0.10"));
 
-        Assert.Equal("Percent", parameters.RetestToleranceMode);
-        Assert.Equal(0.20m, parameters.RetestTolerancePercent);
+        var (candidate, reason) = Evaluate(candles, parameters);
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.NoBreakout, reason);
     }
 
     [Fact]
-    public void Parameters_V11_SupportsAtrTolerance()
+    public void EvaluateAtCurrentCandle_ToleranceAppliedExactlyOnce_DoesNotDoubleCount()
     {
-        var parameters = PriceStructureBreakoutRetestEvaluator.ReadParameters(new Dictionary<string, string>
-        {
-            ["retestToleranceMode"] = "ATR",
-            ["retestToleranceAtrMultiplier"] = "0.30"
-        });
+        var candles = BuildLongScenario(retestLow: 99.71m, confirmationLow: 100.30m);
 
-        Assert.Equal("ATR", parameters.RetestToleranceMode);
-        Assert.Equal(0.30m, parameters.RetestToleranceAtrMultiplier);
+        var (candidate, reason) = Evaluate(candles);
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.WaitingForRetest, reason);
+    }
+
+    [Theory]
+    [InlineData("ReactionClose")]
+    [InlineData("BullishReactionClose")]
+    public void EvaluateAtCurrentCandle_ReactionCloseLongAliases_ReturnCandidate(string mode)
+    {
+        var (candidate, _) = Evaluate(BuildLongScenario(), Parameters(("confirmationMode", mode)));
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+        Assert.Equal(100.80m, candidate.EntryPrice);
+        Assert.Equal(99.95m, candidate.StopLoss);
+        Assert.Equal(102.50m, candidate.Target1);
+    }
+
+    [Theory]
+    [InlineData("ReactionClose")]
+    [InlineData("BullishReactionClose")]
+    public void EvaluateAtCurrentCandle_ReactionCloseShortAliases_ReturnCandidate(string mode)
+    {
+        var (candidate, _) = Evaluate(BuildShortScenario(), Parameters(("confirmationMode", mode)));
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Short, candidate.Direction);
+        Assert.Equal(99.20m, candidate.EntryPrice);
+        Assert.Equal(100.05m, candidate.StopLoss);
+        Assert.Equal(97.50m, candidate.Target1);
+    }
+
+    [Theory]
+    [InlineData("Engulfing")]
+    [InlineData("BullishEngulfing")]
+    public void EvaluateAtCurrentCandle_EngulfingLongAliases_ReturnCandidate(string mode)
+    {
+        var (candidate, _) = Evaluate(BuildLongScenario(confirmationMode: mode), Parameters(("confirmationMode", mode)));
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+        Assert.Equal(101.10m, candidate.EntryPrice);
+        Assert.Equal(99.95m, candidate.StopLoss);
+        Assert.Equal(103.40m, candidate.Target1);
+    }
+
+    [Theory]
+    [InlineData("Engulfing")]
+    [InlineData("BullishEngulfing")]
+    public void EvaluateAtCurrentCandle_EngulfingShortAliases_ReturnCandidate(string mode)
+    {
+        var (candidate, _) = Evaluate(BuildShortScenario(confirmationMode: mode), Parameters(("confirmationMode", mode)));
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Short, candidate.Direction);
+        Assert.Equal(98.90m, candidate.EntryPrice);
+        Assert.Equal(100.05m, candidate.StopLoss);
+        Assert.Equal(96.60m, candidate.Target1);
+    }
+
+    [Theory]
+    [InlineData("CloseBeyondPreviousExtreme")]
+    [InlineData("CloseAbovePreviousHigh")]
+    public void EvaluateAtCurrentCandle_CloseBeyondPreviousExtremeLongAliases_ReturnCandidate(string mode)
+    {
+        var (candidate, _) = Evaluate(BuildLongScenario(confirmationMode: mode), Parameters(("confirmationMode", mode)));
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+        Assert.Equal(101.10m, candidate.EntryPrice);
+        Assert.Equal(99.95m, candidate.StopLoss);
+        Assert.Equal(103.40m, candidate.Target1);
+    }
+
+    [Theory]
+    [InlineData("CloseBeyondPreviousExtreme")]
+    [InlineData("CloseAbovePreviousHigh")]
+    public void EvaluateAtCurrentCandle_CloseBeyondPreviousExtremeShortAliases_ReturnCandidate(string mode)
+    {
+        var (candidate, _) = Evaluate(BuildShortScenario(confirmationMode: mode), Parameters(("confirmationMode", mode)));
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Short, candidate.Direction);
+        Assert.Equal(98.90m, candidate.EntryPrice);
+        Assert.Equal(100.05m, candidate.StopLoss);
+        Assert.Equal(96.60m, candidate.Target1);
     }
 
     [Fact]
-    public void Parameters_V11_ToleranceAppliedOnce()
+    public void EvaluateAtCurrentCandle_NoConfirmationLong_ReturnsSameCandleCandidate()
     {
-        var parameters = PriceStructureBreakoutRetestEvaluator.ReadParameters(new Dictionary<string, string>
-        {
-            ["retestToleranceMode"] = "Percent",
-            ["retestTolerancePercent"] = "0.15"
-        });
+        var candles = BuildLongScenario(confirmationMode: "NoConfirmation");
 
-        Assert.Equal("Percent", parameters.RetestToleranceMode);
-        Assert.NotEqual(0.0m, parameters.RetestTolerancePercent);
+        var (candidate, _) = Evaluate(candles, Parameters(("confirmationMode", "NoConfirmation")));
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+        Assert.Equal(100.05m, candidate.EntryPrice);
+        Assert.Equal(99.95m, candidate.StopLoss);
+        Assert.Equal(100.25m, candidate.Target1);
     }
 
     [Fact]
-    public void Parameters_V11_BullishConfirmation_ReactionClose()
+    public void EvaluateAtCurrentCandle_NoConfirmationShort_ReturnsSameCandleCandidate()
     {
-        var parameters = PriceStructureBreakoutRetestEvaluator.ReadParameters(new Dictionary<string, string>
-        {
-            ["confirmationMode"] = "ReactionClose"
-        });
+        var candles = BuildShortScenario(confirmationMode: "NoConfirmation");
 
-        Assert.Equal("ReactionClose", parameters.ConfirmationMode);
+        var (candidate, _) = Evaluate(candles, Parameters(("confirmationMode", "NoConfirmation")));
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Short, candidate.Direction);
+        Assert.Equal(99.95m, candidate.EntryPrice);
+        Assert.Equal(100.05m, candidate.StopLoss);
+        Assert.Equal(99.75m, candidate.Target1);
     }
 
     [Fact]
-    public void Parameters_V11_BullishConfirmation_Engulfing()
+    public void EvaluateAtCurrentCandle_UnknownConfirmationMode_ReturnsInvalidParameters()
     {
-        var parameters = PriceStructureBreakoutRetestEvaluator.ReadParameters(new Dictionary<string, string>
-        {
-            ["confirmationMode"] = "Engulfing"
-        });
+        var (candidate, reason) = Evaluate(BuildLongScenario(), Parameters(("confirmationMode", "CloseBeyondExtreme")));
 
-        Assert.Equal("Engulfing", parameters.ConfirmationMode);
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.InvalidParameters, reason);
     }
 
     [Fact]
-    public void Parameters_V11_BullishConfirmation_CloseBeyondPreviousExtreme()
+    public void EvaluateAtCurrentCandle_UnknownToleranceMode_ReturnsInvalidParameters()
     {
-        var parameters = PriceStructureBreakoutRetestEvaluator.ReadParameters(new Dictionary<string, string>
-        {
-            ["confirmationMode"] = "CloseBeyondPreviousExtreme"
-        });
+        var (candidate, reason) = Evaluate(BuildLongScenario(), Parameters(("retestToleranceMode", "WeirdMode")));
 
-        Assert.Equal("CloseBeyondPreviousExtreme", parameters.ConfirmationMode);
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.InvalidParameters, reason);
     }
 
     [Fact]
-    public void Parameters_V11_LegacyCloseBeyondExtremeAlias_StaysAsCloseBeyondExtreme()
+    public void EvaluateAtCurrentCandle_ExpiredSetupCannotConfirmLater()
     {
-        var parameters = PriceStructureBreakoutRetestEvaluator.ReadParameters(new Dictionary<string, string>
-        {
-            ["confirmationMode"] = "CloseBeyondExtreme"
-        });
+        var candles = BuildLongScenario(confirmGapBars: 21);
+        var parameters = Parameters(("maxRetestBars", "2"));
 
-        // CloseBeyondExtreme is accepted as-is (it's a valid confirmation mode)
-        Assert.Equal("CloseBeyondExtreme", parameters.ConfirmationMode);
+        var (candidate, reason) = Evaluate(candles, parameters);
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.RetestExpired, reason);
     }
 
     [Fact]
-    public void Version_IsV110()
+    public void EvaluateAtCurrentCandle_WorstMultiCandleRetestStop_UsesDeepestAllowedLow()
     {
-        Assert.Equal("1.1.0", PriceStructureBreakoutRetestStrategy.Version);
-        Assert.Equal("1.0.0", PriceStructureBreakoutRetestStrategy.VersionV10);
+        var candles = BuildLongScenario(
+            multiCandleRetest: true,
+            secondRetestLow: 99.92m,
+            confirmationLow: 99.90m);
+
+        var (candidate, _) = Evaluate(candles);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+        Assert.Equal(100.80m, candidate.EntryPrice);
+        Assert.Equal(99.85005m, candidate.StopLoss);
+        Assert.Equal(102.69990m, candidate.Target1);
     }
 
     [Fact]
-    public void Version_V11_FingerprintDifferentFromV10()
+    public void ComputeStrengthBreakdown_DeterministicExactComponents()
     {
-        var candles = BuildMinimalCandles(50);
-        var swing = new ConfirmedSwing(10, 50100m, true, candles[10].OpenTimeUtc);
+        var parameters = Parameters();
+        var candles = BuildLongScenario();
+        var (candidate, _) = Evaluate(candles, parameters);
 
-        var fp1 = PriceStructureBreakoutRetestEvaluator.BuildFingerprint(
-            "PSBR",
-            1,
-            "5m",
-            TradeDirection.Long,
-            swing,
-            20,
-            25,
+        Assert.NotNull(candidate);
+        var breakdown = PriceStructureBreakoutRetestEvaluator.ComputeStrengthBreakdown(
             candles,
-            "1.0.0");
+            candidate,
+            PriceStructureBreakoutRetestEvaluator.ReadParameters(parameters));
 
-        var fp2 = PriceStructureBreakoutRetestEvaluator.BuildFingerprint(
-            "PSBR",
-            1,
-            "5m",
-            TradeDirection.Long,
-            swing,
-            20,
-            25,
-            candles,
-            "1.1.0");
-
-        Assert.NotEqual(fp1, fp2);
+        Assert.Equal(85.47m, breakdown.Total);
+        Assert.Equal(22.75m, breakdown.BreakoutDistanceScore);
+        Assert.Equal(23.50m, breakdown.RetestQualityScore);
+        Assert.Equal(14.22m, breakdown.ConfirmationQualityScore);
+        Assert.Equal(25.00m, breakdown.RewardRiskValidityScore);
     }
 
     [Fact]
-    public void RejectionCodes_AreWellDefined()
+    public void EvaluateAtCurrentCandle_InvalidShortTarget_ReturnsInvalidTarget()
     {
-        Assert.NotNull(PriceStructureRejectionCodes.InsufficientData);
-        Assert.NotNull(PriceStructureRejectionCodes.NoConfirmedSwing);
-        Assert.NotNull(PriceStructureRejectionCodes.NoBreakout);
-        Assert.NotNull(PriceStructureRejectionCodes.WaitingForRetest);
-        Assert.NotNull(PriceStructureRejectionCodes.RetestExpired);
-        Assert.NotNull(PriceStructureRejectionCodes.RetestInvalidated);
-        Assert.NotNull(PriceStructureRejectionCodes.NoConfirmation);
-        Assert.NotNull(PriceStructureRejectionCodes.InvalidStop);
-        Assert.NotNull(PriceStructureRejectionCodes.DuplicateSetup);
+        var candles = BuildShortScenario();
+        var parameters = Parameters(("fixedRewardRisk", "0"));
+
+        var (candidate, reason) = Evaluate(candles, parameters);
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.InvalidParameters, reason);
     }
 
-    // ValidLong/ValidShort tests removed - relying on simple parameter contract tests instead
+    [Fact]
+    public void EvaluateAtCurrentCandle_DuplicateSetup_ReturnsDuplicateSetup()
+    {
+        var candles = BuildLongScenario();
+        var first = Evaluate(candles);
 
-    private static List<Candle> BuildLongBreakoutRetestScenario(string confirmationMode)
+        Assert.NotNull(first.Candidate);
+
+        var duplicate = Evaluate(candles, seenFingerprints: new HashSet<string> { first.Candidate.SetupFingerprint });
+
+        Assert.Null(duplicate.Candidate);
+        Assert.Equal(PriceStructureRejectionCodes.DuplicateSetup, duplicate.Reason);
+    }
+
+    private static (PriceStructureCandidateDto? Candidate, string Reason) Evaluate(
+        IReadOnlyList<Candle> candles,
+        IReadOnlyDictionary<string, string>? parameters = null,
+        IReadOnlySet<string>? seenFingerprints = null)
+    {
+        return PriceStructureBreakoutRetestEvaluator.EvaluateAtCurrentCandle(
+            candles,
+            parameters ?? Parameters(),
+            seenFingerprints ?? new HashSet<string>(),
+            StrategyCodes.PriceStructureBreakoutRetest,
+            1,
+            "5m");
+    }
+
+    private static Dictionary<string, string> Parameters(params (string Key, string Value)[] overrides)
+    {
+        var parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in overrides)
+        {
+            parameters[key] = value;
+        }
+
+        return parameters;
+    }
+
+    private static List<Candle> BuildLongScenario(
+        decimal breakoutClose = 100.40m,
+        decimal retestLow = 100.00m,
+        decimal retestClose = 100.05m,
+        decimal confirmationOpen = 100.10m,
+        decimal confirmationLow = 100.00m,
+        decimal confirmationClose = 100.80m,
+        int prefixCount = 18,
+        int confirmGapBars = 1,
+        bool multiCandleRetest = false,
+        decimal secondRetestLow = 99.95m,
+        string confirmationMode = "ReactionClose")
+    {
+        var candles = BuildBaseStructure(prefixCount, 100.00m, bullishSwing: true);
+
+        var breakoutTime = candles[^1].OpenTimeUtc.AddMinutes(5);
+        candles.Add(CreateCandle(breakoutTime, 99.60m, 100.60m, 99.60m, breakoutClose));
+        var retestTime = breakoutTime.AddMinutes(5);
+        candles.Add(CreateCandle(retestTime, 100.20m, 100.30m, retestLow, retestClose));
+
+        if (multiCandleRetest)
+        {
+            candles.Add(CreateCandle(retestTime.AddMinutes(5), 100.12m, 100.28m, secondRetestLow, 100.07m));
+        }
+
+        if (string.Equals(confirmationMode, "NoConfirmation", StringComparison.OrdinalIgnoreCase))
+        {
+            return candles;
+        }
+
+        for (var gap = 1; gap < confirmGapBars; gap++)
+        {
+            var gapTime = retestTime.AddMinutes(gap * 5L);
+            candles.Add(CreateCandle(gapTime, 100.20m, 100.40m, 100.18m, 100.24m));
+        }
+
+        var confirmTime = retestTime.AddMinutes(confirmGapBars * 5L);
+        if (string.Equals(confirmationMode, "Engulfing", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(confirmationMode, "BullishEngulfing", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(confirmationMode, "CloseBeyondPreviousExtreme", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(confirmationMode, "CloseAbovePreviousHigh", StringComparison.OrdinalIgnoreCase))
+        {
+            candles.Add(CreateCandle(confirmTime, 99.95m, 101.20m, confirmationLow, 101.10m));
+            return candles;
+        }
+
+        candles.Add(CreateCandle(confirmTime, confirmationOpen, 100.90m, confirmationLow, confirmationClose));
+        return candles;
+    }
+
+    private static List<Candle> BuildShortScenario(
+        decimal breakoutClose = 99.60m,
+        decimal retestHigh = 100.00m,
+        decimal retestClose = 99.95m,
+        decimal confirmationOpen = 99.90m,
+        decimal confirmationHigh = 100.00m,
+        decimal confirmationClose = 99.20m,
+        int prefixCount = 18,
+        int confirmGapBars = 1,
+        string confirmationMode = "ReactionClose")
+    {
+        var candles = BuildBaseStructure(prefixCount, 100.00m, bullishSwing: false);
+
+        var breakoutTime = candles[^1].OpenTimeUtc.AddMinutes(5);
+        candles.Add(CreateCandle(breakoutTime, 100.40m, 100.40m, 99.40m, breakoutClose));
+        var retestTime = breakoutTime.AddMinutes(5);
+        candles.Add(CreateCandle(retestTime, 99.80m, retestHigh, 99.70m, retestClose));
+
+        if (string.Equals(confirmationMode, "NoConfirmation", StringComparison.OrdinalIgnoreCase))
+        {
+            return candles;
+        }
+
+        for (var gap = 1; gap < confirmGapBars; gap++)
+        {
+            var gapTime = retestTime.AddMinutes(gap * 5L);
+            candles.Add(CreateCandle(gapTime, 99.80m, 99.82m, 99.60m, 99.76m));
+        }
+
+        var confirmTime = retestTime.AddMinutes(confirmGapBars * 5L);
+        if (string.Equals(confirmationMode, "Engulfing", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(confirmationMode, "BullishEngulfing", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(confirmationMode, "CloseBeyondPreviousExtreme", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(confirmationMode, "CloseAbovePreviousHigh", StringComparison.OrdinalIgnoreCase))
+        {
+            candles.Add(CreateCandle(confirmTime, 100.05m, confirmationHigh, 98.80m, 98.90m));
+            return candles;
+        }
+
+        candles.Add(CreateCandle(confirmTime, confirmationOpen, confirmationHigh, 99.10m, confirmationClose));
+        return candles;
+    }
+
+    private static List<Candle> BuildBaseStructure(int prefixCount, decimal level, bool bullishSwing)
     {
         var candles = new List<Candle>();
-        var start = DateTime.UtcNow.AddDays(-10);
-        var basePrice = 50000m;
-
-        for (int i = 0; i < 30; i++)
+        for (var i = 0; i < prefixCount; i++)
         {
-            candles.Add(new Candle
+            var time = StartUtc.AddMinutes(i * 5L);
+            if (i == 6)
             {
-                SymbolId = 1,
-                ExchangeId = 1,
-                Timeframe = Timeframe.M5,
-                OpenTimeUtc = start.AddMinutes(i * 5),
-                CloseTimeUtc = start.AddMinutes(i * 5 + 5),
-                Open = basePrice,
-                High = basePrice + 200m,
-                Low = basePrice - 200m,
-                Close = basePrice + 50m,
-                Volume = 100m,
-                IsClosed = true,
-                CreatedAtUtc = DateTime.UtcNow
-            });
-        }
+                candles.Add(bullishSwing
+                    ? CreateCandle(time, 99.60m, level, 99.55m, 99.80m)
+                    : CreateCandle(time, 100.40m, 100.45m, level, 100.20m));
+                continue;
+            }
 
-        candles.Add(new Candle
-        {
-            SymbolId = 1,
-            ExchangeId = 1,
-            Timeframe = Timeframe.M5,
-            OpenTimeUtc = start.AddMinutes(30 * 5),
-            CloseTimeUtc = start.AddMinutes(30 * 5 + 5),
-            Open = basePrice,
-            High = basePrice + 500m,
-            Low = basePrice,
-            Close = basePrice + 400m,
-            Volume = 100m,
-            IsClosed = true,
-            CreatedAtUtc = DateTime.UtcNow
-        });
-
-        candles.Add(new Candle
-        {
-            SymbolId = 1,
-            ExchangeId = 1,
-            Timeframe = Timeframe.M5,
-            OpenTimeUtc = start.AddMinutes(31 * 5),
-            CloseTimeUtc = start.AddMinutes(31 * 5 + 5),
-            Open = basePrice + 300m,
-            High = basePrice + 350m,
-            Low = basePrice - 50m,
-            Close = basePrice + 50m,
-            Volume = 100m,
-            IsClosed = true,
-            CreatedAtUtc = DateTime.UtcNow
-        });
-
-        if (confirmationMode == "Engulfing" || confirmationMode == "ReactionClose" || confirmationMode == "CloseBeyondPreviousExtreme")
-        {
-            var prevHigh = candles[^1].High;
-            candles.Add(new Candle
-            {
-                SymbolId = 1,
-                ExchangeId = 1,
-                Timeframe = Timeframe.M5,
-                OpenTimeUtc = start.AddMinutes(32 * 5),
-                CloseTimeUtc = start.AddMinutes(32 * 5 + 5),
-                Open = basePrice + 100m,
-                High = prevHigh + 100m,
-                Low = basePrice + 50m,
-                Close = prevHigh + 50m,
-                Volume = 100m,
-                IsClosed = true,
-                CreatedAtUtc = DateTime.UtcNow
-            });
+            var open = bullishSwing ? 99.70m + ((i % 4) * 0.03m) : 100.30m - ((i % 4) * 0.03m);
+            var high = bullishSwing ? 99.92m : 100.45m;
+            var low = bullishSwing ? 99.40m : 100.08m;
+            var close = bullishSwing ? 99.75m + ((i % 3) * 0.02m) : 100.25m - ((i % 3) * 0.02m);
+            candles.Add(CreateCandle(time, open, high, low, close));
         }
 
         return candles;
     }
 
-    private static List<Candle> BuildShortBreakoutRetestScenario(string confirmationMode)
+    private static List<Candle> BuildAtrUnavailableLongScenario()
     {
-        var candles = new List<Candle>();
-        var start = DateTime.UtcNow.AddDays(-10);
-        var basePrice = 50000m;
+        return
+        [
+            CreateCandle(StartUtc.AddMinutes(0), 99.70m, 99.90m, 99.50m, 99.75m),
+            CreateCandle(StartUtc.AddMinutes(5), 99.72m, 99.88m, 99.55m, 99.76m),
+            CreateCandle(StartUtc.AddMinutes(10), 99.78m, 100.00m, 99.60m, 99.82m),
+            CreateCandle(StartUtc.AddMinutes(15), 99.70m, 99.86m, 99.52m, 99.74m),
+            CreateCandle(StartUtc.AddMinutes(20), 99.71m, 99.87m, 99.54m, 99.75m),
+            CreateCandle(StartUtc.AddMinutes(25), 99.73m, 99.89m, 99.58m, 99.77m),
+            CreateCandle(StartUtc.AddMinutes(30), 99.74m, 99.90m, 99.60m, 99.78m),
+            CreateCandle(StartUtc.AddMinutes(35), 99.78m, 100.45m, 99.78m, 100.40m),
+            CreateCandle(StartUtc.AddMinutes(40), 100.05m, 100.08m, 99.98m, 100.03m),
+            CreateCandle(StartUtc.AddMinutes(45), 100.35m, 100.55m, 100.30m, 100.50m),
+            CreateCandle(StartUtc.AddMinutes(50), 100.10m, 100.26m, 100.08m, 100.16m),
+            CreateCandle(StartUtc.AddMinutes(55), 100.12m, 100.28m, 100.10m, 100.18m),
+            CreateCandle(StartUtc.AddMinutes(60), 100.14m, 100.32m, 100.12m, 100.20m)
+        ];
+    }
 
-        for (int i = 0; i < 30; i++)
-        {
-            candles.Add(new Candle
-            {
-                SymbolId = 1,
-                ExchangeId = 1,
-                Timeframe = Timeframe.M5,
-                OpenTimeUtc = start.AddMinutes(i * 5),
-                CloseTimeUtc = start.AddMinutes(i * 5 + 5),
-                Open = basePrice,
-                High = basePrice + 200m,
-                Low = basePrice - 200m,
-                Close = basePrice - 50m,
-                Volume = 100m,
-                IsClosed = true,
-                CreatedAtUtc = DateTime.UtcNow
-            });
-        }
-
-        candles.Add(new Candle
+    private static Candle CreateCandle(DateTime openTimeUtc, decimal open, decimal high, decimal low, decimal close)
+    {
+        return new Candle
         {
             SymbolId = 1,
             ExchangeId = 1,
             Timeframe = Timeframe.M5,
-            OpenTimeUtc = start.AddMinutes(30 * 5),
-            CloseTimeUtc = start.AddMinutes(30 * 5 + 5),
-            Open = basePrice,
-            High = basePrice,
-            Low = basePrice - 500m,
-            Close = basePrice - 400m,
+            OpenTimeUtc = openTimeUtc,
+            CloseTimeUtc = openTimeUtc.AddMinutes(5),
+            Open = open,
+            High = high,
+            Low = low,
+            Close = close,
             Volume = 100m,
-            IsClosed = true,
-            CreatedAtUtc = DateTime.UtcNow
-        });
-
-        candles.Add(new Candle
-        {
-            SymbolId = 1,
-            ExchangeId = 1,
-            Timeframe = Timeframe.M5,
-            OpenTimeUtc = start.AddMinutes(31 * 5),
-            CloseTimeUtc = start.AddMinutes(31 * 5 + 5),
-            Open = basePrice - 300m,
-            High = basePrice + 50m,
-            Low = basePrice - 350m,
-            Close = basePrice - 50m,
-            Volume = 100m,
-            IsClosed = true,
-            CreatedAtUtc = DateTime.UtcNow
-        });
-
-        if (confirmationMode == "Engulfing" || confirmationMode == "ReactionClose" || confirmationMode == "CloseBeyondPreviousExtreme")
-        {
-            var prevLow = candles[^1].Low;
-            candles.Add(new Candle
-            {
-                SymbolId = 1,
-                ExchangeId = 1,
-                Timeframe = Timeframe.M5,
-                OpenTimeUtc = start.AddMinutes(32 * 5),
-                CloseTimeUtc = start.AddMinutes(32 * 5 + 5),
-                Open = basePrice - 100m,
-                High = basePrice - 50m,
-                Low = prevLow - 100m,
-                Close = prevLow - 50m,
-                Volume = 100m,
-                IsClosed = true,
-                CreatedAtUtc = DateTime.UtcNow
-            });
-        }
-
-        return candles;
-    }
-
-    private static List<Candle> BuildBreakoutRetestWithTolerance(bool isPercent, bool withinTolerance)
-    {
-        var candles = BuildLongBreakoutRetestScenario("ReactionClose");
-        if (!withinTolerance && candles.Count > 31)
-        {
-            var retest = candles[31];
-            candles[31] = new Candle
-            {
-                SymbolId = retest.SymbolId,
-                ExchangeId = retest.ExchangeId,
-                Timeframe = retest.Timeframe,
-                OpenTimeUtc = retest.OpenTimeUtc,
-                CloseTimeUtc = retest.CloseTimeUtc,
-                Open = retest.Open,
-                High = retest.High,
-                Low = retest.Low - 200m,
-                Close = retest.Close,
-                Volume = retest.Volume,
-                IsClosed = retest.IsClosed,
-                CreatedAtUtc = retest.CreatedAtUtc
-            };
-        }
-        return candles;
-    }
-
-    private static List<Candle> BuildMultiCandleRetestScenario()
-    {
-        var candles = BuildLongBreakoutRetestScenario("ReactionClose");
-
-        if (candles.Count > 31)
-        {
-            var retest1 = candles[31];
-            candles[31] = new Candle
-            {
-                SymbolId = retest1.SymbolId,
-                ExchangeId = retest1.ExchangeId,
-                Timeframe = retest1.Timeframe,
-                OpenTimeUtc = retest1.OpenTimeUtc,
-                CloseTimeUtc = retest1.CloseTimeUtc,
-                Open = retest1.Open,
-                High = retest1.High,
-                Low = 50000m,
-                Close = retest1.Close,
-                Volume = retest1.Volume,
-                IsClosed = retest1.IsClosed,
-                CreatedAtUtc = retest1.CreatedAtUtc
-            };
-
-            candles.Insert(32, new Candle
-            {
-                SymbolId = 1,
-                ExchangeId = 1,
-                Timeframe = Timeframe.M5,
-                OpenTimeUtc = retest1.OpenTimeUtc.AddMinutes(5),
-                CloseTimeUtc = retest1.CloseTimeUtc.AddMinutes(5),
-                Open = 50100m,
-                High = 50200m,
-                Low = 49900m,
-                Close = 50050m,
-                Volume = 100m,
-                IsClosed = true,
-                CreatedAtUtc = DateTime.UtcNow
-            });
-        }
-
-        return candles;
-    }
-
-    private static List<Candle> BuildMinimalCandles(int count, decimal basePrice = 50000m)
-    {
-        var candles = new List<Candle>();
-        var start = DateTime.UtcNow.AddDays(-count);
-
-        for (int i = 0; i < count; i++)
-        {
-            var noise = (decimal)(i * 10m);
-            candles.Add(new Candle
-            {
-                SymbolId = 1,
-                ExchangeId = 1,
-                Timeframe = Timeframe.M5,
-                OpenTimeUtc = start.AddMinutes(i * 5),
-                CloseTimeUtc = start.AddMinutes(i * 5 + 5),
-                Open = basePrice + noise,
-                High = basePrice + noise + 100m,
-                Low = basePrice + noise - 100m,
-                Close = basePrice + noise + 50m,
-                Volume = 100m + i,
-                IsClosed = true,
-                CreatedAtUtc = DateTime.UtcNow
-            });
-        }
-
-        return candles;
+            IsClosed = true
+        };
     }
 }

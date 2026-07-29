@@ -113,6 +113,12 @@ public static class MomoVolatilityRangeReversionEvaluator
         string timeframe)
     {
         var settings = MomoVolatilityRangeReversionParameters.Read(parameters);
+        var validation = ValidateParameters(settings);
+        if (validation is not null)
+        {
+            return (null, validation);
+        }
+
         var minimumCandles = MinimumRequiredCandles(settings);
         if (candles.Count < minimumCandles)
         {
@@ -125,11 +131,6 @@ public static class MomoVolatilityRangeReversionEvaluator
         if (!TryComputeIndicators(candles, currentIndex, settings, out var indicators))
         {
             return (null, MomoVolatilityRangeRejectionCodes.InsufficientData);
-        }
-
-        if (!string.Equals(settings.TargetMode, "RangeMidpoint", StringComparison.OrdinalIgnoreCase))
-        {
-            return (null, MomoVolatilityRangeRejectionCodes.InvalidTargetMode);
         }
 
         if (!TryBuildRange(candles, currentIndex, settings.RangeLookback, out var range))
@@ -186,6 +187,60 @@ public static class MomoVolatilityRangeReversionEvaluator
         + settings.RangeLookback
         + settings.SlopeLookback
         + 5;
+
+    private static string? ValidateParameters(MomoVolatilityRangeReversionParameters settings)
+    {
+        if (settings.RangeLookback <= 0
+            || settings.FastEmaPeriod <= 0
+            || settings.SlowEmaPeriod <= 0
+            || settings.SlopeLookback <= 0
+            || settings.FastAtrPeriod <= 0
+            || settings.SlowAtrPeriod <= 0
+            || settings.RsiPeriod <= 0)
+        {
+            return MomoVolatilityRangeRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.FastEmaPeriod >= settings.SlowEmaPeriod
+            || settings.FastAtrPeriod >= settings.SlowAtrPeriod
+            || settings.MinRangeWidthAtr > settings.MaxRangeWidthAtr
+            || settings.MinVolatilityRatio > settings.MaxVolatilityRatio)
+        {
+            return MomoVolatilityRangeRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.MaxEmaSeparationAtr < 0m
+            || settings.MaxSlowEmaSlopeAtr < 0m
+            || settings.BoundaryToleranceAtr < 0m
+            || settings.MinimumWickPercent < 0m
+            || settings.MinimumWickPercent > 100m
+            || settings.StopBufferAtr < 0m
+            || settings.MinimumRewardRisk <= 0m)
+        {
+            return MomoVolatilityRangeRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.RsiOversold < 0m
+            || settings.RsiOversold > 100m
+            || settings.RsiOverbought < 0m
+            || settings.RsiOverbought > 100m
+            || settings.RsiOversold >= settings.RsiOverbought)
+        {
+            return MomoVolatilityRangeRejectionCodes.InvalidParameters;
+        }
+
+        if (settings.MinStrength < 0m || settings.MinStrength > 100m)
+        {
+            return MomoVolatilityRangeRejectionCodes.InvalidParameters;
+        }
+
+        if (!string.Equals(settings.TargetMode, "RangeMidpoint", StringComparison.OrdinalIgnoreCase))
+        {
+            return MomoVolatilityRangeRejectionCodes.InvalidParameters;
+        }
+
+        return null;
+    }
 
     private sealed record RangeBounds(decimal High, decimal Low, decimal Midpoint, decimal Width);
 
@@ -318,13 +373,37 @@ public static class MomoVolatilityRangeReversionEvaluator
             return false;
         }
 
+        bool outsideAbove = false;
+        bool outsideBelow = false;
         for (var i = baselineEnd; i < currentIndex; i++)
         {
             var close = candles[i].Close;
-            if (close > priorHigh || close < priorLow)
+            if (close > priorHigh)
             {
-                return true;
+                if (outsideAbove)
+                {
+                    return true;
+                }
+
+                outsideAbove = true;
+                outsideBelow = false;
+                continue;
             }
+
+            if (close < priorLow)
+            {
+                if (outsideBelow)
+                {
+                    return true;
+                }
+
+                outsideBelow = true;
+                outsideAbove = false;
+                continue;
+            }
+
+            outsideAbove = false;
+            outsideBelow = false;
         }
 
         return false;
@@ -343,6 +422,12 @@ public static class MomoVolatilityRangeReversionEvaluator
         if (current.Low >= range.Low)
         {
             return (null, MomoVolatilityRangeRejectionCodes.NoBoundaryProbe);
+        }
+
+        var minimumProbe = range.Low - (settings.BoundaryToleranceAtr * indicators.FastAtr);
+        if (current.Low < minimumProbe)
+        {
+            return (null, MomoVolatilityRangeRejectionCodes.BoundaryPenetrationExceeded);
         }
 
         if (current.Close < range.Low || current.Close > range.High)
@@ -410,6 +495,7 @@ public static class MomoVolatilityRangeReversionEvaluator
         var strength = Math.Clamp(strengthBreakdown.Total, 0m, 100m);
         var rawDataJson = BuildRawDataJson(
             TradeDirection.Long,
+            settings,
             range,
             indicators,
             lowerWickPercent,
@@ -446,6 +532,12 @@ public static class MomoVolatilityRangeReversionEvaluator
         if (current.High <= range.High)
         {
             return (null, MomoVolatilityRangeRejectionCodes.NoBoundaryProbe);
+        }
+
+        var maximumProbe = range.High + (settings.BoundaryToleranceAtr * indicators.FastAtr);
+        if (current.High > maximumProbe)
+        {
+            return (null, MomoVolatilityRangeRejectionCodes.BoundaryPenetrationExceeded);
         }
 
         if (current.Close > range.High || current.Close < range.Low)
@@ -513,6 +605,7 @@ public static class MomoVolatilityRangeReversionEvaluator
         var strength = Math.Clamp(strengthBreakdown.Total, 0m, 100m);
         var rawDataJson = BuildRawDataJson(
             TradeDirection.Short,
+            settings,
             range,
             indicators,
             upperWickPercent,
@@ -580,6 +673,7 @@ public static class MomoVolatilityRangeReversionEvaluator
 
     private static string BuildRawDataJson(
         TradeDirection direction,
+        MomoVolatilityRangeReversionParameters settings,
         RangeBounds range,
         IndicatorValues indicators,
         decimal wickPercent,
@@ -604,6 +698,9 @@ public static class MomoVolatilityRangeReversionEvaluator
             fastAtr = indicators.FastAtr,
             slowAtr = indicators.SlowAtr,
             rsi = indicators.Rsi,
+            boundaryToleranceAtr = settings.BoundaryToleranceAtr,
+            acceptedLowerBoundaryProbe = range.Low - (settings.BoundaryToleranceAtr * indicators.FastAtr),
+            acceptedUpperBoundaryProbe = range.High + (settings.BoundaryToleranceAtr * indicators.FastAtr),
             wickPercent,
             rewardRisk,
             entry,

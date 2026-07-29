@@ -434,6 +434,7 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
 
             var retestSearchEnd = Math.Min(currentIndex, breakoutIndex + settings.MaxRetestBars);
             int? retestIndex = null;
+            var retestTouched = false;
             decimal retestLow = decimal.MaxValue;
 
             for (var i = breakoutIndex + 1; i <= retestSearchEnd; i++)
@@ -451,9 +452,15 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                     break;
                 }
 
-                if (IsLongRetestTouch(candle, brokenLevel.Value, settings.RetestToleranceAtr, retestAtr))
+                if (!retestTouched
+                    && IsLongRetestTouch(candle, brokenLevel.Value, settings.RetestToleranceAtr, retestAtr))
                 {
+                    retestTouched = true;
                     retestIndex = i;
+                }
+
+                if (retestTouched)
+                {
                     retestLow = Math.Min(retestLow, candle.Low);
                 }
             }
@@ -469,6 +476,12 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                     bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.WaitingForRetest);
                 }
 
+                continue;
+            }
+
+            if (currentIndex > breakoutIndex + settings.MaxRetestBars)
+            {
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.RetestExpired);
                 continue;
             }
 
@@ -672,6 +685,7 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
 
             var retestSearchEnd = Math.Min(currentIndex, breakoutIndex + settings.MaxRetestBars);
             int? retestIndex = null;
+            var retestTouched = false;
             decimal retestHigh = decimal.MinValue;
 
             for (var i = breakoutIndex + 1; i <= retestSearchEnd; i++)
@@ -689,9 +703,15 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                     break;
                 }
 
-                if (IsShortRetestTouch(candle, brokenLevel.Value, settings.RetestToleranceAtr, retestAtr))
+                if (!retestTouched
+                    && IsShortRetestTouch(candle, brokenLevel.Value, settings.RetestToleranceAtr, retestAtr))
                 {
+                    retestTouched = true;
                     retestIndex = i;
+                }
+
+                if (retestTouched)
+                {
                     retestHigh = Math.Max(retestHigh, candle.High);
                 }
             }
@@ -707,6 +727,12 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                     bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.WaitingForRetest);
                 }
 
+                continue;
+            }
+
+            if (currentIndex > breakoutIndex + settings.MaxRetestBars)
+            {
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.RetestExpired);
                 continue;
             }
 
