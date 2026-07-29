@@ -16,6 +16,17 @@ public interface IStrategyEngine
 
 public sealed class StrategyEngine : IStrategyEngine
 {
+    private readonly IStrategyEvaluationCapture? _capture;
+
+    public StrategyEngine()
+    {
+    }
+
+    public StrategyEngine(IStrategyEvaluationCapture? capture)
+    {
+        _capture = capture;
+    }
+
     public Task<IReadOnlyList<StrategyEvaluationResult>> EvaluateAsync(
         IReadOnlyCollection<ITradingStrategy> strategies,
         StrategyContext context,
@@ -23,9 +34,12 @@ public sealed class StrategyEngine : IStrategyEngine
     {
         _ = cancellationToken;
 
-        var results = strategies
-            .Select(strategy => MapResult(strategy, context, strategy.Evaluate(context)))
-            .ToList();
+        var results = new List<StrategyEvaluationResult>();
+        foreach (var strategy in strategies)
+        {
+            _capture?.Capture(context, strategy);
+            results.Add(MapResult(strategy, context, strategy.Evaluate(context)));
+        }
 
         return Task.FromResult<IReadOnlyList<StrategyEvaluationResult>>(results);
     }

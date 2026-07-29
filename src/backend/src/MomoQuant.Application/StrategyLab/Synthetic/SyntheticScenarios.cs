@@ -86,8 +86,9 @@ public sealed class BearishBreakoutRetestScenario : ISyntheticCandleScenario
         candles[12] = SyntheticCandleFactory.C(12, 91, 92, 90, 91);
         candles[16] = SyntheticCandleFactory.C(16, 91, 92, 85, 86);
         candles[17] = SyntheticCandleFactory.C(17, 86, 87, 85.5m, 86.5m);
-        candles[18] = SyntheticCandleFactory.C(18, 86.5m, 88.2m, 87.9m, 87.5m);
-        candles[19] = SyntheticCandleFactory.C(19, 87.5m, 88, 83, 84);
+        // Retest must complete before confirmation (confirmationIndex > retestIndex).
+        candles[18] = SyntheticCandleFactory.C(18, 86.5m, 88.05m, 86.2m, 87.2m);
+        candles[19] = SyntheticCandleFactory.C(19, 87.2m, 87.8m, 83m, 84m);
         return candles;
     }
 }

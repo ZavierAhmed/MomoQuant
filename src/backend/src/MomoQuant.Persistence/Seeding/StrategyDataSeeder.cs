@@ -473,13 +473,13 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
                 foreach (var (key, value, valueType) in defaults)
                 {
                     var existing = parameters.FirstOrDefault(parameter =>
-                        parameter.ParameterKey == key
+                        string.Equals(parameter.ParameterKey, key, StringComparison.OrdinalIgnoreCase)
                         && parameter.Timeframe == timeframe
                         && parameter.SymbolId is null);
 
                     if (existing is null)
                     {
-                        _dbContext.StrategyParameters.Add(new StrategyParameter
+                        var added = new StrategyParameter
                         {
                             StrategyId = strategy.Id,
                             ParameterKey = key,
@@ -490,8 +490,17 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
                             IsActive = true,
                             CreatedAtUtc = DateTime.UtcNow,
                             UpdatedAtUtc = DateTime.UtcNow
-                        });
+                        };
+                        _dbContext.StrategyParameters.Add(added);
+                        parameters.Add(added);
                         continue;
+                    }
+
+                    // Normalize key casing to the contract key without creating a duplicate row.
+                    if (!string.Equals(existing.ParameterKey, key, StringComparison.Ordinal))
+                    {
+                        existing.ParameterKey = key;
+                        existing.UpdatedAtUtc = DateTime.UtcNow;
                     }
 
                     if (!existing.IsActive)

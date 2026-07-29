@@ -67,7 +67,8 @@ public static class DependencyInjection
         services.AddScoped<IStrategyService, StrategyService>();
         services.AddScoped<IStrategyDataRequirementService, StrategyDataRequirementService>();
         services.AddScoped<IStrategyExecutionRequirementsResolver, StrategyExecutionRequirementsResolver>();
-        services.AddScoped<IStrategyEngine, StrategyEngine>();
+        services.AddScoped<IStrategyEngine>(sp =>
+            new StrategyEngine(sp.GetService<IStrategyEvaluationCapture>()));
         services.AddScoped<IStrategyParameterProvider, StrategyParameterProvider>();
         services.AddSingleton<IFourHourRangeService, FourHourRangeService>();
 

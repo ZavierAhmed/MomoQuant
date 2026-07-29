@@ -566,6 +566,11 @@ public static class PriceStructureBreakoutRetestEvaluator
             return currentIndex == retestIndex;
         }
 
+        if (currentIndex <= retestIndex)
+        {
+            return false;
+        }
+
         var confirmCandle = candles[currentIndex];
         if (string.Equals(mode, "Engulfing", StringComparison.OrdinalIgnoreCase) && currentIndex > 0)
         {
@@ -601,6 +606,11 @@ public static class PriceStructureBreakoutRetestEvaluator
         if (string.Equals(mode, "NoConfirmation", StringComparison.OrdinalIgnoreCase))
         {
             return currentIndex == retestIndex;
+        }
+
+        if (currentIndex <= retestIndex)
+        {
+            return false;
         }
 
         var confirmCandle = candles[currentIndex];
@@ -929,6 +939,8 @@ public static class PriceStructureBreakoutRetestEvaluator
     {
         var priority = new Dictionary<string, int>(StringComparer.Ordinal)
         {
+            [PriceStructureRejectionCodes.InvalidStop] = 0,
+            [PriceStructureRejectionCodes.InvalidTarget] = 0,
             [PriceStructureRejectionCodes.NoConfirmation] = 1,
             [PriceStructureRejectionCodes.WaitingForRetest] = 2,
             [PriceStructureRejectionCodes.RetestExpired] = 3,

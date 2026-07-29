@@ -2,6 +2,7 @@ using System.Text.Json;
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Common;
 using MomoQuant.Application.Strategies;
+using MomoQuant.Application.Strategies.PriceStructure;
 using MomoQuant.Application.StrategyLab.Confidence;
 using MomoQuant.Application.StrategyLab.Dtos;
 using MomoQuant.Application.StrategyLab.Risk;
@@ -604,6 +605,13 @@ public sealed class StrategyLabService : IStrategyLabService
         if (run is null)
         {
             return ServiceResult<CreateStrategyLabRunRequest>.Fail("Strategy lab run not found.");
+        }
+
+        if (string.Equals(run.StrategyCode, StrategyCodes.PriceStructureBreakoutRetest, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(run.StrategyVersion, PriceStructureBreakoutRetestEvaluator.StrategyVersionV10, StringComparison.Ordinal))
+        {
+            return ServiceResult<CreateStrategyLabRunRequest>.Fail(
+                "Historical Price Structure v1.0.0 artifacts are read-only. Exact rerun is blocked because v1.1.0 cannot reproduce v1.0.0 semantics.");
         }
 
         var fee = JsonSerializer.Deserialize<Dictionary<string, decimal>>(run.FeeSettingsJson) ?? new Dictionary<string, decimal>();

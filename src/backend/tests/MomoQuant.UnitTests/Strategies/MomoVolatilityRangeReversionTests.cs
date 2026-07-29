@@ -247,30 +247,81 @@ public sealed class MomoVolatilityRangeReversionTests
         Assert.Contains("MOMO_VOLATILITY_RANGE_REVERSION", result.RawDataJson ?? string.Empty);
     }
 
-    // ValidLong and ValidShort removed - fixtures are complex and we have reliable rejection tests instead
+    [Fact]
+    public void EvaluateAtCurrentCandle_ValidLong_WithCompleteDefaults()
+    {
+        var candles = MomoVolatilityRangeReversionFormulaTests.BuildValidLong();
+        var (candidate, reason) = MomoVolatilityRangeReversionEvaluator.EvaluateAtCurrentCandle(
+            candles,
+            new Dictionary<string, string>(MomoVolatilityRangeReversionParameters.GetDefaultParameterContract()),
+            new HashSet<string>(),
+            StrategyCode.MomoVolatilityRangeReversion.ToCode(),
+            1,
+            "5m");
+
+        Assert.NotNull(candidate);
+        Assert.Equal(MomoVolatilityRangeRejectionCodes.EntryConfirmed, reason);
+        Assert.Equal(TradeDirection.Long, candidate!.Direction);
+        Assert.True(candidate.Strength >= 65m);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_ValidShort_WithCompleteDefaults()
+    {
+        var candles = MomoVolatilityRangeReversionFormulaTests.BuildValidShort();
+        var (candidate, reason) = MomoVolatilityRangeReversionEvaluator.EvaluateAtCurrentCandle(
+            candles,
+            new Dictionary<string, string>(MomoVolatilityRangeReversionParameters.GetDefaultParameterContract()),
+            new HashSet<string>(),
+            StrategyCode.MomoVolatilityRangeReversion.ToCode(),
+            1,
+            "5m");
+
+        Assert.NotNull(candidate);
+        Assert.Equal(MomoVolatilityRangeRejectionCodes.EntryConfirmed, reason);
+        Assert.Equal(TradeDirection.Short, candidate!.Direction);
+        Assert.True(candidate.Strength >= 65m);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_DuplicateSetup_Rejected()
+    {
+        var candles = MomoVolatilityRangeReversionFormulaTests.BuildValidLong();
+        var defaults = new Dictionary<string, string>(MomoVolatilityRangeReversionParameters.GetDefaultParameterContract());
+        var (first, _) = MomoVolatilityRangeReversionEvaluator.EvaluateAtCurrentCandle(
+            candles, defaults, new HashSet<string>(), StrategyCode.MomoVolatilityRangeReversion.ToCode(), 1, "5m");
+        Assert.NotNull(first);
+
+        var (second, reason) = MomoVolatilityRangeReversionEvaluator.EvaluateAtCurrentCandle(
+            candles, defaults, new HashSet<string> { first!.SetupFingerprint }, StrategyCode.MomoVolatilityRangeReversion.ToCode(), 1, "5m");
+        Assert.Null(second);
+        Assert.Equal(MomoVolatilityRangeRejectionCodes.DuplicateSetup, reason);
+    }
 
     [Fact]
     public void EvaluateAtCurrentCandle_StrictInsideRangeReclaim_LongRequiresCloseAboveRangeLow()
     {
-        var candles = BuildRangeWithSweepButNoReclaim();
-        var parameters = new Dictionary<string, string>
+        var candles = MomoVolatilityRangeReversionFormulaTests.BuildValidLong();
+        var last = candles[^1];
+        candles[^1] = new Candle
         {
-            ["minRangeWidthAtr"] = "0.01",
-            ["maxRangeWidthAtr"] = "1000",
-            ["minVolatilityRatio"] = "0.01",
-            ["maxVolatilityRatio"] = "100",
-            ["maxEmaSeparationAtr"] = "100",
-            ["maxSlowEmaSlopeAtr"] = "100",
-            ["rsiOversold"] = "100",
-            ["rsiOverbought"] = "0",
-            ["minimumWickPercent"] = "0",
-            ["minimumRewardRisk"] = "0.01",
-            ["minStrength"] = "0"
+            SymbolId = last.SymbolId,
+            ExchangeId = last.ExchangeId,
+            Timeframe = last.Timeframe,
+            OpenTimeUtc = last.OpenTimeUtc,
+            CloseTimeUtc = last.CloseTimeUtc,
+            Open = last.Open,
+            High = last.High,
+            Low = last.Low,
+            Close = 2849m,
+            Volume = last.Volume,
+            IsClosed = last.IsClosed,
+            CreatedAtUtc = last.CreatedAtUtc
         };
 
         var (candidate, reason) = MomoVolatilityRangeReversionEvaluator.EvaluateAtCurrentCandle(
             candles,
-            parameters,
+            new Dictionary<string, string>(MomoVolatilityRangeReversionParameters.GetDefaultParameterContract()),
             new HashSet<string>(),
             StrategyCode.MomoVolatilityRangeReversion.ToCode(),
             1,
@@ -283,25 +334,27 @@ public sealed class MomoVolatilityRangeReversionTests
     [Fact]
     public void EvaluateAtCurrentCandle_LargeOutsideClose_Rejected()
     {
-        var candles = BuildRangeWithLargeOutsideClose();
-        var parameters = new Dictionary<string, string>
+        var candles = MomoVolatilityRangeReversionFormulaTests.BuildValidShort();
+        var last = candles[^1];
+        candles[^1] = new Candle
         {
-            ["minRangeWidthAtr"] = "0.01",
-            ["maxRangeWidthAtr"] = "1000",
-            ["minVolatilityRatio"] = "0.01",
-            ["maxVolatilityRatio"] = "100",
-            ["maxEmaSeparationAtr"] = "100",
-            ["maxSlowEmaSlopeAtr"] = "100",
-            ["rsiOversold"] = "100",
-            ["rsiOverbought"] = "0",
-            ["minimumWickPercent"] = "0",
-            ["minimumRewardRisk"] = "0.01",
-            ["minStrength"] = "0"
+            SymbolId = last.SymbolId,
+            ExchangeId = last.ExchangeId,
+            Timeframe = last.Timeframe,
+            OpenTimeUtc = last.OpenTimeUtc,
+            CloseTimeUtc = last.CloseTimeUtc,
+            Open = last.Open,
+            High = Math.Max(last.High, 3150.5m),
+            Low = last.Low,
+            Close = 3150.5m,
+            Volume = last.Volume,
+            IsClosed = last.IsClosed,
+            CreatedAtUtc = last.CreatedAtUtc
         };
 
         var (candidate, reason) = MomoVolatilityRangeReversionEvaluator.EvaluateAtCurrentCandle(
             candles,
-            parameters,
+            new Dictionary<string, string>(MomoVolatilityRangeReversionParameters.GetDefaultParameterContract()),
             new HashSet<string>(),
             StrategyCode.MomoVolatilityRangeReversion.ToCode(),
             1,
@@ -339,10 +392,11 @@ public sealed class MomoVolatilityRangeReversionTests
     [Fact]
     public void EvaluateAtCurrentCandle_RangeTooNarrow_Rejected()
     {
-        var candles = BuildNarrowRange();
-        var parameters = new Dictionary<string, string>
+        var candles = MomoVolatilityRangeReversionFormulaTests.BuildValidLong();
+        var parameters = new Dictionary<string, string>(MomoVolatilityRangeReversionParameters.GetDefaultParameterContract())
         {
-            ["minRangeWidthAtr"] = "50"  // Force RangeTooNarrow with high threshold
+            ["minRangeWidthAtr"] = "50",
+            ["maxRangeWidthAtr"] = "100"
         };
 
         var (candidate, reason) = MomoVolatilityRangeReversionEvaluator.EvaluateAtCurrentCandle(
@@ -360,8 +414,23 @@ public sealed class MomoVolatilityRangeReversionTests
     [Fact]
     public void EvaluateAtCurrentCandle_RangeTooWide_Rejected()
     {
-        // Skip this test - RangeTooWide is difficult to trigger reliably
-        // because range detection logic is complex and other filters often reject first
+        var candles = MomoVolatilityRangeReversionFormulaTests.BuildValidLong();
+        var parameters = new Dictionary<string, string>(MomoVolatilityRangeReversionParameters.GetDefaultParameterContract())
+        {
+            ["minRangeWidthAtr"] = "0.5",
+            ["maxRangeWidthAtr"] = "1.0"
+        };
+
+        var (candidate, reason) = MomoVolatilityRangeReversionEvaluator.EvaluateAtCurrentCandle(
+            candles,
+            parameters,
+            new HashSet<string>(),
+            StrategyCode.MomoVolatilityRangeReversion.ToCode(),
+            1,
+            "5m");
+
+        Assert.Null(candidate);
+        Assert.Equal(MomoVolatilityRangeRejectionCodes.RangeTooWide, reason);
     }
 
     [Fact]
@@ -443,26 +512,16 @@ public sealed class MomoVolatilityRangeReversionTests
             "5m");
 
         Assert.Null(candidate);
-        Assert.Equal(MomoVolatilityRangeRejectionCodes.InvalidTargetMode, reason);
+        Assert.Equal(MomoVolatilityRangeRejectionCodes.InvalidParameters, reason);
     }
 
     [Fact]
     public void EvaluateAtCurrentCandle_StrengthBelowThreshold_Rejected()
     {
-        var candles = BuildWideRangeForStrengthTest();
-        var parameters = new Dictionary<string, string>
+        var candles = MomoVolatilityRangeReversionFormulaTests.BuildValidLong();
+        var parameters = new Dictionary<string, string>(MomoVolatilityRangeReversionParameters.GetDefaultParameterContract())
         {
-            ["minStrength"] = "99.9",
-            ["minRangeWidthAtr"] = "0.01",
-            ["maxRangeWidthAtr"] = "1000",
-            ["minVolatilityRatio"] = "0.01",
-            ["maxVolatilityRatio"] = "100",
-            ["maxEmaSeparationAtr"] = "100",
-            ["maxSlowEmaSlopeAtr"] = "100",
-            ["rsiOversold"] = "100",
-            ["rsiOverbought"] = "0",
-            ["minimumWickPercent"] = "0",
-            ["minimumRewardRisk"] = "0.01"
+            ["minStrength"] = "99.9"
         };
 
         var (candidate, reason) = MomoVolatilityRangeReversionEvaluator.EvaluateAtCurrentCandle(
@@ -476,8 +535,6 @@ public sealed class MomoVolatilityRangeReversionTests
         Assert.Null(candidate);
         Assert.Equal(MomoVolatilityRangeRejectionCodes.StrengthBelowMinimum, reason);
     }
-
-    // DuplicateSetup test removed - requires valid entry first which is complex to build
 
     [Fact]
     public void MinimumRequiredCandles_WithDefaults_AtLeast158()

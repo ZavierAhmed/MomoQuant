@@ -6,12 +6,14 @@ namespace MomoQuant.Application.Strategies;
 public static class StrategyParameterReader
 {
     public static decimal GetDecimal(IReadOnlyDictionary<string, string> parameters, string key, decimal defaultValue) =>
-        parameters.TryGetValue(key, out var value) && decimal.TryParse(value, out var parsed)
+        parameters.TryGetValue(key, out var value)
+        && decimal.TryParse(value, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : defaultValue;
 
     public static int GetInt(IReadOnlyDictionary<string, string> parameters, string key, int defaultValue) =>
-        parameters.TryGetValue(key, out var value) && int.TryParse(value, out var parsed)
+        parameters.TryGetValue(key, out var value)
+        && int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : defaultValue;
 

@@ -1,8 +1,14 @@
+using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Strategies;
 using MomoQuant.Application.Strategies.PriceStructure;
 using MomoQuant.Application.Strategies.PriceStructure.Dtos;
+using MomoQuant.Application.StrategyLab;
+using MomoQuant.Application.StrategyLab.Synthetic;
 using MomoQuant.Domain.Constants;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
+using MomoQuant.Domain.StrategyLab;
+using Moq;
 
 namespace MomoQuant.UnitTests.Strategies;
 
@@ -320,6 +326,230 @@ public sealed class PriceStructureBreakoutRetestTests
         Assert.Equal(PriceStructureRejectionCodes.DuplicateSetup, duplicate.Reason);
     }
 
+    [Fact]
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationReactionCloseLong_RejectsNoConfirmation()
+    {
+        var candles = BuildLongScenario();
+        candles.RemoveAt(candles.Count - 1);
+
+        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "ReactionClose")));
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationReactionCloseShort_RejectsNoConfirmation()
+    {
+        var candles = BuildShortScenario();
+        candles.RemoveAt(candles.Count - 1);
+
+        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "ReactionClose")));
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationEngulfingLong_RejectsNoConfirmation()
+    {
+        var candles = BuildLongScenario(confirmationMode: "Engulfing");
+        candles.RemoveAt(candles.Count - 1);
+
+        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "Engulfing")));
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationEngulfingShort_RejectsNoConfirmation()
+    {
+        var candles = BuildShortScenario(confirmationMode: "Engulfing");
+        candles.RemoveAt(candles.Count - 1);
+
+        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "Engulfing")));
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationCloseBeyondPreviousExtremeLong_RejectsNoConfirmation()
+    {
+        var candles = BuildLongScenario(confirmationMode: "CloseBeyondPreviousExtreme");
+        candles.RemoveAt(candles.Count - 1);
+
+        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationCloseBeyondPreviousExtremeShort_RejectsNoConfirmation()
+    {
+        var candles = BuildShortScenario(confirmationMode: "CloseBeyondPreviousExtreme");
+        candles.RemoveAt(candles.Count - 1);
+
+        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_ExpiredShortSetup_CannotConfirmLater()
+    {
+        var candles = BuildShortScenario(confirmGapBars: 21);
+        var parameters = Parameters(("maxRetestBars", "2"));
+
+        var (candidate, reason) = Evaluate(candles, parameters);
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.RetestExpired, reason);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_ShortWorstMultiCandleRetestStop_UsesHighestAllowedHigh()
+    {
+        var candles = BuildShortScenario(
+            multiCandleRetest: true,
+            secondRetestHigh: 100.08m,
+            confirmationHigh: 100.10m);
+
+        var (candidate, _) = Evaluate(candles);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Short, candidate.Direction);
+        Assert.Equal(99.20m, candidate.EntryPrice);
+        Assert.Equal(100.150050m, candidate.StopLoss);
+        Assert.Equal(97.299900m, candidate.Target1);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_PercentToleranceExactBoundaryLong_ReturnsCandidate()
+    {
+        var level = 100.00m;
+        var retestTolerancePct = 0.15m;
+        var tolerance = level * retestTolerancePct / 100m;
+        var exactBoundary = level + tolerance;
+        var candles = BuildLongScenario(retestLow: exactBoundary, confirmationLow: 100.30m);
+
+        var (candidate, _) = Evaluate(candles);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_PercentToleranceExactBoundaryPlusEpsilonLong_WaitsForRetest()
+    {
+        var level = 100.00m;
+        var retestTolerancePct = 0.15m;
+        var tolerance = level * retestTolerancePct / 100m;
+        var exactBoundary = level + tolerance;
+        var candles = BuildLongScenario(retestLow: exactBoundary + 0.001m, confirmationLow: 100.30m);
+
+        var (candidate, reason) = Evaluate(candles);
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.WaitingForRetest, reason);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_PercentToleranceExactBoundaryMinusEpsilonLong_ReturnsCandidate()
+    {
+        var level = 100.00m;
+        var retestTolerancePct = 0.15m;
+        var tolerance = level * retestTolerancePct / 100m;
+        var exactBoundary = level + tolerance;
+        var candles = BuildLongScenario(retestLow: exactBoundary - 0.001m, confirmationLow: 100.30m);
+
+        var (candidate, _) = Evaluate(candles);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_AtrToleranceExactBoundaryLong_ReturnsCandidate()
+    {
+        var candles = BuildLongScenarioAtAtrRetestBoundary(epsilon: 0m);
+        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "1.00"));
+
+        var (candidate, _) = Evaluate(candles, parameters);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_AtrToleranceExactBoundaryPlusEpsilonLong_WaitsForRetest()
+    {
+        var candles = BuildLongScenarioAtAtrRetestBoundary(epsilon: 0.01m);
+        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "1.00"));
+
+        var (candidate, reason) = Evaluate(candles, parameters);
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.WaitingForRetest, reason);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_AtrToleranceExactBoundaryMinusEpsilonLong_ReturnsCandidate()
+    {
+        var candles = BuildLongScenarioAtAtrRetestBoundary(epsilon: -0.01m);
+        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "1.00"));
+
+        var (candidate, _) = Evaluate(candles, parameters);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate.Direction);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_InvalidShortTarget_GeometryProducesInvalidTarget()
+    {
+        // Valid short path with positive fixedRewardRisk large enough that target drops to <= 0.
+        var candles = BuildShortScenario();
+        var parameters = Parameters(("fixedRewardRisk", "200.00"));
+
+        var (candidate, reason) = Evaluate(candles, parameters);
+
+        Assert.Null(candidate);
+        Assert.Equal(PriceStructureRejectionCodes.InvalidTarget, reason);
+    }
+
+    /// <summary>
+    /// Builds a long scenario whose retest low sits at level + ATR14(retest)×1.00 + epsilon,
+    /// refining until the ATR used matches the final series (tolerance applied once).
+    /// </summary>
+    private static List<Candle> BuildLongScenarioAtAtrRetestBoundary(decimal epsilon)
+    {
+        const decimal level = 100.00m;
+        const decimal atrMultiplier = 1.00m;
+        var retestLow = level;
+        List<Candle> candles = BuildLongScenario(retestLow: retestLow);
+        for (var i = 0; i < 8; i++)
+        {
+            var retestIndex = candles.Count - 2;
+            var atr = PriceStructureBreakoutRetestEvaluator.ComputeAtr14AtIndex(candles, retestIndex);
+            Assert.NotNull(atr);
+            Assert.True(atr.Value > 0m);
+            var nextLow = level + (atr.Value * atrMultiplier) + epsilon;
+            if (nextLow == retestLow)
+            {
+                return candles;
+            }
+
+            retestLow = nextLow;
+            candles = BuildLongScenario(retestLow: retestLow, confirmationLow: 100.30m);
+        }
+
+        return candles;
+    }
+
     private static (PriceStructureCandidateDto? Candidate, string Reason) Evaluate(
         IReadOnlyList<Candle> candles,
         IReadOnlyDictionary<string, string>? parameters = null,
@@ -404,6 +634,8 @@ public sealed class PriceStructureBreakoutRetestTests
         decimal confirmationClose = 99.20m,
         int prefixCount = 18,
         int confirmGapBars = 1,
+        bool multiCandleRetest = false,
+        decimal secondRetestHigh = 100.05m,
         string confirmationMode = "ReactionClose")
     {
         var candles = BuildBaseStructure(prefixCount, 100.00m, bullishSwing: false);
@@ -412,6 +644,11 @@ public sealed class PriceStructureBreakoutRetestTests
         candles.Add(CreateCandle(breakoutTime, 100.40m, 100.40m, 99.40m, breakoutClose));
         var retestTime = breakoutTime.AddMinutes(5);
         candles.Add(CreateCandle(retestTime, 99.80m, retestHigh, 99.70m, retestClose));
+
+        if (multiCandleRetest)
+        {
+            candles.Add(CreateCandle(retestTime.AddMinutes(5), 99.88m, secondRetestHigh, 99.72m, 99.93m));
+        }
 
         if (string.Equals(confirmationMode, "NoConfirmation", StringComparison.OrdinalIgnoreCase))
         {
@@ -498,5 +735,91 @@ public sealed class PriceStructureBreakoutRetestTests
             Volume = 100m,
             IsClosed = true
         };
+    }
+}
+
+public sealed class PriceStructureBreakoutRetestV10HistoricalTests
+{
+    [Fact]
+    public async Task StrategyLabService_GetRerunConfigAsync_V10PriceStructure_ReturnsReadOnlyError()
+    {
+        var mockRunRepository = new Mock<IStrategyLabRunRepository>();
+        var v10Run = new StrategyLabRun
+        {
+            Id = 1,
+            Name = "Historical v1.0 Run",
+            StrategyCode = StrategyCodes.PriceStructureBreakoutRetest,
+            StrategyVersion = PriceStructureBreakoutRetestEvaluator.StrategyVersionV10,
+            ExchangeId = 1,
+            SymbolId = 1,
+            Timeframe = "5m",
+            FromUtc = DateTime.UtcNow.AddDays(-30),
+            ToUtc = DateTime.UtcNow,
+            ExecutionMode = StrategyLabExecutionMode.RawStrategy,
+            ParametersJson = "{}",
+            FeeSettingsJson = "{}",
+            SlippageSettingsJson = "{}",
+            InitialBalance = 10000m
+        };
+
+        mockRunRepository
+            .Setup(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(v10Run);
+
+        var service = new StrategyLabService(
+            mockRunRepository.Object,
+            new Mock<IStrategyResearchCandidateRepository>().Object,
+            new Mock<IStrategyRepository>().Object,
+            new Mock<IStrategyRegistry>().Object,
+            new Mock<ISymbolRepository>().Object,
+            new Mock<IStrategyLabQueue>().Object);
+
+        var result = await service.GetRerunConfigAsync(1);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("v1.0.0", result.ErrorMessage);
+        Assert.Contains("read-only", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cannot reproduce", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task StrategyLabService_GetRerunConfigAsync_V11PriceStructure_SucceedsWithConfig()
+    {
+        var mockRunRepository = new Mock<IStrategyLabRunRepository>();
+        var v11Run = new StrategyLabRun
+        {
+            Id = 2,
+            Name = "Current v1.1 Run",
+            StrategyCode = StrategyCodes.PriceStructureBreakoutRetest,
+            StrategyVersion = PriceStructureBreakoutRetestEvaluator.StrategyVersion,
+            ExchangeId = 1,
+            SymbolId = 1,
+            Timeframe = "5m",
+            FromUtc = DateTime.UtcNow.AddDays(-30),
+            ToUtc = DateTime.UtcNow,
+            ExecutionMode = StrategyLabExecutionMode.RawStrategy,
+            ParametersJson = "{}",
+            FeeSettingsJson = "{}",
+            SlippageSettingsJson = "{}",
+            InitialBalance = 10000m
+        };
+
+        mockRunRepository
+            .Setup(r => r.GetByIdAsync(2, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(v11Run);
+
+        var service = new StrategyLabService(
+            mockRunRepository.Object,
+            new Mock<IStrategyResearchCandidateRepository>().Object,
+            new Mock<IStrategyRepository>().Object,
+            new Mock<IStrategyRegistry>().Object,
+            new Mock<ISymbolRepository>().Object,
+            new Mock<IStrategyLabQueue>().Object);
+
+        var result = await service.GetRerunConfigAsync(2);
+
+        Assert.True(result.Succeeded);
+        Assert.NotNull(result.Data);
+        Assert.Equal("Current v1.1 Run", result.Data.Name);
     }
 }

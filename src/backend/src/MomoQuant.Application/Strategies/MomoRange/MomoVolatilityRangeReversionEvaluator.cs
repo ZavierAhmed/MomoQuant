@@ -201,6 +201,15 @@ public static class MomoVolatilityRangeReversionEvaluator
             return MomoVolatilityRangeRejectionCodes.InvalidParameters;
         }
 
+        if (settings.MinRangeWidthAtr <= 0m
+            || settings.MaxRangeWidthAtr <= 0m
+            || settings.MinVolatilityRatio <= 0m
+            || settings.MaxVolatilityRatio <= 0m
+            || settings.BoundaryToleranceAtr <= 0m)
+        {
+            return MomoVolatilityRangeRejectionCodes.InvalidParameters;
+        }
+
         if (settings.FastEmaPeriod >= settings.SlowEmaPeriod
             || settings.FastAtrPeriod >= settings.SlowAtrPeriod
             || settings.MinRangeWidthAtr > settings.MaxRangeWidthAtr
@@ -211,7 +220,6 @@ public static class MomoVolatilityRangeReversionEvaluator
 
         if (settings.MaxEmaSeparationAtr < 0m
             || settings.MaxSlowEmaSlopeAtr < 0m
-            || settings.BoundaryToleranceAtr < 0m
             || settings.MinimumWickPercent < 0m
             || settings.MinimumWickPercent > 100m
             || settings.StopBufferAtr < 0m
@@ -448,12 +456,12 @@ public static class MomoVolatilityRangeReversionEvaluator
 
         var entry = current.Close;
         var stop = current.Low - (settings.StopBufferAtr * indicators.FastAtr);
-        if (stop <= 0m || stop >= entry)
+        var takeProfit = range.Midpoint;
+        if (entry <= 0m || stop <= 0m || takeProfit <= 0m || stop >= entry || takeProfit <= entry)
         {
             return (null, MomoVolatilityRangeRejectionCodes.InvalidStop);
         }
 
-        var takeProfit = range.Midpoint;
         var risk = entry - stop;
         var reward = takeProfit - entry;
         if (risk <= 0m || reward <= 0m)
@@ -558,12 +566,12 @@ public static class MomoVolatilityRangeReversionEvaluator
 
         var entry = current.Close;
         var stop = current.High + (settings.StopBufferAtr * indicators.FastAtr);
-        if (stop <= entry)
+        var takeProfit = range.Midpoint;
+        if (entry <= 0m || stop <= 0m || takeProfit <= 0m || stop <= entry || takeProfit >= entry)
         {
             return (null, MomoVolatilityRangeRejectionCodes.InvalidStop);
         }
 
-        var takeProfit = range.Midpoint;
         var risk = stop - entry;
         var reward = entry - takeProfit;
         if (risk <= 0m || reward <= 0m)
@@ -858,6 +866,7 @@ public static class MomoVolatilityRangeReversionEvaluator
         {
             MomoVolatilityRangeRejectionCodes.DuplicateSetup,
             MomoVolatilityRangeRejectionCodes.InvalidStop,
+            MomoVolatilityRangeRejectionCodes.BoundaryPenetrationExceeded,
             MomoVolatilityRangeRejectionCodes.StrengthBelowMinimum,
             MomoVolatilityRangeRejectionCodes.RewardRiskInsufficient,
             MomoVolatilityRangeRejectionCodes.WickConfirmationMissing,

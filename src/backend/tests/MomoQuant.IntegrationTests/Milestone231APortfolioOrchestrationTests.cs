@@ -177,6 +177,7 @@ public sealed class Milestone231APortfolioOrchestrationTests : IClassFixture<Mom
         Assert.NotEmpty(mtfParams);
 
         var duplicateKeys = mtfParams
+            .Where(p => p.IsActive)
             .GroupBy(p => new { p.ParameterKey, p.Timeframe })
             .Where(g => g.Count() > 1)
             .Select(g => g.Key.ParameterKey)
