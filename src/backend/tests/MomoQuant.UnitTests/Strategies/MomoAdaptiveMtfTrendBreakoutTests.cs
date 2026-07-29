@@ -308,38 +308,180 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
     }
 
     [Fact]
-    public void EvaluateAtCurrentCandle_MacdSignRejection_RejectsMomentumNotConfirmed()
+    public void EvaluateAtCurrentCandle_MacdSignRejection_Long_RejectsMomentumNotConfirmed()
     {
         var (ltf, htf) = AdaptiveDefaultFixtures.BuildValidLong(Start);
-        // Drive last closes down hard to flip MACD histogram negative while keeping some structure.
-        for (var i = ltf.Count - 40; i < ltf.Count; i++)
-        {
-            var px = ltf[i].Close - (i - (ltf.Count - 40)) * 40m;
-            ltf[i] = CloneLtf(ltf[i], px + 20m, px + 30m, px - 30m, px);
-        }
+        // Soften only the confirmation close so histogram flips <= 0 while HTF/LTF EMA gates remain green.
+        var last = ltf[^1];
+        const decimal delta = 465m;
+        ltf[^1] = CloneLtf(
+            last,
+            last.Open,
+            Math.Max(last.High, last.Close - delta),
+            Math.Min(last.Low, last.Close - delta),
+            last.Close - delta);
+
+        var snapshot = CaptureMomentumSnapshot(ltf, htf, longSide: true);
+        Assert.True(snapshot.HtfFast > snapshot.HtfSlow);
+        Assert.True(snapshot.HtfSlope > 0m);
+        Assert.True(snapshot.HtfClose > snapshot.HtfFast);
+        Assert.True(snapshot.LtfFast > snapshot.LtfSlow);
+        Assert.True(snapshot.Histogram <= 0m);
+        AssertExactMomentum(
+            snapshot,
+            htfFast: 49848.601614763552479815455594m,
+            htfSlow: 46240.712616319900460569359337m,
+            htfSlope: 250.601614763552479815455594m,
+            htfClose: 51229.000m,
+            ltfFast: 51183.040841273389450654016910m,
+            ltfSlow: 51041.742316043186289666590063m,
+            histogram: -0.19714374588991498950902445m,
+            previousHistogram: 22.86435121918728099819418444m);
 
         var (candidate, reason) = Evaluate(ltf, htf, Defaults(), MarketRegime.Breakout);
         Assert.Null(candidate);
-        Assert.True(
-            reason is MomoAdaptiveMtfRejectionCodes.MomentumNotConfirmed
-                or MomoAdaptiveMtfRejectionCodes.ExecutionTrendNotAligned,
-            $"Expected momentum or execution rejection, got {reason}");
+        Assert.Equal(MomoAdaptiveMtfRejectionCodes.MomentumNotConfirmed, reason);
     }
 
     [Fact]
-    public void EvaluateAtCurrentCandle_MacdExpansionRejection_RejectsWhenExpansionRequired()
+    public void EvaluateAtCurrentCandle_MacdSignRejection_Short_RejectsMomentumNotConfirmed()
+    {
+        var (ltf, htf) = AdaptiveDefaultFixtures.BuildValidShort(Start);
+        var last = ltf[^1];
+        const decimal delta = 465m;
+        ltf[^1] = CloneLtf(
+            last,
+            last.Open,
+            Math.Max(last.High, last.Close + delta),
+            Math.Min(last.Low, last.Close + delta),
+            last.Close + delta);
+
+        var snapshot = CaptureMomentumSnapshot(ltf, htf, longSide: false);
+        Assert.True(snapshot.HtfFast < snapshot.HtfSlow);
+        Assert.True(snapshot.HtfSlope < 0m);
+        Assert.True(snapshot.HtfClose < snapshot.HtfFast);
+        Assert.True(snapshot.LtfFast < snapshot.LtfSlow);
+        Assert.True(snapshot.Histogram >= 0m);
+        AssertExactMomentum(
+            snapshot,
+            htfFast: 50151.398385236447520184544406m,
+            htfSlow: 53759.287383680099539430640663m,
+            htfSlope: -250.601614763552479815455594m,
+            htfClose: 48771.000m,
+            ltfFast: 48816.959158726610549345983090m,
+            ltfSlow: 48958.257683956813710333409937m,
+            histogram: 0.19714374588991498950902445m,
+            previousHistogram: -22.86435121918728099819418444m);
+
+        var (candidate, reason) = Evaluate(ltf, htf, Defaults(), MarketRegime.Breakout);
+        Assert.Null(candidate);
+        Assert.Equal(MomoAdaptiveMtfRejectionCodes.MomentumNotConfirmed, reason);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_MacdExpansionRejection_Long_ThenExpansionPasses()
     {
         var (ltf, htf) = AdaptiveDefaultFixtures.BuildValidLong(Start);
-        // Evaluate one bar before confirmation where hist may be expanding; force confirm bar with shrinking hist
-        // by flattening the last close relative to prior so expansion fails while sign stays positive when possible.
+        var parameters = Defaults();
+        Assert.Equal("true", parameters["requireHistogramExpansion"]);
+        Assert.True(MomoAdaptiveMtfTrendBreakoutEvaluator.ReadParameters(parameters).RequireHistogramExpansion);
+
+        var original = ltf[^1];
+        var prevClose = ltf[^2].Close;
+        var target = original.Close + (prevClose - original.Close) * 0.79m;
+        ltf[^1] = CloneLtf(
+            original,
+            Math.Min(original.Open, target - 0.01m),
+            Math.Max(original.High, target),
+            Math.Min(original.Low, target),
+            target);
+
+        var contracting = CaptureMomentumSnapshot(ltf, htf, longSide: true);
+        Assert.True(contracting.HtfFast > contracting.HtfSlow);
+        Assert.True(contracting.HtfSlope > 0m);
+        Assert.True(contracting.HtfClose > contracting.HtfFast);
+        Assert.True(contracting.LtfFast > contracting.LtfSlow);
+        Assert.True(contracting.Histogram > 0m);
+        Assert.True(contracting.PreviousHistogram > 0m);
+        Assert.True(contracting.Histogram <= contracting.PreviousHistogram);
+        AssertExactMomentum(
+            contracting,
+            htfFast: 49848.601614763552479815455594m,
+            htfSlow: 46240.712616319900460569359337m,
+            htfSlope: 250.601614763552479815455594m,
+            htfClose: 51229.000m,
+            ltfFast: 51217.395126987675164939731196m,
+            ltfSlow: 51055.888198396127466137178299m,
+            histogram: 22.82316394641777731818328355m,
+            previousHistogram: 22.86435121918728099819418444m);
+
+        var (candidate, reason) = Evaluate(ltf, htf, parameters, MarketRegime.Breakout);
+        Assert.Null(candidate);
+        Assert.Equal(MomoAdaptiveMtfRejectionCodes.MomentumNotConfirmed, reason);
+
+        // Change only the confirmation close so histogram expands again.
+        ltf[^1] = original;
+        var expanding = CaptureMomentumSnapshot(ltf, htf, longSide: true);
+        Assert.True(expanding.Histogram > 0m);
+        Assert.True(expanding.PreviousHistogram > 0m);
+        Assert.True(expanding.Histogram > expanding.PreviousHistogram);
+
+        var (passed, passedReason) = Evaluate(ltf, htf, parameters, MarketRegime.Breakout);
+        Assert.NotNull(passed);
+        Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, passedReason);
+        Assert.Equal(TradeDirection.Long, passed!.Direction);
+    }
+
+    [Fact]
+    public void EvaluateAtCurrentCandle_MacdExpansionRejection_Short_ThenExpansionPasses()
+    {
+        var (ltf, htf) = AdaptiveDefaultFixtures.BuildValidShort(Start);
         var parameters = Defaults();
         Assert.True(MomoAdaptiveMtfTrendBreakoutEvaluator.ReadParameters(parameters).RequireHistogramExpansion);
 
-        // Truncate to retest bar — should wait rather than confirm without expansion path to entry
-        var truncated = ltf.Take(ltf.Count - 1).ToList();
-        var (candidate, reason) = Evaluate(truncated, htf, parameters, MarketRegime.Breakout);
+        var original = ltf[^1];
+        var prevClose = ltf[^2].Close;
+        var target = original.Close + (prevClose - original.Close) * 0.79m;
+        ltf[^1] = CloneLtf(
+            original,
+            Math.Max(original.Open, target + 0.01m),
+            Math.Max(original.High, target),
+            Math.Min(original.Low, target),
+            target);
+
+        var contracting = CaptureMomentumSnapshot(ltf, htf, longSide: false);
+        Assert.True(contracting.HtfFast < contracting.HtfSlow);
+        Assert.True(contracting.HtfSlope < 0m);
+        Assert.True(contracting.HtfClose < contracting.HtfFast);
+        Assert.True(contracting.LtfFast < contracting.LtfSlow);
+        Assert.True(contracting.Histogram < 0m);
+        Assert.True(contracting.PreviousHistogram < 0m);
+        Assert.True(contracting.Histogram >= contracting.PreviousHistogram);
+        AssertExactMomentum(
+            contracting,
+            htfFast: 50151.398385236447520184544406m,
+            htfSlow: 53759.287383680099539430640663m,
+            htfSlope: -250.601614763552479815455594m,
+            htfClose: 48771.000m,
+            ltfFast: 48782.604873012324835060268804m,
+            ltfSlow: 48944.111801603872533862821701m,
+            histogram: -22.82316394641777731818328355m,
+            previousHistogram: -22.86435121918728099819418444m);
+
+        var (candidate, reason) = Evaluate(ltf, htf, parameters, MarketRegime.Breakout);
         Assert.Null(candidate);
-        Assert.Equal(MomoAdaptiveMtfRejectionCodes.WaitingForRetest, reason);
+        Assert.Equal(MomoAdaptiveMtfRejectionCodes.MomentumNotConfirmed, reason);
+
+        ltf[^1] = original;
+        var expanding = CaptureMomentumSnapshot(ltf, htf, longSide: false);
+        Assert.True(expanding.Histogram < 0m);
+        Assert.True(expanding.PreviousHistogram < 0m);
+        Assert.True(expanding.Histogram < expanding.PreviousHistogram);
+
+        var (passed, passedReason) = Evaluate(ltf, htf, parameters, MarketRegime.Breakout);
+        Assert.NotNull(passed);
+        Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, passedReason);
+        Assert.Equal(TradeDirection.Short, passed!.Direction);
     }
 
     [Fact]
@@ -585,7 +727,7 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
     }
 
     [Fact]
-    public void EvaluateAtCurrentCandle_EventTimeBreakoutAtr_ExactAndFutureOhlcMutationHasNoEffect()
+    public void EvaluateAtCurrentCandle_EventTimeBreakoutAtr_ExactAndPostEventOhlcMutationHasNoEffect()
     {
         var (ltf, htf) = AdaptiveDefaultFixtures.BuildValidLong(Start);
         var settings = MomoAdaptiveMtfTrendBreakoutEvaluator.ReadParameters(Defaults());
@@ -597,46 +739,45 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
         Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, reason);
         dynamic setup = candidate!.Setup!;
         int breakoutIndex = setup.breakoutIndex;
+        int retestIndex = setup.retestIndex;
         Assert.Equal(atrFast[breakoutIndex], (decimal)setup.breakoutAtrFast);
         Assert.Equal(atrSlow[breakoutIndex], (decimal)setup.breakoutAtrSlow);
         Assert.Equal(349.05954976083357099324744597m, (decimal)setup.breakoutAtrFast);
+        Assert.Equal(ltf[breakoutIndex].CloseTimeUtc, ltf[breakoutIndex].CloseTimeUtc);
 
-        var throughT = ltf.ToList();
-        var polluted = throughT.ToList();
-        var last = polluted[^1];
-        polluted.Add(new Candle
-        {
-            SymbolId = last.SymbolId,
-            ExchangeId = last.ExchangeId,
-            Timeframe = last.Timeframe,
-            OpenTimeUtc = last.CloseTimeUtc,
-            CloseTimeUtc = last.CloseTimeUtc.AddMinutes(5),
-            Open = last.Close + 5000m,
-            High = last.Close + 8000m,
-            Low = last.Close + 4000m,
-            Close = last.Close + 7000m,
-            Volume = last.Volume,
-            IsClosed = true,
-            CreatedAtUtc = last.CloseTimeUtc
-        });
+        // Mutate OHLC strictly after the breakout event. Open is not an ATR input; keep Close/High/Low
+        // so confirmation body, geometry, and event-time ATR remain identical while the mutated bar is evaluated.
+        var mutated = ltf.Select(c => CloneLtf(c, c.Open, c.High, c.Low, c.Close)).ToList();
+        var confirm = mutated[^1];
+        var pollutedOpen = confirm.Open + 55m;
+        Assert.True(pollutedOpen < confirm.Close);
+        mutated[^1] = CloneLtf(confirm, pollutedOpen, confirm.High, confirm.Low, confirm.Close);
+        Assert.Equal(pollutedOpen, mutated[^1].Open);
+        Assert.True(mutated.Count - 1 > breakoutIndex);
 
-        var (candidate2, reason2) = Evaluate(throughT, htf, Defaults(), MarketRegime.Breakout);
-        var (candidate3, reason3) = Evaluate(polluted.Take(throughT.Count).ToList(), htf, Defaults(), MarketRegime.Breakout);
-        Assert.Equal(reason, reason2);
-        Assert.Equal(reason, reason3);
-        Assert.NotNull(candidate2);
-        Assert.NotNull(candidate3);
-        Assert.Equal(candidate.SetupFingerprint, candidate2!.SetupFingerprint);
-        Assert.Equal(candidate.SetupFingerprint, candidate3!.SetupFingerprint);
-        Assert.Equal((decimal)setup.breakoutAtrFast, (decimal)((dynamic)candidate3.Setup!).breakoutAtrFast);
-        Assert.Equal(candidate.EntryPrice, candidate3.EntryPrice);
-        Assert.Equal(candidate.StopLoss, candidate3.StopLoss);
-        Assert.Equal(candidate.TakeProfit, candidate3.TakeProfit);
-        Assert.Equal(candidate.Strength, candidate3.Strength);
+        var (mutatedCandidate, mutatedReason) = Evaluate(mutated, htf, Defaults(), MarketRegime.Breakout);
+        Assert.NotNull(mutatedCandidate);
+        Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, mutatedReason);
+        dynamic mutatedSetup = mutatedCandidate!.Setup!;
+        Assert.Equal(breakoutIndex, (int)mutatedSetup.breakoutIndex);
+        Assert.Equal(retestIndex, (int)mutatedSetup.retestIndex);
+        Assert.Equal((decimal)setup.breakoutAtrFast, (decimal)mutatedSetup.breakoutAtrFast);
+        Assert.Equal((decimal)setup.breakoutAtrSlow, (decimal)mutatedSetup.breakoutAtrSlow);
+        Assert.Equal((decimal)setup.retestAtrFast, (decimal)mutatedSetup.retestAtrFast);
+        Assert.Equal(ltf[breakoutIndex].CloseTimeUtc, mutated[breakoutIndex].CloseTimeUtc);
+        Assert.Equal(candidate.EntryPrice, mutatedCandidate.EntryPrice);
+        Assert.Equal(candidate.StopLoss, mutatedCandidate.StopLoss);
+        Assert.Equal(candidate.TakeProfit, mutatedCandidate.TakeProfit);
+        Assert.Equal(candidate.SetupFingerprint, mutatedCandidate.SetupFingerprint);
+        Assert.Equal(candidate.Reason, mutatedCandidate.Reason);
+        Assert.Equal(
+            Assert.IsType<MomoAdaptiveMtfTrendBreakoutEvaluator.StrengthBreakdownResult>(candidate.StrengthBreakdown).Total,
+            Assert.IsType<MomoAdaptiveMtfTrendBreakoutEvaluator.StrengthBreakdownResult>(mutatedCandidate.StrengthBreakdown).Total);
+        Assert.Equal(pollutedOpen, mutated[^1].Open);
     }
 
     [Fact]
-    public void EvaluateAtCurrentCandle_EventTimeRetestAtr_ExactAndFutureOhlcMutationHasNoEffect()
+    public void EvaluateAtCurrentCandle_EventTimeRetestAtr_ExactAndPostEventOhlcMutationHasNoEffect()
     {
         var (ltf, htf) = AdaptiveDefaultFixtures.BuildValidLong(Start);
         var settings = MomoAdaptiveMtfTrendBreakoutEvaluator.ReadParameters(Defaults());
@@ -646,40 +787,38 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
         Assert.NotNull(candidate);
         Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, reason);
         dynamic setup = candidate!.Setup!;
+        int breakoutIndex = setup.breakoutIndex;
         int retestIndex = setup.retestIndex;
         Assert.Equal(atrFast[retestIndex], (decimal)setup.retestAtrFast);
         Assert.Equal(340.78386763505974449372977126m, (decimal)setup.retestAtrFast);
 
-        var throughT = ltf.ToList();
-        var polluted = throughT.ToList();
-        var last = polluted[^1];
-        polluted.Add(new Candle
-        {
-            SymbolId = last.SymbolId,
-            ExchangeId = last.ExchangeId,
-            Timeframe = last.Timeframe,
-            OpenTimeUtc = last.CloseTimeUtc,
-            CloseTimeUtc = last.CloseTimeUtc.AddMinutes(5),
-            Open = 1m,
-            High = 2m,
-            Low = 0.5m,
-            Close = 1.5m,
-            Volume = 1m,
-            IsClosed = true,
-            CreatedAtUtc = last.CloseTimeUtc
-        });
+        var mutated = ltf.Select(c => CloneLtf(c, c.Open, c.High, c.Low, c.Close)).ToList();
+        var confirm = mutated[^1];
+        var pollutedOpen = confirm.Open + 55m;
+        Assert.True(pollutedOpen < confirm.Close);
+        mutated[^1] = CloneLtf(confirm, pollutedOpen, confirm.High, confirm.Low, confirm.Close);
+        Assert.Equal(pollutedOpen, mutated[^1].Open);
+        Assert.True(mutated.Count - 1 > retestIndex);
 
-        // Mutate OHLC of a candle after the retest event but evaluate only through original T
-        // by keeping the confirmation bar identical and only appending future pollution.
-        var (candidate2, reason2) = Evaluate(throughT, htf, Defaults(), MarketRegime.Breakout);
-        var (candidate3, reason3) = Evaluate(polluted.Take(throughT.Count).ToList(), htf, Defaults(), MarketRegime.Breakout);
-        Assert.Equal(reason, reason2);
-        Assert.Equal(reason, reason3);
-        Assert.NotNull(candidate3);
-        Assert.Equal((decimal)setup.retestAtrFast, (decimal)((dynamic)candidate3!.Setup!).retestAtrFast);
-        Assert.Equal(candidate.SetupFingerprint, candidate3.SetupFingerprint);
-        Assert.Equal(candidate.EntryPrice, candidate3.EntryPrice);
-        Assert.Equal(candidate.Strength, candidate3.Strength);
+        var (mutatedCandidate, mutatedReason) = Evaluate(mutated, htf, Defaults(), MarketRegime.Breakout);
+        Assert.NotNull(mutatedCandidate);
+        Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, mutatedReason);
+        dynamic mutatedSetup = mutatedCandidate!.Setup!;
+        Assert.Equal(breakoutIndex, (int)mutatedSetup.breakoutIndex);
+        Assert.Equal(retestIndex, (int)mutatedSetup.retestIndex);
+        Assert.Equal((decimal)setup.breakoutAtrFast, (decimal)mutatedSetup.breakoutAtrFast);
+        Assert.Equal((decimal)setup.breakoutAtrSlow, (decimal)mutatedSetup.breakoutAtrSlow);
+        Assert.Equal((decimal)setup.retestAtrFast, (decimal)mutatedSetup.retestAtrFast);
+        Assert.Equal(ltf[retestIndex].CloseTimeUtc, mutated[retestIndex].CloseTimeUtc);
+        Assert.Equal(candidate.EntryPrice, mutatedCandidate.EntryPrice);
+        Assert.Equal(candidate.StopLoss, mutatedCandidate.StopLoss);
+        Assert.Equal(candidate.TakeProfit, mutatedCandidate.TakeProfit);
+        Assert.Equal(candidate.SetupFingerprint, mutatedCandidate.SetupFingerprint);
+        Assert.Equal(candidate.Reason, mutatedCandidate.Reason);
+        Assert.Equal(
+            Assert.IsType<MomoAdaptiveMtfTrendBreakoutEvaluator.StrengthBreakdownResult>(candidate.StrengthBreakdown).Total,
+            Assert.IsType<MomoAdaptiveMtfTrendBreakoutEvaluator.StrengthBreakdownResult>(mutatedCandidate.StrengthBreakdown).Total);
+        Assert.Equal(pollutedOpen, mutated[^1].Open);
     }
 
     [Fact]
@@ -712,6 +851,75 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
 
     private static Dictionary<string, string> Defaults() =>
         new(MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract());
+
+    private sealed record MomentumSnapshot(
+        decimal HtfFast,
+        decimal HtfSlow,
+        decimal HtfSlope,
+        decimal HtfClose,
+        decimal LtfFast,
+        decimal LtfSlow,
+        decimal Histogram,
+        decimal PreviousHistogram);
+
+    private static MomentumSnapshot CaptureMomentumSnapshot(
+        IReadOnlyList<Candle> ltf,
+        IReadOnlyList<Candle> htf,
+        bool longSide)
+    {
+        var settings = MomoAdaptiveMtfTrendBreakoutEvaluator.ReadParameters(Defaults());
+        var closes = ltf.Select(c => c.Close).ToArray();
+        var ltfFast = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeEma(closes, settings.LtfFastEmaPeriod);
+        var ltfSlow = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeEma(closes, settings.LtfSlowEmaPeriod);
+        var (_, _, hist) = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeMacd(
+            closes, settings.MacdFast, settings.MacdSlow, settings.MacdSignal);
+        var i = closes.Length - 1;
+        Assert.True(MomoAdaptiveMtfTrendBreakoutEvaluator.TryGetEma(ltfFast, i, settings.LtfFastEmaPeriod, out var execFast));
+        Assert.True(MomoAdaptiveMtfTrendBreakoutEvaluator.TryGetEma(ltfSlow, i, settings.LtfSlowEmaPeriod, out var execSlow));
+        Assert.True(MomoAdaptiveMtfTrendBreakoutEvaluator.TryGetMacdHistogram(hist, i, settings, out var histogram));
+        Assert.True(MomoAdaptiveMtfTrendBreakoutEvaluator.TryGetMacdHistogram(hist, i - 1, settings, out var previous));
+
+        var sliced = SliceHtf(htf, ltf[^1].CloseTimeUtc);
+        var htfCloses = sliced.Select(c => c.Close).ToArray();
+        var htfFastSeries = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeEma(htfCloses, settings.HtfFastEmaPeriod);
+        var htfSlowSeries = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeEma(htfCloses, settings.HtfSlowEmaPeriod);
+        var htfLast = htfCloses.Length - 1;
+        Assert.True(MomoAdaptiveMtfTrendBreakoutEvaluator.TryGetEma(htfFastSeries, htfLast, settings.HtfFastEmaPeriod, out var htfFast));
+        Assert.True(MomoAdaptiveMtfTrendBreakoutEvaluator.TryGetEma(htfSlowSeries, htfLast, settings.HtfSlowEmaPeriod, out var htfSlow));
+        Assert.True(MomoAdaptiveMtfTrendBreakoutEvaluator.TryGetEma(
+            htfFastSeries, htfLast - settings.HtfSlopeLookback, settings.HtfFastEmaPeriod, out var slopeStart));
+        _ = longSide;
+        return new MomentumSnapshot(
+            htfFast,
+            htfSlow,
+            htfFast - slopeStart,
+            sliced[htfLast].Close,
+            execFast,
+            execSlow,
+            histogram,
+            previous);
+    }
+
+    private static void AssertExactMomentum(
+        MomentumSnapshot snapshot,
+        decimal htfFast,
+        decimal htfSlow,
+        decimal htfSlope,
+        decimal htfClose,
+        decimal ltfFast,
+        decimal ltfSlow,
+        decimal histogram,
+        decimal previousHistogram)
+    {
+        Assert.Equal(htfFast, snapshot.HtfFast);
+        Assert.Equal(htfSlow, snapshot.HtfSlow);
+        Assert.Equal(htfSlope, snapshot.HtfSlope);
+        Assert.Equal(htfClose, snapshot.HtfClose);
+        Assert.Equal(ltfFast, snapshot.LtfFast);
+        Assert.Equal(ltfSlow, snapshot.LtfSlow);
+        Assert.Equal(histogram, snapshot.Histogram);
+        Assert.Equal(previousHistogram, snapshot.PreviousHistogram);
+    }
 
     private static (MomoAdaptiveMtfTrendBreakoutEvaluator.MomoAdaptiveMtfCandidate? Candidate, string Reason) Evaluate(
         IReadOnlyList<Candle> ltf,

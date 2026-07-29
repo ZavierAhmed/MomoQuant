@@ -330,75 +330,117 @@ public sealed class PriceStructureBreakoutRetestTests
     }
 
     [Fact]
-    public void EvaluateAtCurrentCandle_SameCandleConfirmationReactionCloseLong_RejectsNoConfirmation()
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationReactionCloseLong_RejectsThenConfirmsLater()
     {
-        var candles = BuildLongScenario();
-        candles.RemoveAt(candles.Count - 1);
+        var throughRetest = BuildLongWithQualifyingRetest("ReactionClose", includeConfirmation: false);
+        AssertQualifyingRetestPredicate(throughRetest, "ReactionClose", longSide: true);
 
-        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "ReactionClose")));
+        var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "ReactionClose")));
+        Assert.Null(rejected);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
-        Assert.Null(candidate);
-        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+        var confirmed = BuildLongWithQualifyingRetest("ReactionClose", includeConfirmation: true);
+        var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "ReactionClose")));
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate!.Direction);
+        Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
+        Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
+        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
     }
 
     [Fact]
-    public void EvaluateAtCurrentCandle_SameCandleConfirmationReactionCloseShort_RejectsNoConfirmation()
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationReactionCloseShort_RejectsThenConfirmsLater()
     {
-        var candles = BuildShortScenario();
-        candles.RemoveAt(candles.Count - 1);
+        var throughRetest = BuildShortWithQualifyingRetest("ReactionClose", includeConfirmation: false);
+        AssertQualifyingRetestPredicate(throughRetest, "ReactionClose", longSide: false);
 
-        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "ReactionClose")));
+        var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "ReactionClose")));
+        Assert.Null(rejected);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
-        Assert.Null(candidate);
-        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+        var confirmed = BuildShortWithQualifyingRetest("ReactionClose", includeConfirmation: true);
+        var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "ReactionClose")));
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Short, candidate!.Direction);
+        Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
+        Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
+        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
     }
 
     [Fact]
-    public void EvaluateAtCurrentCandle_SameCandleConfirmationEngulfingLong_RejectsNoConfirmation()
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationEngulfingLong_RejectsThenConfirmsLater()
     {
-        var candles = BuildLongScenario(confirmationMode: "Engulfing");
-        candles.RemoveAt(candles.Count - 1);
+        var throughRetest = BuildLongWithQualifyingRetest("Engulfing", includeConfirmation: false);
+        AssertQualifyingRetestPredicate(throughRetest, "Engulfing", longSide: true);
 
-        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "Engulfing")));
+        var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "Engulfing")));
+        Assert.Null(rejected);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
-        Assert.Null(candidate);
-        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+        var confirmed = BuildLongWithQualifyingRetest("Engulfing", includeConfirmation: true);
+        var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "Engulfing")));
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate!.Direction);
+        Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
+        Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
+        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
     }
 
     [Fact]
-    public void EvaluateAtCurrentCandle_SameCandleConfirmationEngulfingShort_RejectsNoConfirmation()
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationEngulfingShort_RejectsThenConfirmsLater()
     {
-        var candles = BuildShortScenario(confirmationMode: "Engulfing");
-        candles.RemoveAt(candles.Count - 1);
+        var throughRetest = BuildShortWithQualifyingRetest("Engulfing", includeConfirmation: false);
+        AssertQualifyingRetestPredicate(throughRetest, "Engulfing", longSide: false);
 
-        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "Engulfing")));
+        var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "Engulfing")));
+        Assert.Null(rejected);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
-        Assert.Null(candidate);
-        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+        var confirmed = BuildShortWithQualifyingRetest("Engulfing", includeConfirmation: true);
+        var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "Engulfing")));
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Short, candidate!.Direction);
+        Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
+        Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
+        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
     }
 
     [Fact]
-    public void EvaluateAtCurrentCandle_SameCandleConfirmationCloseBeyondPreviousExtremeLong_RejectsNoConfirmation()
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationCloseBeyondPreviousExtremeLong_RejectsThenConfirmsLater()
     {
-        var candles = BuildLongScenario(confirmationMode: "CloseBeyondPreviousExtreme");
-        candles.RemoveAt(candles.Count - 1);
+        var throughRetest = BuildLongWithQualifyingRetest("CloseBeyondPreviousExtreme", includeConfirmation: false);
+        AssertQualifyingRetestPredicate(throughRetest, "CloseBeyondPreviousExtreme", longSide: true);
 
-        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
+        var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
+        Assert.Null(rejected);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
-        Assert.Null(candidate);
-        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+        var confirmed = BuildLongWithQualifyingRetest("CloseBeyondPreviousExtreme", includeConfirmation: true);
+        var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Long, candidate!.Direction);
+        Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
+        Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
+        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
     }
 
     [Fact]
-    public void EvaluateAtCurrentCandle_SameCandleConfirmationCloseBeyondPreviousExtremeShort_RejectsNoConfirmation()
+    public void EvaluateAtCurrentCandle_SameCandleConfirmationCloseBeyondPreviousExtremeShort_RejectsThenConfirmsLater()
     {
-        var candles = BuildShortScenario(confirmationMode: "CloseBeyondPreviousExtreme");
-        candles.RemoveAt(candles.Count - 1);
+        var throughRetest = BuildShortWithQualifyingRetest("CloseBeyondPreviousExtreme", includeConfirmation: false);
+        AssertQualifyingRetestPredicate(throughRetest, "CloseBeyondPreviousExtreme", longSide: false);
 
-        var (candidate, reason) = Evaluate(candles, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
+        var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
+        Assert.Null(rejected);
+        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
-        Assert.Null(candidate);
-        Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, reason);
+        var confirmed = BuildShortWithQualifyingRetest("CloseBeyondPreviousExtreme", includeConfirmation: true);
+        var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
+        Assert.NotNull(candidate);
+        Assert.Equal(TradeDirection.Short, candidate!.Direction);
+        Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
+        Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
+        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
     }
 
     [Fact]
@@ -750,6 +792,115 @@ public sealed class PriceStructureBreakoutRetestTests
         }
 
         return candles;
+    }
+
+    /// <summary>
+    /// Retest candle itself satisfies the selected confirmation predicate vs the breakout candle,
+    /// but confirmation still cannot fire at retestIndex.
+    /// </summary>
+    private static List<Candle> BuildLongWithQualifyingRetest(string confirmationMode, bool includeConfirmation)
+    {
+        var candles = BuildBaseStructure(18, 100.00m, bullishSwing: true);
+        var breakoutTime = candles[^1].OpenTimeUtc.AddMinutes(5);
+        // Breakout: open 99.60 close 100.40 high 100.60
+        candles.Add(CreateCandle(breakoutTime, 99.60m, 100.60m, 99.60m, 100.40m));
+        var retestTime = breakoutTime.AddMinutes(5);
+
+        // Qualifying retest for the mode (as if evaluated as confirmation with prev=breakout), plus retest touch.
+        Candle retest = confirmationMode switch
+        {
+            "Engulfing" => CreateCandle(retestTime, 99.50m, 100.70m, 99.95m, 100.55m), // engulfs breakout, bullish, > level
+            "CloseBeyondPreviousExtreme" => CreateCandle(retestTime, 100.10m, 100.80m, 99.95m, 100.70m), // close > prev high 100.60
+            _ => CreateCandle(retestTime, 99.90m, 100.40m, 99.95m, 100.25m) // ReactionClose: bullish close > level
+        };
+        candles.Add(retest);
+
+        if (!includeConfirmation)
+        {
+            return candles;
+        }
+
+        var confirmTime = retestTime.AddMinutes(5);
+        candles.Add(confirmationMode switch
+        {
+            "Engulfing" => CreateCandle(confirmTime, 99.95m, 101.20m, 100.00m, 101.10m),
+            "CloseBeyondPreviousExtreme" => CreateCandle(confirmTime, 100.20m, 101.00m, 100.00m, 100.90m),
+            _ => CreateCandle(confirmTime, 100.10m, 100.90m, 100.00m, 100.80m)
+        });
+        return candles;
+    }
+
+    private static List<Candle> BuildShortWithQualifyingRetest(string confirmationMode, bool includeConfirmation)
+    {
+        var candles = BuildBaseStructure(18, 100.00m, bullishSwing: false);
+        var breakoutTime = candles[^1].OpenTimeUtc.AddMinutes(5);
+        candles.Add(CreateCandle(breakoutTime, 100.40m, 100.40m, 99.40m, 99.60m));
+        var retestTime = breakoutTime.AddMinutes(5);
+
+        Candle retest = confirmationMode switch
+        {
+            "Engulfing" => CreateCandle(retestTime, 100.50m, 100.05m, 99.30m, 99.45m),
+            "CloseBeyondPreviousExtreme" => CreateCandle(retestTime, 99.90m, 100.05m, 99.20m, 99.30m), // close < prev low 99.40
+            _ => CreateCandle(retestTime, 100.10m, 100.05m, 99.70m, 99.80m) // bearish close < level
+        };
+        candles.Add(retest);
+
+        if (!includeConfirmation)
+        {
+            return candles;
+        }
+
+        var confirmTime = retestTime.AddMinutes(5);
+        candles.Add(confirmationMode switch
+        {
+            "Engulfing" => CreateCandle(confirmTime, 100.05m, 100.00m, 98.80m, 98.90m),
+            "CloseBeyondPreviousExtreme" => CreateCandle(confirmTime, 99.70m, 99.80m, 98.90m, 99.00m),
+            _ => CreateCandle(confirmTime, 99.90m, 100.00m, 99.10m, 99.20m)
+        });
+        return candles;
+    }
+
+    private static void AssertQualifyingRetestPredicate(IReadOnlyList<Candle> candles, string mode, bool longSide)
+    {
+        const decimal level = 100.00m;
+        var retest = candles[^1];
+        var prev = candles[^2];
+        if (longSide)
+        {
+            Assert.True(retest.Close > level);
+            if (string.Equals(mode, "ReactionClose", StringComparison.OrdinalIgnoreCase))
+            {
+                Assert.True(retest.Close > retest.Open);
+            }
+            else if (string.Equals(mode, "Engulfing", StringComparison.OrdinalIgnoreCase))
+            {
+                Assert.True(retest.Close > retest.Open);
+                Assert.True(retest.Close >= prev.Open);
+                Assert.True(retest.Open <= prev.Close);
+            }
+            else
+            {
+                Assert.True(retest.Close > prev.High);
+            }
+        }
+        else
+        {
+            Assert.True(retest.Close < level);
+            if (string.Equals(mode, "ReactionClose", StringComparison.OrdinalIgnoreCase))
+            {
+                Assert.True(retest.Close < retest.Open);
+            }
+            else if (string.Equals(mode, "Engulfing", StringComparison.OrdinalIgnoreCase))
+            {
+                Assert.True(retest.Close < retest.Open);
+                Assert.True(retest.Close <= prev.Open);
+                Assert.True(retest.Open >= prev.Close);
+            }
+            else
+            {
+                Assert.True(retest.Close < prev.Low);
+            }
+        }
     }
 
     private static Candle CreateCandle(DateTime openTimeUtc, decimal open, decimal high, decimal low, decimal close)

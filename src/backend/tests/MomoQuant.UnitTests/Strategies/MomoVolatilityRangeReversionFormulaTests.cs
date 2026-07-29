@@ -1,7 +1,15 @@
 using System.Text.Json;
+using Moq;
+using MomoQuant.Application.Ai;
+using MomoQuant.Application.Backtesting;
+using MomoQuant.Application.Strategies;
+using MomoQuant.Application.Strategies.Implementations;
+using MomoQuant.Application.Strategies.Models;
 using MomoQuant.Application.Strategies.MomoRange;
 using MomoQuant.Domain.Enums;
+using MomoQuant.Domain.Indicators;
 using MomoQuant.Domain.MarketData;
+using MomoQuant.Domain.Strategies;
 
 namespace MomoQuant.UnitTests.Strategies;
 
@@ -335,7 +343,7 @@ public sealed class MomoVolatilityRangeReversionFormulaTests
     }
 
     [Fact]
-    public void SameTime_FutureCandleMutation_HasNoEffect()
+    public async Task SameTime_FutureCandleMutation_HasNoEffect_ViaBacktestEngine()
     {
         var clean = BuildValidLong();
         for (var i = 0; i < clean.Count; i++)
@@ -353,29 +361,28 @@ public sealed class MomoVolatilityRangeReversionFormulaTests
             pollutedSource[i].Id = clean[i].Id;
         }
 
-        var last = pollutedSource[^1];
         pollutedSource.Add(new Candle
         {
             Id = 90_001,
-            SymbolId = last.SymbolId,
-            ExchangeId = last.ExchangeId,
-            Timeframe = last.Timeframe,
+            SymbolId = evaluationCandle.SymbolId,
+            ExchangeId = evaluationCandle.ExchangeId,
+            Timeframe = evaluationCandle.Timeframe,
             OpenTimeUtc = evaluationTimeUtc,
             CloseTimeUtc = evaluationTimeUtc.AddMinutes(5),
-            Open = last.Close + 500m,
-            High = last.High + 800m,
-            Low = last.Low + 400m,
-            Close = last.Close + 700m,
-            Volume = last.Volume,
+            Open = evaluationCandle.Close + 500m,
+            High = evaluationCandle.High + 800m,
+            Low = evaluationCandle.Low + 400m,
+            Close = evaluationCandle.Close + 700m,
+            Volume = evaluationCandle.Volume,
             IsClosed = false,
             CreatedAtUtc = evaluationTimeUtc
         });
         pollutedSource.Add(new Candle
         {
             Id = 90_002,
-            SymbolId = last.SymbolId,
-            ExchangeId = last.ExchangeId,
-            Timeframe = last.Timeframe,
+            SymbolId = evaluationCandle.SymbolId,
+            ExchangeId = evaluationCandle.ExchangeId,
+            Timeframe = evaluationCandle.Timeframe,
             OpenTimeUtc = evaluationTimeUtc.AddMinutes(5),
             CloseTimeUtc = evaluationTimeUtc.AddMinutes(10),
             Open = 1m,
@@ -387,26 +394,101 @@ public sealed class MomoVolatilityRangeReversionFormulaTests
             CreatedAtUtc = evaluationTimeUtc.AddMinutes(5)
         });
 
-        // Production path: evaluate fixed index T from clean vs polluted source (prefix through T only).
-        var cleanThroughT = clean.Take(evaluationIndex + 1).ToList();
-        var pollutedThroughT = pollutedSource.Where(c => c.CloseTimeUtc <= evaluationTimeUtc && c.IsClosed).ToList();
-        Assert.Equal(cleanThroughT.Count, pollutedThroughT.Count);
-        Assert.Equal(cleanThroughT[^1].Id, pollutedThroughT[^1].Id);
-        Assert.Equal(cleanThroughT[^1].CloseTimeUtc, pollutedThroughT[^1].CloseTimeUtc);
-
-        var (first, reason1) = Eval(cleanThroughT, Defaults());
-        var (second, reason2) = Eval(pollutedThroughT, Defaults());
-        Assert.NotNull(first);
-        Assert.NotNull(second);
-        Assert.Equal(reason1, reason2);
-        Assert.Equal(first!.Direction, second!.Direction);
-        Assert.Equal(first.EntryPrice, second.EntryPrice);
-        Assert.Equal(first.StopLoss, second.StopLoss);
-        Assert.Equal(first.TakeProfit, second.TakeProfit);
-        Assert.Equal(first.Strength, second.Strength);
-        Assert.Equal(first.SetupFingerprint, second.SetupFingerprint);
-        Assert.Equal(first.RawDataJson, second.RawDataJson);
         Assert.True(pollutedSource.Count > clean.Count);
+        Assert.Contains(pollutedSource, c => c.Id == 90_001 && !c.IsClosed);
+        Assert.Contains(pollutedSource, c => c.Id == 90_002 && c.CloseTimeUtc > evaluationTimeUtc);
+
+        var prepared = new PreparedStrategy
+        {
+            Strategy = new Strategy
+            {
+                Id = 43,
+                Code = StrategyCode.MomoVolatilityRangeReversion,
+                Name = "Range",
+                IsEnabled = true,
+                Version = "1.0.0"
+            },
+            Plugin = new MomoVolatilityRangeReversionStrategy()
+        };
+
+        async Task<(StrategyEvaluationCaptureRecord Capture, StrategyEvaluationResult Result)> RunAsync(
+            IReadOnlyList<Candle> source)
+        {
+            var recording = new ClosedHtfCaptureHarness.RecordingStrategyEngine(new StrategyEvaluationCaptureRecording());
+            var parameterProvider = new Mock<IStrategyParameterProvider>();
+            parameterProvider
+                .Setup(p => p.GetParametersAsync(
+                    It.IsAny<long>(),
+                    It.IsAny<Timeframe>(),
+                    It.IsAny<long?>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Defaults());
+            var engine = new BacktestEngine(
+                recording,
+                parameterProvider.Object,
+                ClosedHtfCaptureHarness.CreateApprovingRiskEngine(),
+                new Mock<IAiIntegrationService>().Object,
+                ClosedHtfCaptureHarness.CreateNoopExecutionProvider(),
+                ClosedHtfCaptureHarness.CreatePassthroughEnricher());
+            var snapshots = new Dictionary<long, IndicatorSnapshot>();
+            foreach (var candle in source.Where(c => c.IsClosed && c.CloseTimeUtc <= evaluationTimeUtc))
+            {
+                snapshots[candle.Id] = new IndicatorSnapshot
+                {
+                    CandleId = candle.Id,
+                    SymbolId = candle.SymbolId,
+                    Timeframe = candle.Timeframe,
+                    Ema20 = candle.Close,
+                    Ema50 = candle.Close,
+                    Ema200 = candle.Close,
+                    Atr14 = 10m,
+                    CalculatedAtUtc = candle.CloseTimeUtc,
+                    CreatedAtUtc = candle.CloseTimeUtc
+                };
+            }
+
+            var dataset = new BacktestDataset
+            {
+                SymbolId = 1,
+                SymbolName = "BTCUSDT",
+                Timeframe = Timeframe.M5,
+                Candles = source,
+                IndicatorSnapshots = snapshots,
+                EvaluationIndices = [evaluationIndex],
+                HigherTimeframeSeriesByTimeframe = new Dictionary<Timeframe, IReadOnlyList<Candle>>()
+            };
+
+            await engine.ProcessCandleAtIndexAsync(
+                ClosedHtfCaptureHarness.CreateBacktestContext(),
+                dataset,
+                [prepared],
+                evaluationIndex: 0);
+
+            return (Assert.Single(recording.Capture.Records), Assert.Single(recording.Results));
+        }
+
+        var cleanRun = await RunAsync(clean);
+        var pollutedRun = await RunAsync(pollutedSource);
+
+        Assert.Equal(evaluationTimeUtc, cleanRun.Capture.EvaluatedAtUtc);
+        Assert.Equal(evaluationTimeUtc, pollutedRun.Capture.EvaluatedAtUtc);
+        Assert.Equal(clean[^1].Id, cleanRun.Capture.Candles[^1].Id);
+        Assert.Equal(clean[^1].CloseTimeUtc, cleanRun.Capture.Candles[^1].CloseTimeUtc);
+        Assert.Equal(pollutedRun.Capture.Candles[^1].Id, cleanRun.Capture.Candles[^1].Id);
+        Assert.Equal(pollutedRun.Capture.Candles[^1].CloseTimeUtc, cleanRun.Capture.Candles[^1].CloseTimeUtc);
+        Assert.All(pollutedRun.Capture.Candles, c => Assert.True(c.IsClosed));
+        Assert.All(pollutedRun.Capture.Candles, c => Assert.True(c.CloseTimeUtc <= evaluationTimeUtc));
+        Assert.DoesNotContain(pollutedRun.Capture.Candles, c => c.Id is 90_001 or 90_002);
+        Assert.Equal(
+            cleanRun.Capture.Candles.Select(c => (c.Id, c.CloseTimeUtc, c.Open, c.High, c.Low, c.Close)).ToArray(),
+            pollutedRun.Capture.Candles.Select(c => (c.Id, c.CloseTimeUtc, c.Open, c.High, c.Low, c.Close)).ToArray());
+        Assert.Equal(cleanRun.Result.Reason, pollutedRun.Result.Reason);
+        Assert.Equal(cleanRun.Result.Direction, pollutedRun.Result.Direction);
+        Assert.Equal(cleanRun.Result.EntryPrice, pollutedRun.Result.EntryPrice);
+        Assert.Equal(cleanRun.Result.SuggestedStopLoss, pollutedRun.Result.SuggestedStopLoss);
+        Assert.Equal(cleanRun.Result.SuggestedTakeProfit, pollutedRun.Result.SuggestedTakeProfit);
+        Assert.Equal(cleanRun.Result.Strength, pollutedRun.Result.Strength);
+        Assert.Equal(cleanRun.Result.RawDataJson, pollutedRun.Result.RawDataJson);
     }
 
     [Fact]
@@ -606,10 +688,29 @@ public sealed class MomoVolatilityRangeReversionFormulaTests
     [Fact]
     public void StrengthBelow65_Rejected()
     {
-        var p = Defaults();
-        p["minStrength"] = "99.9";
-        var (c, reason) = Eval(BuildValidLong(), p);
-        Assert.Null(c);
+        Assert.Equal("65", Defaults()["minStrength"]);
+        var candles = BuildLongMigrated(150m, 40m, 22m, 220, 14, 2, 4.0m, 400);
+
+        var probeParams = Defaults();
+        probeParams["minStrength"] = "0";
+        var (probe, probeReason) = Eval(candles, probeParams);
+        Assert.NotNull(probe);
+        Assert.Equal(MomoVolatilityRangeRejectionCodes.EntryConfirmed, probeReason);
+        using var doc = JsonDocument.Parse(probe!.RawDataJson);
+        var breakdown = doc.RootElement.GetProperty("strengthBreakdown");
+        Assert.Equal(18.731188002385758946215747712m, breakdown.GetProperty("rangeQuality").GetDecimal());
+        Assert.Equal(12.925504363214509174426277570m, breakdown.GetProperty("volatilityQuality").GetDecimal());
+        Assert.Equal(12.333221090782944646171241788m, breakdown.GetProperty("rsiExtremity").GetDecimal());
+        Assert.Equal(5.683229813664596273291925465m, breakdown.GetProperty("wickQuality").GetDecimal());
+        Assert.Equal(11.129960765613160630042958828m, breakdown.GetProperty("rewardRiskQuality").GetDecimal());
+        Assert.Equal(4.1698187663240804193378670650m, breakdown.GetProperty("trendFlatness").GetDecimal());
+        Assert.Equal(64.972922801985050089486018428m, breakdown.GetProperty("total").GetDecimal());
+        Assert.True(breakdown.GetProperty("total").GetDecimal() < 65m);
+
+        var subjectParams = Defaults();
+        Assert.Equal("65", subjectParams["minStrength"]);
+        var (candidate, reason) = Eval(candles, subjectParams);
+        Assert.Null(candidate);
         Assert.Equal(MomoVolatilityRangeRejectionCodes.StrengthBelowMinimum, reason);
     }
 

@@ -206,7 +206,6 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
         Assert.Equal("true", NormalizeDecimalish(contract["requireHistogramExpansion"]));
         Assert.Equal("2.5", NormalizeDecimalish(contract["fixedRewardRisk"]));
 
-        // Shared MySQL fixture: restore contract values so prior mutation tests cannot poison normalization proofs.
         await RestoreAdaptiveSymbolNullContractAsync(db, strategy.Id, Timeframe.M5);
 
         var boolRow = await db.StrategyParameters.SingleAsync(p =>
@@ -227,7 +226,7 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     }
 
     [Fact]
-    public async Task Seeder_UpgradesProvenanced231AAdaptiveRewardRiskSeedFrom20To250()
+    public async Task Seeder_PreservesUnprovenancedAdaptiveRewardRiskOf20()
     {
         await using var scope = _factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
@@ -235,65 +234,8 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
-        var row = await db.StrategyParameters.SingleAsync(p =>
-            p.StrategyId == strategy.Id
-            && p.Timeframe == Timeframe.M5
-            && p.SymbolId == null
-            && p.ParameterKey == "fixedRewardRisk");
+        await DeleteAnySeedProvenanceRowsAsync(db, strategy.Id);
 
-        row.ParameterValue = "2.0";
-        row.IsActive = true;
-        row.UpdatedAtUtc = DateTime.UtcNow;
-
-        var provenance = await db.StrategyParameters.SingleOrDefaultAsync(p =>
-            p.StrategyId == strategy.Id
-            && p.Timeframe == Timeframe.M5
-            && p.SymbolId == null
-            && p.ParameterKey == "seedProvenance");
-        if (provenance is null)
-        {
-            provenance = new StrategyParameter
-            {
-                StrategyId = strategy.Id,
-                ParameterKey = "seedProvenance",
-                ParameterValue = "231A1-adaptive-rr-2.0",
-                ValueType = SettingValueType.String,
-                Timeframe = Timeframe.M5,
-                SymbolId = null,
-                IsActive = false,
-                CreatedAtUtc = DateTime.UtcNow,
-                UpdatedAtUtc = DateTime.UtcNow
-            };
-            db.StrategyParameters.Add(provenance);
-        }
-        else
-        {
-            provenance.ParameterValue = "231A1-adaptive-rr-2.0";
-            provenance.IsActive = false;
-            provenance.UpdatedAtUtc = DateTime.UtcNow;
-        }
-
-        await db.SaveChangesAsync();
-
-        await seeder.SeedAsync();
-
-        await db.Entry(row).ReloadAsync();
-        await db.Entry(provenance).ReloadAsync();
-        Assert.Equal(NormalizeDecimalish("2.50"), NormalizeDecimalish(row.ParameterValue));
-        Assert.True(row.IsActive);
-        Assert.Equal("231A1-adaptive-v1", provenance.ParameterValue);
-        Assert.False(provenance.IsActive);
-    }
-
-    [Fact]
-    public async Task Seeder_PreservesUserEditedAdaptiveRewardRiskOf20WithoutProvenance()
-    {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
-        await seeder.SeedAsync();
-
-        var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
         var row = await db.StrategyParameters.SingleAsync(p =>
             p.StrategyId == strategy.Id
             && p.Timeframe == Timeframe.M5
@@ -302,17 +244,6 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
 
         row.ParameterValue = "2.0";
         row.UpdatedAtUtc = DateTime.UtcNow;
-
-        var provenance = await db.StrategyParameters.SingleOrDefaultAsync(p =>
-            p.StrategyId == strategy.Id
-            && p.Timeframe == Timeframe.M5
-            && p.SymbolId == null
-            && p.ParameterKey == "seedProvenance");
-        if (provenance is not null)
-        {
-            db.StrategyParameters.Remove(provenance);
-        }
-
         await db.SaveChangesAsync();
 
         await seeder.SeedAsync();
@@ -349,12 +280,41 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     }
 
     [Fact]
-    public async Task Seeder_AdaptiveRewardRiskReseed_IsIdempotentWithProvenance()
+    public async Task Seeder_AdaptiveRewardRiskReseed_IsIdempotent()
     {
         await using var scope = _factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
         var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await RestoreAdaptiveSymbolNullContractAsync(
+            db,
+            (await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout)).Id,
+            Timeframe.M5);
         await seeder.SeedAsync();
+        await seeder.SeedAsync();
+
+        var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
+        var contract = MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract();
+        var active = await db.StrategyParameters
+            .Where(p => p.StrategyId == strategy.Id && p.Timeframe == Timeframe.M5 && p.SymbolId == null && p.IsActive)
+            .ToListAsync();
+
+        Assert.Equal(contract.Count, active.Count);
+        Assert.Equal(active.Count, active.Select(p => p.ParameterKey.ToLowerInvariant()).Distinct().Count());
+        var row = Assert.Single(active, p => string.Equals(p.ParameterKey, "fixedRewardRisk", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(NormalizeDecimalish("2.50"), NormalizeDecimalish(row.ParameterValue));
+
+        var provenanceRows = await db.StrategyParameters
+            .Where(p => p.StrategyId == strategy.Id && p.ParameterKey == "seedProvenance")
+            .ToListAsync();
+        Assert.Empty(provenanceRows);
+    }
+
+    [Fact]
+    public async Task Seeder_BlankAdaptiveRewardRisk_BackfillsTo250()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
@@ -362,16 +322,72 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
             p.StrategyId == strategy.Id
             && p.Timeframe == Timeframe.M5
             && p.SymbolId == null
-            && p.ParameterKey == "fixedRewardRisk"
-            && p.IsActive);
-        Assert.Equal(NormalizeDecimalish("2.50"), NormalizeDecimalish(row.ParameterValue));
+            && p.ParameterKey == "fixedRewardRisk");
 
-        var provenanceRows = await db.StrategyParameters
-            .Where(p => p.StrategyId == strategy.Id && p.ParameterKey == "seedProvenance" && p.Timeframe == Timeframe.M5 && p.SymbolId == null)
+        row.ParameterValue = "   ";
+        row.UpdatedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
+        await seeder.SeedAsync();
+        await db.Entry(row).ReloadAsync();
+        Assert.Equal(NormalizeDecimalish("2.50"), NormalizeDecimalish(row.ParameterValue));
+        Assert.True(row.IsActive);
+    }
+
+    [Fact]
+    public async Task Seeder_MissingAdaptiveDefaults_Receive250AndExactContractKeys()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await seeder.SeedAsync();
+
+        var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
+        var existing = await db.StrategyParameters
+            .Where(p => p.StrategyId == strategy.Id && p.Timeframe == Timeframe.M5 && p.SymbolId == null)
             .ToListAsync();
-        Assert.Single(provenanceRows);
-        Assert.Equal("231A1-adaptive-v1", provenanceRows[0].ParameterValue);
-        Assert.False(provenanceRows[0].IsActive);
+        db.StrategyParameters.RemoveRange(existing);
+        await DeleteAnySeedProvenanceRowsAsync(db, strategy.Id);
+        await db.SaveChangesAsync();
+
+        await seeder.SeedAsync();
+
+        var contract = MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract();
+        var active = await db.StrategyParameters
+            .Where(p => p.StrategyId == strategy.Id && p.Timeframe == Timeframe.M5 && p.SymbolId == null && p.IsActive)
+            .ToListAsync();
+        Assert.Equal(contract.Count, active.Count);
+        Assert.Equal(active.Count, active.Select(p => p.ParameterKey.ToLowerInvariant()).Distinct().Count());
+        foreach (var (key, expected) in contract)
+        {
+            var row = Assert.Single(active, p => string.Equals(p.ParameterKey, key, StringComparison.OrdinalIgnoreCase));
+            Assert.Equal(NormalizeDecimalish(expected), NormalizeDecimalish(row.ParameterValue));
+        }
+
+        Assert.Equal(NormalizeDecimalish("2.50"), NormalizeDecimalish(Assert.Single(active, p =>
+            string.Equals(p.ParameterKey, "fixedRewardRisk", StringComparison.OrdinalIgnoreCase)).ParameterValue));
+
+        var provenance = await db.StrategyParameters
+            .Where(p => p.StrategyId == strategy.Id && p.ParameterKey == "seedProvenance")
+            .ToListAsync();
+        Assert.Empty(provenance);
+    }
+
+    [Fact]
+    public async Task Seeder_DoesNotInsertHiddenSeedProvenanceParameter()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
+        await DeleteAnySeedProvenanceRowsAsync(db, strategy.Id);
+        await seeder.SeedAsync();
+        await seeder.SeedAsync();
+
+        var provenance = await db.StrategyParameters
+            .Where(p => p.StrategyId == strategy.Id && p.ParameterKey == "seedProvenance")
+            .ToListAsync();
+        Assert.Empty(provenance);
     }
 
     [Fact]
@@ -478,7 +494,7 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     }
 
     /// <summary>
-    /// Restores Adaptive symbol-null fixedRewardRisk + inactive seedProvenance so shared MySQL
+    /// Restores Adaptive symbol-null fixedRewardRisk to the contract default so shared MySQL
     /// integration state does not leak user-edit mutation fixtures into later contract proofs.
     /// </summary>
     private static async Task RestoreAdaptiveSymbolNullContractAsync(
@@ -486,6 +502,8 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
         long strategyId,
         Timeframe timeframe)
     {
+        await DeleteAnySeedProvenanceRowsAsync(db, strategyId);
+
         var contract = MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract();
         var rr = await db.StrategyParameters.SingleAsync(p =>
             p.StrategyId == strategyId
@@ -495,34 +513,20 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
         rr.ParameterValue = contract["fixedRewardRisk"];
         rr.IsActive = true;
         rr.UpdatedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+    }
 
-        var provenance = await db.StrategyParameters.SingleOrDefaultAsync(p =>
-            p.StrategyId == strategyId
-            && p.Timeframe == timeframe
-            && p.SymbolId == null
-            && p.ParameterKey == "seedProvenance");
-        if (provenance is null)
+    private static async Task DeleteAnySeedProvenanceRowsAsync(MomoQuantDbContext db, long strategyId)
+    {
+        var provenance = await db.StrategyParameters
+            .Where(p => p.StrategyId == strategyId && p.ParameterKey == "seedProvenance")
+            .ToListAsync();
+        if (provenance.Count == 0)
         {
-            db.StrategyParameters.Add(new StrategyParameter
-            {
-                StrategyId = strategyId,
-                ParameterKey = "seedProvenance",
-                ParameterValue = "231A1-adaptive-v1",
-                ValueType = SettingValueType.String,
-                Timeframe = timeframe,
-                SymbolId = null,
-                IsActive = false,
-                CreatedAtUtc = DateTime.UtcNow,
-                UpdatedAtUtc = DateTime.UtcNow
-            });
-        }
-        else
-        {
-            provenance.ParameterValue = "231A1-adaptive-v1";
-            provenance.IsActive = false;
-            provenance.UpdatedAtUtc = DateTime.UtcNow;
+            return;
         }
 
+        db.StrategyParameters.RemoveRange(provenance);
         await db.SaveChangesAsync();
     }
 

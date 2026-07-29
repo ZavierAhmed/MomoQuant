@@ -1089,7 +1089,7 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
         return low;
     }
 
-    private static decimal[] ComputeEma(IReadOnlyList<decimal> values, int period)
+    internal static decimal[] ComputeEma(IReadOnlyList<decimal> values, int period)
     {
         var result = new decimal[values.Count];
         if (values.Count < period || period <= 0)
@@ -1143,7 +1143,7 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
         return Math.Max(candle.High - candle.Low, Math.Max(Math.Abs(candle.High - previousClose), Math.Abs(candle.Low - previousClose)));
     }
 
-    private static (decimal[] MacdLine, decimal[] SignalLine, decimal[] Histogram) ComputeMacd(
+    internal static (decimal[] MacdLine, decimal[] SignalLine, decimal[] Histogram) ComputeMacd(
         IReadOnlyList<decimal> closes,
         int fastPeriod,
         int slowPeriod,
@@ -1186,7 +1186,7 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
         return (macdLine, signalLine, histogram);
     }
 
-    private static bool TryGetEma(decimal[] values, int index, int period, out decimal value)
+    internal static bool TryGetEma(decimal[] values, int index, int period, out decimal value)
     {
         if (index < period - 1 || index >= values.Length)
         {
@@ -1210,7 +1210,7 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
         return true;
     }
 
-    private static bool TryGetMacdHistogram(
+    internal static bool TryGetMacdHistogram(
         decimal[] histogram,
         int index,
         MomoAdaptiveMtfParameters settings,
