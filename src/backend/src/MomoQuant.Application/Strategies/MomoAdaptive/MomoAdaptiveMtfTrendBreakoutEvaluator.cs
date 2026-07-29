@@ -189,7 +189,6 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                 htfClose,
                 execEmaFast,
                 execEmaSlow,
-                confirmationAtrFast,
                 histogram,
                 previousHistogram,
                 ltfAtrFast,
@@ -218,7 +217,6 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                 htfClose,
                 execEmaFast,
                 execEmaSlow,
-                confirmationAtrFast,
                 histogram,
                 previousHistogram,
                 ltfAtrFast,
@@ -347,7 +345,6 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
         decimal htfClose,
         decimal execEmaFast,
         decimal execEmaSlow,
-        decimal confirmationAtrFast,
         decimal histogram,
         decimal previousHistogram,
         decimal[] ltfAtrFast,
@@ -503,13 +500,15 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
             }
 
             var entry = candles[currentIndex].Close;
-            if (entry - brokenLevel.Value > settings.MaxBreakoutChaseAtr * confirmationAtrFast)
+            if (entry - brokenLevel.Value > settings.MaxBreakoutChaseAtr * retestEventAtrFast)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.BreakoutOverextended);
                 continue;
             }
 
-            var stop = retestLow - (settings.StopBufferAtr * confirmationAtrFast);
+            // Stop and chase use retest event-time ATR — not confirmation/latest ATR — so post-retest
+            // confirmation wicks cannot rewrite risk geometry after the setup events are fixed.
+            var stop = retestLow - (settings.StopBufferAtr * retestEventAtrFast);
             if (stop >= entry || stop <= 0m || entry <= 0m)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.InvalidStop);
@@ -556,7 +555,7 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                 previousHistogram,
                 brokenLevel.Value,
                 retestLow,
-                confirmationAtrFast);
+                retestEventAtrFast);
 
             var rawStrength = strengthBreakdown.Total;
             if (rawStrength < settings.MinStrength)
@@ -593,7 +592,8 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                     breakoutAtrFast,
                     breakoutAtrSlow,
                     retestAtrFast = retestEventAtrFast,
-                    confirmationAtrFast,
+                    // Risk ATR at confirmation is the retest event-time ATR (not latest-bar ATR).
+                    confirmationAtrFast = retestEventAtrFast,
                     retestExtreme = retestLow,
                     stopBufferAtr = settings.StopBufferAtr
                 }
@@ -617,7 +617,6 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
         decimal htfClose,
         decimal execEmaFast,
         decimal execEmaSlow,
-        decimal confirmationAtrFast,
         decimal histogram,
         decimal previousHistogram,
         decimal[] ltfAtrFast,
@@ -773,13 +772,14 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
             }
 
             var entry = candles[currentIndex].Close;
-            if (brokenLevel.Value - entry > settings.MaxBreakoutChaseAtr * confirmationAtrFast)
+            if (brokenLevel.Value - entry > settings.MaxBreakoutChaseAtr * retestEventAtrFast)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.BreakoutOverextended);
                 continue;
             }
 
-            var stop = retestHigh + (settings.StopBufferAtr * confirmationAtrFast);
+            // Stop and chase use retest event-time ATR — not confirmation/latest ATR.
+            var stop = retestHigh + (settings.StopBufferAtr * retestEventAtrFast);
             if (stop <= entry || stop <= 0m || entry <= 0m)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.InvalidStop);
@@ -824,7 +824,7 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                 previousHistogram,
                 brokenLevel.Value,
                 retestHigh,
-                confirmationAtrFast);
+                retestEventAtrFast);
 
             var rawStrength = strengthBreakdown.Total;
             if (rawStrength < settings.MinStrength)
@@ -861,7 +861,8 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                     breakoutAtrFast,
                     breakoutAtrSlow,
                     retestAtrFast = retestEventAtrFast,
-                    confirmationAtrFast,
+                    // Risk ATR at confirmation is the retest event-time ATR (not latest-bar ATR).
+                    confirmationAtrFast = retestEventAtrFast,
                     retestExtreme = retestHigh,
                     stopBufferAtr = settings.StopBufferAtr
                 }

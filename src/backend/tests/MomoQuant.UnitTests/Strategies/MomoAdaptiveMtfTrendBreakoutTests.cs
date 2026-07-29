@@ -63,12 +63,12 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
         Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, reason);
         Assert.Equal(TradeDirection.Long, candidate!.Direction);
         Assert.Equal(51540.000m, candidate.EntryPrice);
-        Assert.Equal(51262.368710296346047451164471m, candidate.StopLoss);
-        Assert.Equal(52234.078224259134881372088822m, candidate.TakeProfit);
+        Assert.Equal(51260.643226472988051101254046m, candidate.StopLoss);
+        Assert.Equal(52238.391933817529872246864885m, candidate.TakeProfit);
         var risk = candidate.EntryPrice - candidate.StopLoss;
         var reward = candidate.TakeProfit - candidate.EntryPrice;
         Assert.Equal(2.50m, Math.Round(reward / risk, 8));
-        Assert.Equal(71.63470143201214509425913407m, candidate.Strength);
+        Assert.Equal(71.570666073762475131384281568m, candidate.Strength);
         Assert.Equal("6046B1A38922BED1", candidate.SetupFingerprint);
         Assert.Equal("Long MTF trend breakout retest confirmed.", candidate.Reason);
 
@@ -77,9 +77,9 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
         Assert.Equal(26.219979440800739041582574400m, breakdown.ExecutionTrend);
         Assert.Equal(88.41181306137762195365436734m, breakdown.VolatilityQuality);
         Assert.Equal(100m, breakdown.BreakoutQuality);
-        Assert.Equal(45.454746984890453691257796790m, breakdown.Momentum);
-        Assert.Equal(69.721669105004055879060065890m, breakdown.RetestQuality);
-        Assert.Equal(71.63470143201214509425913407m, breakdown.Total);
+        Assert.Equal(44.303996640375170448326299680m, breakdown.Momentum);
+        Assert.Equal(70.488207300021319344742447990m, breakdown.RetestQuality);
+        Assert.Equal(71.570666073762475131384281568m, breakdown.Total);
         Assert.Equal(breakdown.Total, candidate.Strength);
 
         dynamic setup = candidate.Setup!;
@@ -103,12 +103,12 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
         Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, reason);
         Assert.Equal(TradeDirection.Short, candidate!.Direction);
         Assert.Equal(48460.000m, candidate.EntryPrice);
-        Assert.Equal(48737.631289703653952548835529m, candidate.StopLoss);
-        Assert.Equal(47765.921775740865118627911178m, candidate.TakeProfit);
+        Assert.Equal(48739.356773527011948898745954m, candidate.StopLoss);
+        Assert.Equal(47761.608066182470127753135115m, candidate.TakeProfit);
         var risk = candidate.StopLoss - candidate.EntryPrice;
         var reward = candidate.EntryPrice - candidate.TakeProfit;
         Assert.Equal(2.50m, Math.Round(reward / risk, 8));
-        Assert.Equal(71.823998383593273339932049937m, candidate.Strength);
+        Assert.Equal(71.759963025343603377057197435m, candidate.Strength);
         Assert.Equal("F99C1578DBF02B61", candidate.SetupFingerprint);
         Assert.Equal("Short MTF trend breakout retest confirmed.", candidate.Reason);
 
@@ -117,9 +117,9 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
         Assert.Equal(27.355761150287508515620069600m, breakdown.ExecutionTrend);
         Assert.Equal(88.41181306137762195365436734m, breakdown.VolatilityQuality);
         Assert.Equal(100m, breakdown.BreakoutQuality);
-        Assert.Equal(45.454746984890453691257796790m, breakdown.Momentum);
-        Assert.Equal(69.721669105004055879060065890m, breakdown.RetestQuality);
-        Assert.Equal(71.823998383593273339932049937m, breakdown.Total);
+        Assert.Equal(44.303996640375170448326299680m, breakdown.Momentum);
+        Assert.Equal(70.488207300021319344742447990m, breakdown.RetestQuality);
+        Assert.Equal(71.759963025343603377057197435m, breakdown.Total);
         Assert.Equal(breakdown.Total, candidate.Strength);
 
         dynamic setup = candidate.Setup!;
@@ -616,9 +616,9 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
         Assert.Equal(25.772858607853959728801751200m, breakdown.ExecutionTrend);
         Assert.Equal(88.41181306137762195365436734m, breakdown.VolatilityQuality);
         Assert.Equal(100m, breakdown.BreakoutQuality);
-        Assert.Equal(44.973641119937106886979454510m, breakdown.Momentum);
-        Assert.Equal(40.202941371443130486587024600m, breakdown.RetestQuality);
-        Assert.Equal(66.560209026768636509337099608m, breakdown.Total);
+        Assert.Equal(43.820053421294158475631251240m, breakdown.Momentum);
+        Assert.Equal(41.736754278985423924115502240m, breakdown.RetestQuality);
+        Assert.Equal(66.623579894918527347033812003m, breakdown.Total);
         Assert.True(breakdown.Total < 70m);
 
         var (candidate, reason) = Evaluate(ltf, htf, parameters, MarketRegime.Breakout);
@@ -729,46 +729,76 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
     [Fact]
     public void EvaluateAtCurrentCandle_EventTimeBreakoutAtr_ExactAndPostEventOhlcMutationHasNoEffect()
     {
+        // Independently frozen from AdaptiveDefaultFixtures.BuildValidLong construction
+        // (2700 warmup + 40 box + breakout/retest/confirm = 2743 bars, indices 0..2742).
+        const int expectedBreakoutIndex = 2740;
+        const int expectedRetestIndex = 2741;
+        const int expectedConfirmationIndex = 2742;
+        var expectedBreakoutCloseUtc = new DateTime(2024, 1, 10, 12, 25, 0, DateTimeKind.Utc);
+        var expectedRetestCloseUtc = new DateTime(2024, 1, 10, 12, 30, 0, DateTimeKind.Utc);
+        var expectedConfirmationCloseUtc = new DateTime(2024, 1, 10, 12, 35, 0, DateTimeKind.Utc);
+
         var (ltf, htf) = AdaptiveDefaultFixtures.BuildValidLong(Start);
+        Assert.Equal(2743, ltf.Count);
+        Assert.Equal(expectedBreakoutCloseUtc, ltf[expectedBreakoutIndex].CloseTimeUtc);
+        Assert.Equal(expectedRetestCloseUtc, ltf[expectedRetestIndex].CloseTimeUtc);
+        Assert.Equal(expectedConfirmationCloseUtc, ltf[expectedConfirmationIndex].CloseTimeUtc);
+
         var settings = MomoAdaptiveMtfTrendBreakoutEvaluator.ReadParameters(Defaults());
-        var atrFast = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeWilderAtrSeries(ltf, settings.FastAtrPeriod);
-        var atrSlow = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeWilderAtrSeries(ltf, settings.SlowAtrPeriod);
+        var cleanAtrFast = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeWilderAtrSeries(ltf, settings.FastAtrPeriod);
+        var cleanAtrSlow = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeWilderAtrSeries(ltf, settings.SlowAtrPeriod);
 
         var (candidate, reason) = Evaluate(ltf, htf, Defaults(), MarketRegime.Breakout);
         Assert.NotNull(candidate);
         Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, reason);
         dynamic setup = candidate!.Setup!;
-        int breakoutIndex = setup.breakoutIndex;
-        int retestIndex = setup.retestIndex;
-        var breakoutTs = ltf[breakoutIndex].CloseTimeUtc;
-        var retestTs = ltf[retestIndex].CloseTimeUtc;
-        Assert.Equal(atrFast[breakoutIndex], (decimal)setup.breakoutAtrFast);
-        Assert.Equal(atrSlow[breakoutIndex], (decimal)setup.breakoutAtrSlow);
+        Assert.Equal(expectedBreakoutIndex, (int)setup.breakoutIndex);
+        Assert.Equal(expectedRetestIndex, (int)setup.retestIndex);
+        Assert.Equal(expectedConfirmationIndex, (int)setup.confirmationIndex);
+        Assert.Equal(cleanAtrFast[expectedBreakoutIndex], (decimal)setup.breakoutAtrFast);
+        Assert.Equal(cleanAtrSlow[expectedBreakoutIndex], (decimal)setup.breakoutAtrSlow);
         Assert.Equal(349.05954976083357099324744597m, (decimal)setup.breakoutAtrFast);
         Assert.Equal(197.22523880450493957184368274m, (decimal)setup.breakoutAtrSlow);
         Assert.Equal(340.78386763505974449372977126m, (decimal)setup.retestAtrFast);
 
-        // Mutate confirmation High/Low after breakout while preserving true range, Open, and Close so
-        // event ATRs and the complete candidate remain identical, yet mutated OHLC reaches evaluation.
+        var cleanConfirm = ltf[expectedConfirmationIndex];
+        var previousClose = ltf[expectedConfirmationIndex - 1].Close;
+        var cleanTr = TrueRangeOf(cleanConfirm, previousClose);
+
         var mutated = ltf.Select(c => CloneLtf(c, c.Open, c.High, c.Low, c.Close)).ToList();
-        Assert.True(mutated.Count - 1 > breakoutIndex);
-        var confirmIndex = mutated.Count - 1;
-        var before = mutated[confirmIndex];
-        mutated[confirmIndex] = MutateHighLowPreservingTrueRange(before, mutated[confirmIndex - 1].Close);
-        AssertValidOhlc(mutated[confirmIndex]);
-        Assert.NotEqual(before.High, mutated[confirmIndex].High);
-        Assert.NotEqual(before.Low, mutated[confirmIndex].Low);
-        Assert.Equal(before.Open, mutated[confirmIndex].Open);
-        Assert.Equal(before.Close, mutated[confirmIndex].Close);
+        mutated[expectedConfirmationIndex] = MutateConfirmationHighLowChangingTrueRange(
+            cleanConfirm,
+            previousClose);
+        Assert.Equal(ltf.Count, mutated.Count);
+        Assert.Same(mutated[expectedConfirmationIndex], mutated[^1]);
+        AssertValidOhlc(mutated[expectedConfirmationIndex]);
+        Assert.Equal(cleanConfirm.Open, mutated[expectedConfirmationIndex].Open);
+        Assert.Equal(cleanConfirm.Close, mutated[expectedConfirmationIndex].Close);
+        Assert.Equal(cleanConfirm.OpenTimeUtc, mutated[expectedConfirmationIndex].OpenTimeUtc);
+        Assert.Equal(cleanConfirm.CloseTimeUtc, mutated[expectedConfirmationIndex].CloseTimeUtc);
+        Assert.NotEqual(cleanConfirm.High, mutated[expectedConfirmationIndex].High);
+        Assert.NotEqual(cleanConfirm.Low, mutated[expectedConfirmationIndex].Low);
+        var mutatedTr = TrueRangeOf(mutated[expectedConfirmationIndex], previousClose);
+        Assert.NotEqual(cleanTr, mutatedTr);
+
+        var mutatedAtrFast = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeWilderAtrSeries(mutated, settings.FastAtrPeriod);
+        var mutatedAtrSlow = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeWilderAtrSeries(mutated, settings.SlowAtrPeriod);
+        Assert.Equal(cleanAtrFast[expectedBreakoutIndex], mutatedAtrFast[expectedBreakoutIndex]);
+        Assert.Equal(cleanAtrSlow[expectedBreakoutIndex], mutatedAtrSlow[expectedBreakoutIndex]);
+        Assert.Equal(cleanAtrFast[expectedRetestIndex], mutatedAtrFast[expectedRetestIndex]);
+        Assert.NotEqual(cleanAtrFast[expectedConfirmationIndex], mutatedAtrFast[expectedConfirmationIndex]);
+        Assert.NotEqual(cleanAtrSlow[expectedConfirmationIndex], mutatedAtrSlow[expectedConfirmationIndex]);
 
         var (mutatedCandidate, mutatedReason) = Evaluate(mutated, htf, Defaults(), MarketRegime.Breakout);
         Assert.NotNull(mutatedCandidate);
         Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, mutatedReason);
         dynamic mutatedSetup = mutatedCandidate!.Setup!;
-        Assert.Equal(breakoutIndex, (int)mutatedSetup.breakoutIndex);
-        Assert.Equal(retestIndex, (int)mutatedSetup.retestIndex);
-        Assert.Equal(breakoutTs, mutated[breakoutIndex].CloseTimeUtc);
-        Assert.Equal(retestTs, mutated[retestIndex].CloseTimeUtc);
+        Assert.Equal(expectedBreakoutIndex, (int)mutatedSetup.breakoutIndex);
+        Assert.Equal(expectedRetestIndex, (int)mutatedSetup.retestIndex);
+        Assert.Equal(expectedConfirmationIndex, (int)mutatedSetup.confirmationIndex);
+        Assert.Equal(expectedBreakoutCloseUtc, mutated[expectedBreakoutIndex].CloseTimeUtc);
+        Assert.Equal(expectedRetestCloseUtc, mutated[expectedRetestIndex].CloseTimeUtc);
+        Assert.Equal(expectedConfirmationCloseUtc, mutated[expectedConfirmationIndex].CloseTimeUtc);
         Assert.Equal((decimal)setup.breakoutAtrFast, (decimal)mutatedSetup.breakoutAtrFast);
         Assert.Equal((decimal)setup.breakoutAtrSlow, (decimal)mutatedSetup.breakoutAtrSlow);
         Assert.Equal((decimal)setup.retestAtrFast, (decimal)mutatedSetup.retestAtrFast);
@@ -783,41 +813,70 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
     [Fact]
     public void EvaluateAtCurrentCandle_EventTimeRetestAtr_ExactAndPostEventOhlcMutationHasNoEffect()
     {
+        const int expectedBreakoutIndex = 2740;
+        const int expectedRetestIndex = 2741;
+        const int expectedConfirmationIndex = 2742;
+        var expectedBreakoutCloseUtc = new DateTime(2024, 1, 10, 12, 25, 0, DateTimeKind.Utc);
+        var expectedRetestCloseUtc = new DateTime(2024, 1, 10, 12, 30, 0, DateTimeKind.Utc);
+        var expectedConfirmationCloseUtc = new DateTime(2024, 1, 10, 12, 35, 0, DateTimeKind.Utc);
+
         var (ltf, htf) = AdaptiveDefaultFixtures.BuildValidLong(Start);
+        Assert.Equal(2743, ltf.Count);
+        Assert.Equal(expectedBreakoutCloseUtc, ltf[expectedBreakoutIndex].CloseTimeUtc);
+        Assert.Equal(expectedRetestCloseUtc, ltf[expectedRetestIndex].CloseTimeUtc);
+        Assert.Equal(expectedConfirmationCloseUtc, ltf[expectedConfirmationIndex].CloseTimeUtc);
+
         var settings = MomoAdaptiveMtfTrendBreakoutEvaluator.ReadParameters(Defaults());
-        var atrFast = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeWilderAtrSeries(ltf, settings.FastAtrPeriod);
+        var cleanAtrFast = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeWilderAtrSeries(ltf, settings.FastAtrPeriod);
+        var cleanAtrSlow = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeWilderAtrSeries(ltf, settings.SlowAtrPeriod);
 
         var (candidate, reason) = Evaluate(ltf, htf, Defaults(), MarketRegime.Breakout);
         Assert.NotNull(candidate);
         Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, reason);
         dynamic setup = candidate!.Setup!;
-        int breakoutIndex = setup.breakoutIndex;
-        int retestIndex = setup.retestIndex;
-        var breakoutTs = ltf[breakoutIndex].CloseTimeUtc;
-        var retestTs = ltf[retestIndex].CloseTimeUtc;
-        Assert.Equal(atrFast[retestIndex], (decimal)setup.retestAtrFast);
+        Assert.Equal(expectedBreakoutIndex, (int)setup.breakoutIndex);
+        Assert.Equal(expectedRetestIndex, (int)setup.retestIndex);
+        Assert.Equal(expectedConfirmationIndex, (int)setup.confirmationIndex);
+        Assert.Equal(cleanAtrFast[expectedRetestIndex], (decimal)setup.retestAtrFast);
         Assert.Equal(349.05954976083357099324744597m, (decimal)setup.breakoutAtrFast);
         Assert.Equal(197.22523880450493957184368274m, (decimal)setup.breakoutAtrSlow);
         Assert.Equal(340.78386763505974449372977126m, (decimal)setup.retestAtrFast);
 
+        var cleanConfirm = ltf[expectedConfirmationIndex];
+        var previousClose = ltf[expectedConfirmationIndex - 1].Close;
+        var cleanTr = TrueRangeOf(cleanConfirm, previousClose);
+
         var mutated = ltf.Select(c => CloneLtf(c, c.Open, c.High, c.Low, c.Close)).ToList();
-        Assert.True(mutated.Count - 1 > retestIndex);
-        var confirmIndex = mutated.Count - 1;
-        var before = mutated[confirmIndex];
-        mutated[confirmIndex] = MutateHighLowPreservingTrueRange(before, mutated[confirmIndex - 1].Close);
-        AssertValidOhlc(mutated[confirmIndex]);
-        Assert.NotEqual(before.High, mutated[confirmIndex].High);
-        Assert.NotEqual(before.Low, mutated[confirmIndex].Low);
-        Assert.Equal(before.Close, mutated[confirmIndex].Close);
+        mutated[expectedConfirmationIndex] = MutateConfirmationHighLowChangingTrueRange(
+            cleanConfirm,
+            previousClose);
+        Assert.Equal(ltf.Count, mutated.Count);
+        AssertValidOhlc(mutated[expectedConfirmationIndex]);
+        Assert.Equal(cleanConfirm.Open, mutated[expectedConfirmationIndex].Open);
+        Assert.Equal(cleanConfirm.Close, mutated[expectedConfirmationIndex].Close);
+        Assert.Equal(cleanConfirm.CloseTimeUtc, mutated[expectedConfirmationIndex].CloseTimeUtc);
+        Assert.NotEqual(cleanConfirm.High, mutated[expectedConfirmationIndex].High);
+        Assert.NotEqual(cleanConfirm.Low, mutated[expectedConfirmationIndex].Low);
+        Assert.NotEqual(cleanTr, TrueRangeOf(mutated[expectedConfirmationIndex], previousClose));
+
+        var mutatedAtrFast = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeWilderAtrSeries(mutated, settings.FastAtrPeriod);
+        var mutatedAtrSlow = MomoAdaptiveMtfTrendBreakoutEvaluator.ComputeWilderAtrSeries(mutated, settings.SlowAtrPeriod);
+        Assert.Equal(cleanAtrFast[expectedBreakoutIndex], mutatedAtrFast[expectedBreakoutIndex]);
+        Assert.Equal(cleanAtrSlow[expectedBreakoutIndex], mutatedAtrSlow[expectedBreakoutIndex]);
+        Assert.Equal(cleanAtrFast[expectedRetestIndex], mutatedAtrFast[expectedRetestIndex]);
+        Assert.NotEqual(cleanAtrFast[expectedConfirmationIndex], mutatedAtrFast[expectedConfirmationIndex]);
+        Assert.NotEqual(cleanAtrSlow[expectedConfirmationIndex], mutatedAtrSlow[expectedConfirmationIndex]);
 
         var (mutatedCandidate, mutatedReason) = Evaluate(mutated, htf, Defaults(), MarketRegime.Breakout);
         Assert.NotNull(mutatedCandidate);
         Assert.Equal(MomoAdaptiveMtfRejectionCodes.EntryConfirmed, mutatedReason);
         dynamic mutatedSetup = mutatedCandidate!.Setup!;
-        Assert.Equal(breakoutIndex, (int)mutatedSetup.breakoutIndex);
-        Assert.Equal(retestIndex, (int)mutatedSetup.retestIndex);
-        Assert.Equal(breakoutTs, mutated[breakoutIndex].CloseTimeUtc);
-        Assert.Equal(retestTs, mutated[retestIndex].CloseTimeUtc);
+        Assert.Equal(expectedBreakoutIndex, (int)mutatedSetup.breakoutIndex);
+        Assert.Equal(expectedRetestIndex, (int)mutatedSetup.retestIndex);
+        Assert.Equal(expectedConfirmationIndex, (int)mutatedSetup.confirmationIndex);
+        Assert.Equal(expectedBreakoutCloseUtc, mutated[expectedBreakoutIndex].CloseTimeUtc);
+        Assert.Equal(expectedRetestCloseUtc, mutated[expectedRetestIndex].CloseTimeUtc);
+        Assert.Equal(expectedConfirmationCloseUtc, mutated[expectedConfirmationIndex].CloseTimeUtc);
         Assert.Equal((decimal)setup.breakoutAtrFast, (decimal)mutatedSetup.breakoutAtrFast);
         Assert.Equal((decimal)setup.breakoutAtrSlow, (decimal)mutatedSetup.breakoutAtrSlow);
         Assert.Equal((decimal)setup.retestAtrFast, (decimal)mutatedSetup.retestAtrFast);
@@ -970,35 +1029,29 @@ public sealed class MomoAdaptiveMtfTrendBreakoutTests
             Math.Max(Math.Abs(candle.High - previousClose), Math.Abs(candle.Low - previousClose)));
 
     /// <summary>
-    /// Mutates High/Low after the event while preserving true range (and Open/Close) so Wilder ATR
-    /// and Adaptive outcomes stay identical — Open/Volume alone are not valid ATR inputs.
+    /// Widens confirmation High and nudges Low while preserving Open/Close/timestamps so true range
+    /// (and therefore confirmation/latest Wilder ATR) changes without altering retest extremes.
     /// </summary>
-    private static Candle MutateHighLowPreservingTrueRange(Candle candle, decimal previousClose)
+    private static Candle MutateConfirmationHighLowChangingTrueRange(Candle candle, decimal previousClose)
     {
-        var tr = TrueRangeOf(candle, previousClose);
-        Assert.True(tr > 0m);
         var bodyHigh = Math.Max(candle.Open, candle.Close);
         var bodyLow = Math.Min(candle.Open, candle.Close);
+        var cleanTr = TrueRangeOf(candle, previousClose);
 
-        // High' in [bodyHigh, bodyLow + tr] ∩ [previousClose, previousClose + tr] keeps H'-L'=tr
-        // and |H'-Pc|<=tr, |L'-Pc|<=tr when Low'=High'-tr.
-        var highMin = Math.Max(bodyHigh, previousClose);
-        var highMax = Math.Min(bodyLow + tr, previousClose + tr);
-        Assert.True(highMax > highMin, $"No room to mutate High/Low while preserving TR={tr}.");
+        // Raise High well beyond the body; lift Low slightly so High and Low both change without
+        // deepening the long retest extreme (confirmation Low stays above the retest Low).
+        var newHigh = bodyHigh + Math.Max(cleanTr * 2m, 500m);
+        var newLow = bodyLow - 1m;
+        Assert.True(newLow < bodyLow);
+        Assert.True(newLow <= Math.Min(candle.Open, candle.Close));
+        Assert.True(newHigh >= Math.Max(candle.Open, candle.Close));
 
-        var newHigh = highMin + ((highMax - highMin) / 2m);
-        if (newHigh == candle.High)
-        {
-            newHigh = highMax > candle.High ? highMax : highMin;
-        }
-
-        var newLow = newHigh - tr;
-        Assert.True(newLow <= bodyLow);
-        Assert.True(newHigh >= bodyHigh);
-        Assert.NotEqual(candle.High, newHigh);
-        Assert.NotEqual(candle.Low, newLow);
-        Assert.Equal(tr, TrueRangeOf(CloneLtf(candle, candle.Open, newHigh, newLow, candle.Close), previousClose));
-        return CloneLtf(candle, candle.Open, newHigh, newLow, candle.Close);
+        var mutated = CloneLtf(candle, candle.Open, newHigh, newLow, candle.Close);
+        AssertValidOhlc(mutated);
+        Assert.NotEqual(candle.High, mutated.High);
+        Assert.NotEqual(candle.Low, mutated.Low);
+        Assert.NotEqual(cleanTr, TrueRangeOf(mutated, previousClose));
+        return mutated;
     }
 
     private static void AssertValidOhlc(Candle candle)
