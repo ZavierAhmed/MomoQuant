@@ -333,6 +333,7 @@ public sealed class PriceStructureBreakoutRetestTests
     public void EvaluateAtCurrentCandle_SameCandleConfirmationReactionCloseLong_RejectsThenConfirmsLater()
     {
         var throughRetest = BuildLongWithQualifyingRetest("ReactionClose", includeConfirmation: false);
+        AssertValidOhlc(throughRetest[^1]);
         AssertQualifyingRetestPredicate(throughRetest, "ReactionClose", longSide: true);
 
         var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "ReactionClose")));
@@ -340,18 +341,23 @@ public sealed class PriceStructureBreakoutRetestTests
         Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
         var confirmed = BuildLongWithQualifyingRetest("ReactionClose", includeConfirmation: true);
+        AssertValidOhlc(confirmed[^1]);
         var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "ReactionClose")));
         Assert.NotNull(candidate);
         Assert.Equal(TradeDirection.Long, candidate!.Direction);
+        Assert.Equal(19, candidate.Structure.RetestIndex);
+        Assert.Equal(20, candidate.Structure.ConfirmationIndex);
         Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
         Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
-        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
+        Assert.Equal("Bullish breakout retest confirmed.", candidate.Reason);
+        Assert.Equal("A0C702ACD7D2AE10", candidate.SetupFingerprint);
     }
 
     [Fact]
     public void EvaluateAtCurrentCandle_SameCandleConfirmationReactionCloseShort_RejectsThenConfirmsLater()
     {
         var throughRetest = BuildShortWithQualifyingRetest("ReactionClose", includeConfirmation: false);
+        AssertValidOhlc(throughRetest[^1]);
         AssertQualifyingRetestPredicate(throughRetest, "ReactionClose", longSide: false);
 
         var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "ReactionClose")));
@@ -359,18 +365,23 @@ public sealed class PriceStructureBreakoutRetestTests
         Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
         var confirmed = BuildShortWithQualifyingRetest("ReactionClose", includeConfirmation: true);
+        AssertValidOhlc(confirmed[^1]);
         var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "ReactionClose")));
         Assert.NotNull(candidate);
         Assert.Equal(TradeDirection.Short, candidate!.Direction);
+        Assert.Equal(19, candidate.Structure.RetestIndex);
+        Assert.Equal(20, candidate.Structure.ConfirmationIndex);
         Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
         Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
-        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
+        Assert.Equal("Bearish breakout retest confirmed.", candidate.Reason);
+        Assert.Equal("98EE14660A2E729A", candidate.SetupFingerprint);
     }
 
     [Fact]
     public void EvaluateAtCurrentCandle_SameCandleConfirmationEngulfingLong_RejectsThenConfirmsLater()
     {
         var throughRetest = BuildLongWithQualifyingRetest("Engulfing", includeConfirmation: false);
+        AssertValidOhlc(throughRetest[^1]);
         AssertQualifyingRetestPredicate(throughRetest, "Engulfing", longSide: true);
 
         var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "Engulfing")));
@@ -378,18 +389,23 @@ public sealed class PriceStructureBreakoutRetestTests
         Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
         var confirmed = BuildLongWithQualifyingRetest("Engulfing", includeConfirmation: true);
+        AssertValidOhlc(confirmed[^1]);
         var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "Engulfing")));
         Assert.NotNull(candidate);
         Assert.Equal(TradeDirection.Long, candidate!.Direction);
+        Assert.Equal(19, candidate.Structure.RetestIndex);
+        Assert.Equal(20, candidate.Structure.ConfirmationIndex);
         Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
         Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
-        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
+        Assert.Equal("Bullish breakout retest confirmed.", candidate.Reason);
+        Assert.Equal("A0C702ACD7D2AE10", candidate.SetupFingerprint);
     }
 
     [Fact]
     public void EvaluateAtCurrentCandle_SameCandleConfirmationEngulfingShort_RejectsThenConfirmsLater()
     {
         var throughRetest = BuildShortWithQualifyingRetest("Engulfing", includeConfirmation: false);
+        AssertValidOhlc(throughRetest[^1]);
         AssertQualifyingRetestPredicate(throughRetest, "Engulfing", longSide: false);
 
         var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "Engulfing")));
@@ -397,18 +413,23 @@ public sealed class PriceStructureBreakoutRetestTests
         Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
         var confirmed = BuildShortWithQualifyingRetest("Engulfing", includeConfirmation: true);
+        AssertValidOhlc(confirmed[^1]);
         var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "Engulfing")));
         Assert.NotNull(candidate);
         Assert.Equal(TradeDirection.Short, candidate!.Direction);
+        Assert.Equal(19, candidate.Structure.RetestIndex);
+        Assert.Equal(20, candidate.Structure.ConfirmationIndex);
         Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
         Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
-        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
+        Assert.Equal("Bearish breakout retest confirmed.", candidate.Reason);
+        Assert.Equal("98EE14660A2E729A", candidate.SetupFingerprint);
     }
 
     [Fact]
     public void EvaluateAtCurrentCandle_SameCandleConfirmationCloseBeyondPreviousExtremeLong_RejectsThenConfirmsLater()
     {
         var throughRetest = BuildLongWithQualifyingRetest("CloseBeyondPreviousExtreme", includeConfirmation: false);
+        AssertValidOhlc(throughRetest[^1]);
         AssertQualifyingRetestPredicate(throughRetest, "CloseBeyondPreviousExtreme", longSide: true);
 
         var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
@@ -416,18 +437,23 @@ public sealed class PriceStructureBreakoutRetestTests
         Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
         var confirmed = BuildLongWithQualifyingRetest("CloseBeyondPreviousExtreme", includeConfirmation: true);
+        AssertValidOhlc(confirmed[^1]);
         var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
         Assert.NotNull(candidate);
         Assert.Equal(TradeDirection.Long, candidate!.Direction);
+        Assert.Equal(19, candidate.Structure.RetestIndex);
+        Assert.Equal(20, candidate.Structure.ConfirmationIndex);
         Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
         Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
-        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
+        Assert.Equal("Bullish breakout retest confirmed.", candidate.Reason);
+        Assert.Equal("A0C702ACD7D2AE10", candidate.SetupFingerprint);
     }
 
     [Fact]
     public void EvaluateAtCurrentCandle_SameCandleConfirmationCloseBeyondPreviousExtremeShort_RejectsThenConfirmsLater()
     {
         var throughRetest = BuildShortWithQualifyingRetest("CloseBeyondPreviousExtreme", includeConfirmation: false);
+        AssertValidOhlc(throughRetest[^1]);
         AssertQualifyingRetestPredicate(throughRetest, "CloseBeyondPreviousExtreme", longSide: false);
 
         var (rejected, rejectReason) = Evaluate(throughRetest, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
@@ -435,12 +461,16 @@ public sealed class PriceStructureBreakoutRetestTests
         Assert.Equal(PriceStructureRejectionCodes.NoConfirmation, rejectReason);
 
         var confirmed = BuildShortWithQualifyingRetest("CloseBeyondPreviousExtreme", includeConfirmation: true);
+        AssertValidOhlc(confirmed[^1]);
         var (candidate, reason) = Evaluate(confirmed, Parameters(("confirmationMode", "CloseBeyondPreviousExtreme")));
         Assert.NotNull(candidate);
         Assert.Equal(TradeDirection.Short, candidate!.Direction);
+        Assert.Equal(19, candidate.Structure.RetestIndex);
+        Assert.Equal(20, candidate.Structure.ConfirmationIndex);
         Assert.True(candidate.Structure.ConfirmationIndex > candidate.Structure.RetestIndex);
         Assert.Equal(confirmed[^1].Close, candidate.EntryPrice);
-        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
+        Assert.Equal("Bearish breakout retest confirmed.", candidate.Reason);
+        Assert.Equal("98EE14660A2E729A", candidate.SetupFingerprint);
     }
 
     [Fact]
@@ -796,7 +826,7 @@ public sealed class PriceStructureBreakoutRetestTests
 
     /// <summary>
     /// Retest candle itself satisfies the selected confirmation predicate vs the breakout candle,
-    /// but confirmation still cannot fire at retestIndex.
+    /// but confirmation still cannot fire at retestIndex. All OHLC candles are geometrically valid.
     /// </summary>
     private static List<Candle> BuildLongWithQualifyingRetest(string confirmationMode, bool includeConfirmation)
     {
@@ -809,10 +839,14 @@ public sealed class PriceStructureBreakoutRetestTests
         // Qualifying retest for the mode (as if evaluated as confirmation with prev=breakout), plus retest touch.
         Candle retest = confirmationMode switch
         {
-            "Engulfing" => CreateCandle(retestTime, 99.50m, 100.70m, 99.95m, 100.55m), // engulfs breakout, bullish, > level
-            "CloseBeyondPreviousExtreme" => CreateCandle(retestTime, 100.10m, 100.80m, 99.95m, 100.70m), // close > prev high 100.60
-            _ => CreateCandle(retestTime, 99.90m, 100.40m, 99.95m, 100.25m) // ReactionClose: bullish close > level
+            // Engulfs breakout (O<=prev.C, C>=prev.O), bullish, close > level, Low touches level
+            "Engulfing" => CreateCandle(retestTime, 100.00m, 100.70m, 99.95m, 100.55m),
+            // Close > prev high 100.60, Low touches level
+            "CloseBeyondPreviousExtreme" => CreateCandle(retestTime, 100.10m, 100.80m, 99.95m, 100.70m),
+            // ReactionClose: bullish close > level, Low touches level
+            _ => CreateCandle(retestTime, 100.00m, 100.40m, 99.95m, 100.25m)
         };
+        AssertValidOhlc(retest);
         candles.Add(retest);
 
         if (!includeConfirmation)
@@ -821,12 +855,14 @@ public sealed class PriceStructureBreakoutRetestTests
         }
 
         var confirmTime = retestTime.AddMinutes(5);
-        candles.Add(confirmationMode switch
+        Candle confirm = confirmationMode switch
         {
-            "Engulfing" => CreateCandle(confirmTime, 99.95m, 101.20m, 100.00m, 101.10m),
+            "Engulfing" => CreateCandle(confirmTime, 100.05m, 101.20m, 100.00m, 101.10m),
             "CloseBeyondPreviousExtreme" => CreateCandle(confirmTime, 100.20m, 101.00m, 100.00m, 100.90m),
             _ => CreateCandle(confirmTime, 100.10m, 100.90m, 100.00m, 100.80m)
-        });
+        };
+        AssertValidOhlc(confirm);
+        candles.Add(confirm);
         return candles;
     }
 
@@ -839,10 +875,14 @@ public sealed class PriceStructureBreakoutRetestTests
 
         Candle retest = confirmationMode switch
         {
-            "Engulfing" => CreateCandle(retestTime, 100.50m, 100.05m, 99.30m, 99.45m),
-            "CloseBeyondPreviousExtreme" => CreateCandle(retestTime, 99.90m, 100.05m, 99.20m, 99.30m), // close < prev low 99.40
-            _ => CreateCandle(retestTime, 100.10m, 100.05m, 99.70m, 99.80m) // bearish close < level
+            // Engulfs breakout (O>=prev.C, C<=prev.O), bearish, close < level, High touches level
+            "Engulfing" => CreateCandle(retestTime, 100.00m, 100.05m, 99.30m, 99.45m),
+            // Close < prev low 99.40, High touches level
+            "CloseBeyondPreviousExtreme" => CreateCandle(retestTime, 99.90m, 100.05m, 99.20m, 99.30m),
+            // ReactionClose: bearish close < level, High touches level
+            _ => CreateCandle(retestTime, 100.00m, 100.05m, 99.70m, 99.80m)
         };
+        AssertValidOhlc(retest);
         candles.Add(retest);
 
         if (!includeConfirmation)
@@ -851,13 +891,22 @@ public sealed class PriceStructureBreakoutRetestTests
         }
 
         var confirmTime = retestTime.AddMinutes(5);
-        candles.Add(confirmationMode switch
+        Candle confirm = confirmationMode switch
         {
-            "Engulfing" => CreateCandle(confirmTime, 100.05m, 100.00m, 98.80m, 98.90m),
+            "Engulfing" => CreateCandle(confirmTime, 99.90m, 100.00m, 98.80m, 98.90m),
             "CloseBeyondPreviousExtreme" => CreateCandle(confirmTime, 99.70m, 99.80m, 98.90m, 99.00m),
             _ => CreateCandle(confirmTime, 99.90m, 100.00m, 99.10m, 99.20m)
-        });
+        };
+        AssertValidOhlc(confirm);
+        candles.Add(confirm);
         return candles;
+    }
+
+    private static void AssertValidOhlc(Candle candle)
+    {
+        Assert.True(candle.Low <= candle.High, $"Low {candle.Low} > High {candle.High}");
+        Assert.True(candle.Low <= candle.Open && candle.Open <= candle.High, $"Open {candle.Open} outside [{candle.Low},{candle.High}]");
+        Assert.True(candle.Low <= candle.Close && candle.Close <= candle.High, $"Close {candle.Close} outside [{candle.Low},{candle.High}]");
     }
 
     private static void AssertQualifyingRetestPredicate(IReadOnlyList<Candle> candles, string mode, bool longSide)
@@ -865,6 +914,7 @@ public sealed class PriceStructureBreakoutRetestTests
         const decimal level = 100.00m;
         var retest = candles[^1];
         var prev = candles[^2];
+        AssertValidOhlc(retest);
         if (longSide)
         {
             Assert.True(retest.Close > level);
