@@ -206,6 +206,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
         Assert.Equal("true", NormalizeDecimalish(contract["requireHistogramExpansion"]));
         Assert.Equal("2.5", NormalizeDecimalish(contract["fixedRewardRisk"]));
 
+        // Shared MySQL fixture: restore contract values so prior mutation tests cannot poison normalization proofs.
+        await RestoreAdaptiveSymbolNullContractAsync(db, strategy.Id, Timeframe.M5);
+
         var boolRow = await db.StrategyParameters.SingleAsync(p =>
             p.StrategyId == strategy.Id
             && p.Timeframe == Timeframe.M5
@@ -224,7 +227,7 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     }
 
     [Fact]
-    public async Task Seeder_UpgradesKnown231AAdaptiveRewardRiskSeedFrom20To250()
+    public async Task Seeder_UpgradesProvenanced231AAdaptiveRewardRiskSeedFrom20To250()
     {
         await using var scope = _factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
@@ -241,13 +244,82 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
         row.ParameterValue = "2.0";
         row.IsActive = true;
         row.UpdatedAtUtc = DateTime.UtcNow;
+
+        var provenance = await db.StrategyParameters.SingleOrDefaultAsync(p =>
+            p.StrategyId == strategy.Id
+            && p.Timeframe == Timeframe.M5
+            && p.SymbolId == null
+            && p.ParameterKey == "seedProvenance");
+        if (provenance is null)
+        {
+            provenance = new StrategyParameter
+            {
+                StrategyId = strategy.Id,
+                ParameterKey = "seedProvenance",
+                ParameterValue = "231A1-adaptive-rr-2.0",
+                ValueType = SettingValueType.String,
+                Timeframe = Timeframe.M5,
+                SymbolId = null,
+                IsActive = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            };
+            db.StrategyParameters.Add(provenance);
+        }
+        else
+        {
+            provenance.ParameterValue = "231A1-adaptive-rr-2.0";
+            provenance.IsActive = false;
+            provenance.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
         await db.SaveChangesAsync();
 
         await seeder.SeedAsync();
 
         await db.Entry(row).ReloadAsync();
+        await db.Entry(provenance).ReloadAsync();
         Assert.Equal(NormalizeDecimalish("2.50"), NormalizeDecimalish(row.ParameterValue));
         Assert.True(row.IsActive);
+        Assert.Equal("231A1-adaptive-v1", provenance.ParameterValue);
+        Assert.False(provenance.IsActive);
+    }
+
+    [Fact]
+    public async Task Seeder_PreservesUserEditedAdaptiveRewardRiskOf20WithoutProvenance()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await seeder.SeedAsync();
+
+        var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
+        var row = await db.StrategyParameters.SingleAsync(p =>
+            p.StrategyId == strategy.Id
+            && p.Timeframe == Timeframe.M5
+            && p.SymbolId == null
+            && p.ParameterKey == "fixedRewardRisk");
+
+        row.ParameterValue = "2.0";
+        row.UpdatedAtUtc = DateTime.UtcNow;
+
+        var provenance = await db.StrategyParameters.SingleOrDefaultAsync(p =>
+            p.StrategyId == strategy.Id
+            && p.Timeframe == Timeframe.M5
+            && p.SymbolId == null
+            && p.ParameterKey == "seedProvenance");
+        if (provenance is not null)
+        {
+            db.StrategyParameters.Remove(provenance);
+        }
+
+        await db.SaveChangesAsync();
+
+        await seeder.SeedAsync();
+        await db.Entry(row).ReloadAsync();
+        Assert.Equal(NormalizeDecimalish("2.0"), NormalizeDecimalish(row.ParameterValue));
+
+        await RestoreAdaptiveSymbolNullContractAsync(db, strategy.Id, Timeframe.M5);
     }
 
     [Fact]
@@ -272,6 +344,34 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
         await seeder.SeedAsync();
         await db.Entry(row).ReloadAsync();
         Assert.Equal("3.25", NormalizeDecimalish(row.ParameterValue));
+
+        await RestoreAdaptiveSymbolNullContractAsync(db, strategy.Id, Timeframe.M5);
+    }
+
+    [Fact]
+    public async Task Seeder_AdaptiveRewardRiskReseed_IsIdempotentWithProvenance()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await seeder.SeedAsync();
+        await seeder.SeedAsync();
+
+        var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
+        var row = await db.StrategyParameters.SingleAsync(p =>
+            p.StrategyId == strategy.Id
+            && p.Timeframe == Timeframe.M5
+            && p.SymbolId == null
+            && p.ParameterKey == "fixedRewardRisk"
+            && p.IsActive);
+        Assert.Equal(NormalizeDecimalish("2.50"), NormalizeDecimalish(row.ParameterValue));
+
+        var provenanceRows = await db.StrategyParameters
+            .Where(p => p.StrategyId == strategy.Id && p.ParameterKey == "seedProvenance" && p.Timeframe == Timeframe.M5 && p.SymbolId == null)
+            .ToListAsync();
+        Assert.Single(provenanceRows);
+        Assert.Equal("231A1-adaptive-v1", provenanceRows[0].ParameterValue);
+        Assert.False(provenanceRows[0].IsActive);
     }
 
     [Fact]
@@ -375,6 +475,55 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
         Assert.Equal("0.42", reloaded.ParameterValue);
         Assert.True(reloaded.IsActive);
         Assert.Equal(archived.Id, reloaded.StrategyId);
+    }
+
+    /// <summary>
+    /// Restores Adaptive symbol-null fixedRewardRisk + inactive seedProvenance so shared MySQL
+    /// integration state does not leak user-edit mutation fixtures into later contract proofs.
+    /// </summary>
+    private static async Task RestoreAdaptiveSymbolNullContractAsync(
+        MomoQuantDbContext db,
+        long strategyId,
+        Timeframe timeframe)
+    {
+        var contract = MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract();
+        var rr = await db.StrategyParameters.SingleAsync(p =>
+            p.StrategyId == strategyId
+            && p.Timeframe == timeframe
+            && p.SymbolId == null
+            && p.ParameterKey == "fixedRewardRisk");
+        rr.ParameterValue = contract["fixedRewardRisk"];
+        rr.IsActive = true;
+        rr.UpdatedAtUtc = DateTime.UtcNow;
+
+        var provenance = await db.StrategyParameters.SingleOrDefaultAsync(p =>
+            p.StrategyId == strategyId
+            && p.Timeframe == timeframe
+            && p.SymbolId == null
+            && p.ParameterKey == "seedProvenance");
+        if (provenance is null)
+        {
+            db.StrategyParameters.Add(new StrategyParameter
+            {
+                StrategyId = strategyId,
+                ParameterKey = "seedProvenance",
+                ParameterValue = "231A1-adaptive-v1",
+                ValueType = SettingValueType.String,
+                Timeframe = timeframe,
+                SymbolId = null,
+                IsActive = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            provenance.ParameterValue = "231A1-adaptive-v1";
+            provenance.IsActive = false;
+            provenance.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        await db.SaveChangesAsync();
     }
 
     private static string NormalizeDecimalish(string value)

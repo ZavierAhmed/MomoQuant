@@ -455,15 +455,19 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
                     parameter.UpdatedAtUtc = DateTime.UtcNow;
                 }
 
-                // Upgrade only the known 23.1A Adaptive seed RR=2.0 to the contract default 2.50.
+                // Upgrade Adaptive fixedRewardRisk only when reliable seed provenance identifies the old 2.0 seed.
+                // Value alone must never classify a row as seeded — preserve arbitrary user 2.0 rows.
                 if (strategy.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout
                     && string.Equals(parameter.ParameterKey, "fixedRewardRisk", StringComparison.OrdinalIgnoreCase)
                     && parameter.IsActive
-                    && IsKnown231AAdaptiveRewardRiskSeed(parameter.ParameterValue))
+                    && parameter.SymbolId is null
+                    && HasAdaptiveRewardRiskSeedProvenance(parameters, parameter.Timeframe, AdaptiveRewardRiskSeedProvenanceV0)
+                    && IsExactDecimalValue(parameter.ParameterValue, 2.0m))
                 {
                     parameter.ParameterValue = "2.50";
                     parameter.ValueType = SettingValueType.Decimal;
                     parameter.UpdatedAtUtc = DateTime.UtcNow;
+                    UpsertAdaptiveSeedProvenance(parameters, strategy.Id, parameter.Timeframe, AdaptiveRewardRiskSeedProvenanceV1);
                 }
             }
 
@@ -518,13 +522,83 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
                         existing.UpdatedAtUtc = DateTime.UtcNow;
                     }
                 }
+
+                if (strategy.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout)
+                {
+                    EnsureAdaptiveSeedProvenance(parameters, strategy.Id, timeframe, AdaptiveRewardRiskSeedProvenanceV1);
+                }
             }
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
     }
 
-    private static bool IsKnown231AAdaptiveRewardRiskSeed(string? value)
+    private const string SeedProvenanceParameterKey = "seedProvenance";
+    private const string AdaptiveRewardRiskSeedProvenanceV0 = "231A1-adaptive-rr-2.0";
+    private const string AdaptiveRewardRiskSeedProvenanceV1 = "231A1-adaptive-v1";
+
+    private static bool HasAdaptiveRewardRiskSeedProvenance(
+        IReadOnlyList<StrategyParameter> parameters,
+        Timeframe timeframe,
+        string expectedProvenance) =>
+        parameters.Any(parameter =>
+            string.Equals(parameter.ParameterKey, SeedProvenanceParameterKey, StringComparison.OrdinalIgnoreCase)
+            && parameter.Timeframe == timeframe
+            && parameter.SymbolId is null
+            && string.Equals(parameter.ParameterValue, expectedProvenance, StringComparison.Ordinal));
+
+    private void UpsertAdaptiveSeedProvenance(
+        List<StrategyParameter> parameters,
+        long strategyId,
+        Timeframe timeframe,
+        string provenanceValue)
+    {
+        var existing = parameters.FirstOrDefault(parameter =>
+            string.Equals(parameter.ParameterKey, SeedProvenanceParameterKey, StringComparison.OrdinalIgnoreCase)
+            && parameter.Timeframe == timeframe
+            && parameter.SymbolId is null);
+
+        if (existing is null)
+        {
+            var added = new StrategyParameter
+            {
+                StrategyId = strategyId,
+                ParameterKey = SeedProvenanceParameterKey,
+                ParameterValue = provenanceValue,
+                ValueType = SettingValueType.String,
+                Timeframe = timeframe,
+                SymbolId = null,
+                IsActive = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            };
+            _dbContext.StrategyParameters.Add(added);
+            parameters.Add(added);
+            return;
+        }
+
+        existing.ParameterValue = provenanceValue;
+        existing.ValueType = SettingValueType.String;
+        existing.IsActive = false;
+        existing.UpdatedAtUtc = DateTime.UtcNow;
+    }
+
+    private void EnsureAdaptiveSeedProvenance(
+        List<StrategyParameter> parameters,
+        long strategyId,
+        Timeframe timeframe,
+        string provenanceValue)
+    {
+        if (HasAdaptiveRewardRiskSeedProvenance(parameters, timeframe, provenanceValue)
+            || HasAdaptiveRewardRiskSeedProvenance(parameters, timeframe, AdaptiveRewardRiskSeedProvenanceV0))
+        {
+            return;
+        }
+
+        UpsertAdaptiveSeedProvenance(parameters, strategyId, timeframe, provenanceValue);
+    }
+
+    private static bool IsExactDecimalValue(string? value, decimal expected)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -533,7 +607,7 @@ public sealed class StrategyDataSeeder : IStrategyDataSeeder
 
         return decimal.TryParse(value, System.Globalization.NumberStyles.Number,
                    System.Globalization.CultureInfo.InvariantCulture, out var parsed)
-               && parsed == 2.0m;
+               && parsed == expected;
     }
 
     private void DetachAddedStrategies()

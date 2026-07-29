@@ -5,8 +5,8 @@ using MomoQuant.Domain.Strategies;
 namespace MomoQuant.Application.Strategies;
 
 /// <summary>
-/// Captures the exact StrategyContext HTF series delivered to plugins at evaluation time T.
-/// Used by closed-HTF production-path proofs across Backtest/Replay/Paper/Benchmark/manual paths.
+/// Captures the exact StrategyContext candle series delivered to plugins at evaluation time T.
+/// Used by closed-HTF and closed-LTF production-path proofs across Backtest/Replay/Paper/Benchmark/manual paths.
 /// </summary>
 public interface IStrategyEvaluationCapture
 {
@@ -26,6 +26,7 @@ public sealed class StrategyEvaluationCaptureRecording : IStrategyEvaluationCapt
             EvaluatedAtUtc: context.EvaluatedAtUtc,
             ExecutionTimeframe: context.Timeframe,
             HigherTimeframe: context.HigherTimeframe,
+            Candles: context.Candles.ToList(),
             HigherTimeframeCandles: context.HigherTimeframeCandles.ToList()));
     }
 
@@ -37,4 +38,5 @@ public sealed record StrategyEvaluationCaptureRecord(
     DateTime EvaluatedAtUtc,
     Timeframe ExecutionTimeframe,
     Timeframe HigherTimeframe,
+    IReadOnlyList<Candle> Candles,
     IReadOnlyList<Candle> HigherTimeframeCandles);

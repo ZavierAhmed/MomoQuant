@@ -294,12 +294,16 @@ internal static class ClosedHtfCaptureHarness
         Assert.Equal(HigherTimeframe, record.HigherTimeframe);
         Assert.Equal(evaluationTimeUtc, record.EvaluatedAtUtc);
         Assert.NotEmpty(record.HigherTimeframeCandles);
+        // Adaptive HTF warmup: htfSlowEmaPeriod(200) + htfSlopeLookback(5) = 205
+        Assert.True(record.HigherTimeframeCandles.Count >= 205);
         Assert.All(record.HigherTimeframeCandles, candle =>
         {
             Assert.True(candle.IsClosed);
             Assert.True(candle.CloseTimeUtc <= evaluationTimeUtc);
         });
         Assert.DoesNotContain(record.HigherTimeframeCandles, c => c.Id is 90_001 or 90_002);
+        Assert.DoesNotContain(record.HigherTimeframeCandles, c => !c.IsClosed);
+        Assert.DoesNotContain(record.HigherTimeframeCandles, c => c.CloseTimeUtc > evaluationTimeUtc);
     }
 
     public static void AssertIdenticalCaptures(
@@ -339,8 +343,35 @@ internal static class ClosedHtfCaptureHarness
         Assert.Equal(clean.EntryPrice, polluted.EntryPrice);
         Assert.Equal(clean.SuggestedStopLoss, polluted.SuggestedStopLoss);
         Assert.Equal(clean.SuggestedTakeProfit, polluted.SuggestedTakeProfit);
+        Assert.Equal(clean.RawDataJson, polluted.RawDataJson);
         Assert.Equal(ExtractFingerprint(clean.RawDataJson), ExtractFingerprint(polluted.RawDataJson));
+        Assert.Equal(ExtractStrengthBreakdown(clean.RawDataJson), ExtractStrengthBreakdown(polluted.RawDataJson));
     }
+
+    public static void AssertMissingHtfCapture(StrategyEvaluationCaptureRecord record, DateTime evaluationTimeUtc)
+    {
+        Assert.Equal(evaluationTimeUtc, record.EvaluatedAtUtc);
+        Assert.Empty(record.HigherTimeframeCandles);
+    }
+
+    public static void AssertMtfDataUnavailable(StrategyEvaluationResult result)
+    {
+        Assert.Contains(
+            MomoAdaptiveMtfRejectionCodes.MtfDataUnavailable,
+            result.Reason ?? result.SkipReason ?? string.Empty,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static BacktestDataset CreateDatasetMissingHtf(Fixture fixture) => new()
+    {
+        SymbolId = SymbolId,
+        SymbolName = SymbolName,
+        Timeframe = ExecutionTimeframe,
+        Candles = fixture.LtfCandles,
+        IndicatorSnapshots = fixture.IndicatorSnapshots,
+        EvaluationIndices = [fixture.EvaluationCandleIndex],
+        HigherTimeframeSeriesByTimeframe = new Dictionary<Timeframe, IReadOnlyList<Candle>>()
+    };
 
     public static void AssertCleanVsPollutedRun(
         RecordingStrategyEngine engine,
@@ -366,6 +397,19 @@ internal static class ClosedHtfCaptureHarness
         using var document = JsonDocument.Parse(rawDataJson);
         return document.RootElement.TryGetProperty("setupFingerprint", out var fingerprint)
             ? fingerprint.GetString()
+            : null;
+    }
+
+    private static string? ExtractStrengthBreakdown(string? rawDataJson)
+    {
+        if (string.IsNullOrWhiteSpace(rawDataJson))
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(rawDataJson);
+        return document.RootElement.TryGetProperty("strengthBreakdown", out var breakdown)
+            ? breakdown.GetRawText()
             : null;
     }
 

@@ -101,13 +101,16 @@ public sealed class PriceStructureBreakoutRetestTests
     [Fact]
     public void EvaluateAtCurrentCandle_AtrUnavailable_DoesNotFallBackToPercent()
     {
-        var candles = BuildAtrUnavailableLongScenario();
-        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "0.10"));
+        // Breakout + retest examined with retestToleranceMode=Atr while ATR14 is still null at retest.
+        var candles = BuildAtrUnavailableAtRetestLongScenario();
+        var retestIndex = candles.Count - 2;
+        Assert.Null(PriceStructureBreakoutRetestEvaluator.ComputeAtr14AtIndex(candles, retestIndex));
 
+        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "1.00"));
         var (candidate, reason) = Evaluate(candles, parameters);
 
         Assert.Null(candidate);
-        Assert.Equal(PriceStructureRejectionCodes.NoBreakout, reason);
+        Assert.Equal(PriceStructureRejectionCodes.InsufficientData, reason);
     }
 
     [Fact]
@@ -475,37 +478,55 @@ public sealed class PriceStructureBreakoutRetestTests
     [Fact]
     public void EvaluateAtCurrentCandle_AtrToleranceExactBoundaryLong_ReturnsCandidate()
     {
-        var candles = BuildLongScenarioAtAtrRetestBoundary(epsilon: 0m);
-        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "1.00"));
+        var (candles, retestPrice, atr, tolerance, boundary, delta) =
+            BuildLongScenarioAtAtrRetestBoundaryConverged(epsilon: 0m);
+        Assert.True(Math.Abs(delta - 0m) < 0.0000001m);
+        Assert.True(Math.Abs(retestPrice - boundary) < 0.0000001m);
+        Assert.Equal(atr * 1.00m, tolerance);
 
+        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "1.00"));
         var (candidate, _) = Evaluate(candles, parameters);
 
         Assert.NotNull(candidate);
-        Assert.Equal(TradeDirection.Long, candidate.Direction);
+        Assert.Equal(TradeDirection.Long, candidate!.Direction);
+        Assert.Equal(retestPrice, candles[^2].Low);
+        Assert.Equal(atr, PriceStructureBreakoutRetestEvaluator.ComputeAtr14AtIndex(candles, candles.Count - 2));
     }
 
     [Fact]
     public void EvaluateAtCurrentCandle_AtrToleranceExactBoundaryPlusEpsilonLong_WaitsForRetest()
     {
-        var candles = BuildLongScenarioAtAtrRetestBoundary(epsilon: 0.01m);
-        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "1.00"));
+        var (candles, retestPrice, atr, tolerance, boundary, delta) =
+            BuildLongScenarioAtAtrRetestBoundaryConverged(epsilon: 0.01m);
+        Assert.True(Math.Abs(delta - 0.01m) < 0.0000001m);
+        Assert.True(Math.Abs(retestPrice - (boundary + 0.01m)) < 0.0000001m);
+        Assert.True(retestPrice > boundary);
 
+        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "1.00"));
         var (candidate, reason) = Evaluate(candles, parameters);
 
         Assert.Null(candidate);
         Assert.Equal(PriceStructureRejectionCodes.WaitingForRetest, reason);
+        Assert.Equal(atr * 1.00m, tolerance);
+        Assert.Equal(atr, PriceStructureBreakoutRetestEvaluator.ComputeAtr14AtIndex(candles, candles.Count - 2));
     }
 
     [Fact]
     public void EvaluateAtCurrentCandle_AtrToleranceExactBoundaryMinusEpsilonLong_ReturnsCandidate()
     {
-        var candles = BuildLongScenarioAtAtrRetestBoundary(epsilon: -0.01m);
-        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "1.00"));
+        var (candles, retestPrice, atr, tolerance, boundary, delta) =
+            BuildLongScenarioAtAtrRetestBoundaryConverged(epsilon: -0.01m);
+        Assert.True(Math.Abs(delta - (-0.01m)) < 0.0000001m);
+        Assert.True(Math.Abs(retestPrice - (boundary - 0.01m)) < 0.0000001m);
+        Assert.True(retestPrice < boundary);
 
+        var parameters = Parameters(("retestToleranceMode", "Atr"), ("retestToleranceAtrMultiplier", "1.00"));
         var (candidate, _) = Evaluate(candles, parameters);
 
         Assert.NotNull(candidate);
-        Assert.Equal(TradeDirection.Long, candidate.Direction);
+        Assert.Equal(TradeDirection.Long, candidate!.Direction);
+        Assert.Equal(atr * 1.00m, tolerance);
+        Assert.Equal(atr, PriceStructureBreakoutRetestEvaluator.ComputeAtr14AtIndex(candles, candles.Count - 2));
     }
 
     [Fact]
@@ -523,31 +544,63 @@ public sealed class PriceStructureBreakoutRetestTests
 
     /// <summary>
     /// Builds a long scenario whose retest low sits at level + ATR14(retest)×1.00 + epsilon,
-    /// refining until the ATR used matches the final series (tolerance applied once).
+    /// iterating until an explicit decimal tolerance is satisfied; fails if it does not converge.
     /// </summary>
-    private static List<Candle> BuildLongScenarioAtAtrRetestBoundary(decimal epsilon)
+    private static (
+        List<Candle> Candles,
+        decimal ActualRetestPrice,
+        decimal ActualAtr,
+        decimal ActualTolerance,
+        decimal ActualBoundary,
+        decimal DifferenceFromExpectedBoundary) BuildLongScenarioAtAtrRetestBoundaryConverged(decimal epsilon)
     {
         const decimal level = 100.00m;
         const decimal atrMultiplier = 1.00m;
+        const decimal convergenceTol = 0.00000001m;
         var retestLow = level;
         List<Candle> candles = BuildLongScenario(retestLow: retestLow);
-        for (var i = 0; i < 8; i++)
+        for (var i = 0; i < 32; i++)
         {
             var retestIndex = candles.Count - 2;
             var atr = PriceStructureBreakoutRetestEvaluator.ComputeAtr14AtIndex(candles, retestIndex);
             Assert.NotNull(atr);
-            Assert.True(atr.Value > 0m);
-            var nextLow = level + (atr.Value * atrMultiplier) + epsilon;
-            if (nextLow == retestLow)
+            Assert.True(atr!.Value > 0m);
+            var tolerance = atr.Value * atrMultiplier;
+            var boundary = level + tolerance;
+            var nextLow = boundary + epsilon;
+            candles = BuildLongScenario(retestLow: nextLow, confirmationLow: 100.30m);
+            var atrAfter = PriceStructureBreakoutRetestEvaluator.ComputeAtr14AtIndex(candles, candles.Count - 2);
+            Assert.NotNull(atrAfter);
+            var toleranceAfter = atrAfter!.Value * atrMultiplier;
+            var boundaryAfter = level + toleranceAfter;
+            if (Math.Abs(nextLow - (boundaryAfter + epsilon)) <= convergenceTol
+                && Math.Abs(nextLow - retestLow) <= convergenceTol)
             {
-                return candles;
+                return (
+                    candles,
+                    ActualRetestPrice: nextLow,
+                    ActualAtr: atrAfter.Value,
+                    ActualTolerance: toleranceAfter,
+                    ActualBoundary: boundaryAfter,
+                    DifferenceFromExpectedBoundary: nextLow - boundaryAfter);
             }
 
             retestLow = nextLow;
-            candles = BuildLongScenario(retestLow: retestLow, confirmationLow: 100.30m);
         }
 
-        return candles;
+        Assert.Fail("ATR retest boundary builder did not converge within 32 iterations.");
+        return (candles, 0m, 0m, 0m, 0m, 0m);
+    }
+
+    private static List<Candle> BuildAtrUnavailableAtRetestLongScenario()
+    {
+        // prefixCount=11 → breakout@11, retest@12 (ATR14 null), confirmation@13. Percent mode still confirms.
+        return BuildLongScenario(prefixCount: 11, confirmationLow: 100.30m);
+    }
+
+    private static List<Candle> BuildAtrUnavailableLongScenario()
+    {
+        return BuildAtrUnavailableAtRetestLongScenario();
     }
 
     private static (PriceStructureCandidateDto? Candidate, string Reason) Evaluate(
@@ -697,26 +750,6 @@ public sealed class PriceStructureBreakoutRetestTests
         }
 
         return candles;
-    }
-
-    private static List<Candle> BuildAtrUnavailableLongScenario()
-    {
-        return
-        [
-            CreateCandle(StartUtc.AddMinutes(0), 99.70m, 99.90m, 99.50m, 99.75m),
-            CreateCandle(StartUtc.AddMinutes(5), 99.72m, 99.88m, 99.55m, 99.76m),
-            CreateCandle(StartUtc.AddMinutes(10), 99.78m, 100.00m, 99.60m, 99.82m),
-            CreateCandle(StartUtc.AddMinutes(15), 99.70m, 99.86m, 99.52m, 99.74m),
-            CreateCandle(StartUtc.AddMinutes(20), 99.71m, 99.87m, 99.54m, 99.75m),
-            CreateCandle(StartUtc.AddMinutes(25), 99.73m, 99.89m, 99.58m, 99.77m),
-            CreateCandle(StartUtc.AddMinutes(30), 99.74m, 99.90m, 99.60m, 99.78m),
-            CreateCandle(StartUtc.AddMinutes(35), 99.78m, 100.45m, 99.78m, 100.40m),
-            CreateCandle(StartUtc.AddMinutes(40), 100.05m, 100.08m, 99.98m, 100.03m),
-            CreateCandle(StartUtc.AddMinutes(45), 100.35m, 100.55m, 100.30m, 100.50m),
-            CreateCandle(StartUtc.AddMinutes(50), 100.10m, 100.26m, 100.08m, 100.16m),
-            CreateCandle(StartUtc.AddMinutes(55), 100.12m, 100.28m, 100.10m, 100.18m),
-            CreateCandle(StartUtc.AddMinutes(60), 100.14m, 100.32m, 100.12m, 100.20m)
-        ];
     }
 
     private static Candle CreateCandle(DateTime openTimeUtc, decimal open, decimal high, decimal low, decimal close)

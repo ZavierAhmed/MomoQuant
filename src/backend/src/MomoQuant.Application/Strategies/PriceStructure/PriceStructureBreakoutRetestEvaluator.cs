@@ -945,8 +945,9 @@ public static class PriceStructureBreakoutRetestEvaluator
             [PriceStructureRejectionCodes.WaitingForRetest] = 2,
             [PriceStructureRejectionCodes.RetestExpired] = 3,
             [PriceStructureRejectionCodes.RetestInvalidated] = 4,
-            [PriceStructureRejectionCodes.NoBreakout] = 5,
-            [PriceStructureRejectionCodes.NoConfirmedSwing] = 6
+            [PriceStructureRejectionCodes.InsufficientData] = 5,
+            [PriceStructureRejectionCodes.NoBreakout] = 6,
+            [PriceStructureRejectionCodes.NoConfirmedSwing] = 7
         };
 
         if (!priority.TryGetValue(current, out var currentRank))

@@ -146,61 +146,6 @@ public sealed class MomoVolatilityRangeReversionTests
     }
 
     [Fact]
-    public void NoLookahead_FutureCandle_DoesNotAffectEvaluation()
-    {
-        var strategy = new MomoVolatilityRangeReversionStrategy();
-        var candles = BuildMinimalCandles(200);
-
-        var context1 = new StrategyContext
-        {
-            SymbolId = 1,
-            Symbol = "ETHUSDT",
-            Timeframe = Timeframe.M5,
-            HigherTimeframe = Timeframe.H1,
-            MarketRegime = MarketRegime.Ranging,
-            Candles = candles,
-            IndicatorSnapshot = null,
-            EvaluatedAtUtc = DateTime.UtcNow
-        };
-
-        var result1 = strategy.Evaluate(context1);
-
-        var futureCandle = new Candle
-        {
-            SymbolId = 1,
-            ExchangeId = 1,
-            Timeframe = Timeframe.M5,
-            OpenTimeUtc = DateTime.UtcNow.AddMinutes(5),
-            CloseTimeUtc = DateTime.UtcNow.AddMinutes(10),
-            Open = 3000m,
-            High = 3050m,
-            Low = 2950m,
-            Close = 3025m,
-            Volume = 100m,
-            IsClosed = true
-        };
-
-        var candlesWithFuture = candles.Concat(new[] { futureCandle }).ToList();
-
-        var context2 = new StrategyContext
-        {
-            SymbolId = 1,
-            Symbol = "ETHUSDT",
-            Timeframe = Timeframe.M5,
-            HigherTimeframe = Timeframe.H1,
-            MarketRegime = MarketRegime.Ranging,
-            Candles = candlesWithFuture,
-            IndicatorSnapshot = null,
-            EvaluatedAtUtc = DateTime.UtcNow
-        };
-
-        var result2 = strategy.Evaluate(context2);
-
-        Assert.Equal(result1.Direction, result2.Direction);
-        Assert.Equal(result1.Reason, result2.Reason);
-    }
-
-    [Fact]
     public void RejectionCodes_AreWellDefined()
     {
         Assert.NotNull(MomoVolatilityRangeRejectionCodes.InsufficientData);

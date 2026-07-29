@@ -484,6 +484,12 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                 continue;
             }
 
+            if (!TryGetAtr(ltfAtrFast, retestIndex.Value, settings.FastAtrPeriod, out var retestEventAtrFast))
+            {
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.MtfDataUnavailable);
+                continue;
+            }
+
             if (currentIndex > breakoutIndex + settings.MaxRetestBars)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.RetestExpired);
@@ -511,9 +517,9 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
             }
 
             var risk = entry - stop;
-            var target = entry + (risk * settings.FixedRewardRisk);
-
-            if (target <= entry)
+            // Invariant: with validated FixedRewardRisk > 0 and InvalidStop ensuring risk > 0,
+            // long target = entry + risk*RR is always > entry when the multiply does not overflow.
+            if (!TryComputeLongTarget(entry, risk, settings.FixedRewardRisk, out var target))
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.InvalidTarget);
                 continue;
@@ -583,7 +589,13 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                     retestIndex,
                     confirmationIndex = currentIndex,
                     adaptiveBuffer,
-                    volRatio
+                    volRatio,
+                    breakoutAtrFast,
+                    breakoutAtrSlow,
+                    retestAtrFast = retestEventAtrFast,
+                    confirmationAtrFast,
+                    retestExtreme = retestLow,
+                    stopBufferAtr = settings.StopBufferAtr
                 }
             }, MomoAdaptiveMtfRejectionCodes.EntryConfirmed);
         }
@@ -742,6 +754,12 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                 continue;
             }
 
+            if (!TryGetAtr(ltfAtrFast, retestIndex.Value, settings.FastAtrPeriod, out var retestEventAtrFast))
+            {
+                bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.MtfDataUnavailable);
+                continue;
+            }
+
             if (currentIndex > breakoutIndex + settings.MaxRetestBars)
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.RetestExpired);
@@ -769,9 +787,7 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
             }
 
             var risk = stop - entry;
-            var target = entry - (risk * settings.FixedRewardRisk);
-
-            if (target >= entry || target <= 0m)
+            if (!TryComputeShortTarget(entry, risk, settings.FixedRewardRisk, out var target))
             {
                 bestReason = PickCloserReason(bestReason, MomoAdaptiveMtfRejectionCodes.InvalidTarget);
                 continue;
@@ -841,7 +857,13 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
                     retestIndex,
                     confirmationIndex = currentIndex,
                     adaptiveBuffer,
-                    volRatio
+                    volRatio,
+                    breakoutAtrFast,
+                    breakoutAtrSlow,
+                    retestAtrFast = retestEventAtrFast,
+                    confirmationAtrFast,
+                    retestExtreme = retestHigh,
+                    stopBufferAtr = settings.StopBufferAtr
                 }
             }, MomoAdaptiveMtfRejectionCodes.EntryConfirmed);
         }
@@ -931,6 +953,66 @@ public static class MomoAdaptiveMtfTrendBreakoutEvaluator
         var raw = settings.BaseBreakoutBufferAtr + ((volRatio - 1m) * settings.VolatilitySensitivity);
         return Clamp(raw, settings.MinBreakoutBufferAtr, settings.MaxBreakoutBufferAtr);
     }
+
+    /// <summary>
+    /// Long target is entry + risk×RR. With validated positive risk and RR the geometric
+    /// target &lt;= entry branch is unreachable; overflow maps to InvalidTarget.
+    /// </summary>
+    private static bool TryComputeLongTarget(decimal entry, decimal risk, decimal rewardRisk, out decimal target)
+    {
+        target = 0m;
+        if (risk <= 0m || rewardRisk <= 0m)
+        {
+            return false;
+        }
+
+        try
+        {
+            var reward = risk * rewardRisk;
+            target = entry + reward;
+            // Geometric invariant under positive risk/RR: target > entry. Overflow-safe path only.
+            return target > entry;
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Short target is entry − risk×RR. Large positive RR can yield target &lt;= 0 (InvalidTarget).
+    /// Extreme values must not throw — return false for a stable diagnostic.
+    /// </summary>
+    private static bool TryComputeShortTarget(decimal entry, decimal risk, decimal rewardRisk, out decimal target)
+    {
+        target = 0m;
+        if (risk <= 0m || rewardRisk <= 0m || entry <= 0m)
+        {
+            return false;
+        }
+
+        try
+        {
+            var reward = risk * rewardRisk;
+            if (reward >= entry)
+            {
+                return false;
+            }
+
+            target = entry - reward;
+            return target > 0m && target < entry;
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Public Wilder ATR series for formula proofs (event-time breakout/retest ATR).
+    /// </summary>
+    public static decimal[] ComputeWilderAtrSeries(IReadOnlyList<Candle> candles, int period) =>
+        ComputeWilderAtr(candles, period);
 
     private static int ComputeMinLtfBars(MomoAdaptiveMtfParameters settings) =>
         Math.Max(settings.SlowAtrPeriod, settings.LtfSlowEmaPeriod)

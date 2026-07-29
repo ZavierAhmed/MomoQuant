@@ -6,7 +6,7 @@ using MomoQuant.Domain.MarketData;
 namespace MomoQuant.UnitTests.Strategies;
 
 /// <summary>
-/// Milestone 23.1A1C — Range Reversion default-contract formula evidence.
+/// Milestone 23.1A1D — Range Reversion default-contract formula evidence.
 /// </summary>
 public sealed class MomoVolatilityRangeReversionFormulaTests
 {
@@ -37,12 +37,13 @@ public sealed class MomoVolatilityRangeReversionFormulaTests
         Assert.NotNull(candidate);
         Assert.Equal(MomoVolatilityRangeRejectionCodes.EntryConfirmed, reason);
         Assert.Equal(TradeDirection.Long, candidate!.Direction);
-        Assert.True(candidate.StopLoss < candidate.EntryPrice);
-        Assert.True(candidate.TakeProfit > candidate.EntryPrice);
+        Assert.Equal(2868m, candidate.EntryPrice);
+        Assert.Equal(2837.4362555235449367318813733m, candidate.StopLoss);
         Assert.Equal(3000m, candidate.TakeProfit);
-        Assert.True(candidate.RewardRisk >= 1.25m);
-        Assert.True(candidate.Strength >= 65m);
-        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
+        Assert.Equal(4.3188425456732526504674263312m, candidate.RewardRisk);
+        Assert.Equal(68.035843253575279656322074267m, candidate.Strength);
+        Assert.Equal("43E14ED345E566C3", candidate.SetupFingerprint);
+        AssertExactLongGeometryAndStrength(candidate);
     }
 
     [Fact]
@@ -53,68 +54,96 @@ public sealed class MomoVolatilityRangeReversionFormulaTests
         Assert.NotNull(candidate);
         Assert.Equal(MomoVolatilityRangeRejectionCodes.EntryConfirmed, reason);
         Assert.Equal(TradeDirection.Short, candidate!.Direction);
-        Assert.True(candidate.StopLoss > candidate.EntryPrice);
-        Assert.True(candidate.TakeProfit < candidate.EntryPrice);
+        Assert.Equal(3132m, candidate.EntryPrice);
+        Assert.Equal(3162.5659501236556344586939822m, candidate.StopLoss);
         Assert.Equal(3000m, candidate.TakeProfit);
-        Assert.True(candidate.RewardRisk >= 1.25m);
-        Assert.True(candidate.Strength >= 65m);
-        Assert.False(string.IsNullOrWhiteSpace(candidate.SetupFingerprint));
+        Assert.Equal(4.3185308968309285994022367671m, candidate.RewardRisk);
+        Assert.Equal(69.155342031802905333376497388m, candidate.Strength);
+        Assert.Equal("033FADE1716FAF49", candidate.SetupFingerprint);
+        AssertExactShortGeometryAndStrength(candidate);
     }
 
     [Fact]
     public void ExactLongGeometryAndStrengthBreakdown()
     {
-        var (candidate, _) = Eval(BuildValidLong(), Defaults());
+        var (candidate, reason) = Eval(BuildValidLong(), Defaults());
         Assert.NotNull(candidate);
-        using var doc = JsonDocument.Parse(candidate!.RawDataJson);
-        var root = doc.RootElement;
-        Assert.Equal(3150m, root.GetProperty("rangeHigh").GetDecimal());
-        Assert.Equal(2850m, root.GetProperty("rangeLow").GetDecimal());
-        Assert.Equal(3000m, root.GetProperty("rangeMidpoint").GetDecimal());
-        Assert.Equal(candidate.EntryPrice, root.GetProperty("entry").GetDecimal());
-        Assert.Equal(candidate.StopLoss, root.GetProperty("stop").GetDecimal());
-        Assert.Equal(candidate.TakeProfit, root.GetProperty("takeProfit").GetDecimal());
-        Assert.True(candidate.EntryPrice > 2850m);
-        Assert.True(candidate.StopLoss < candidate.EntryPrice);
-        Assert.Equal(3000m, candidate.TakeProfit);
-
-        var breakdown = root.GetProperty("strengthBreakdown");
-        var total =
-            breakdown.GetProperty("rangeQuality").GetDecimal()
-            + breakdown.GetProperty("volatilityQuality").GetDecimal()
-            + breakdown.GetProperty("rsiExtremity").GetDecimal()
-            + breakdown.GetProperty("wickQuality").GetDecimal()
-            + breakdown.GetProperty("rewardRiskQuality").GetDecimal()
-            + breakdown.GetProperty("trendFlatness").GetDecimal();
-        Assert.Equal(breakdown.GetProperty("total").GetDecimal(), total);
-        Assert.Equal(candidate.Strength, Math.Clamp(total, 0m, 100m));
-        Assert.True(candidate.Strength >= 65m);
+        Assert.Equal(MomoVolatilityRangeRejectionCodes.EntryConfirmed, reason);
+        AssertExactLongGeometryAndStrength(candidate!);
     }
 
     [Fact]
     public void ExactShortGeometryAndStrengthBreakdown()
     {
-        var (candidate, _) = Eval(BuildValidShort(), Defaults());
+        var (candidate, reason) = Eval(BuildValidShort(), Defaults());
         Assert.NotNull(candidate);
-        using var doc = JsonDocument.Parse(candidate!.RawDataJson);
+        Assert.Equal(MomoVolatilityRangeRejectionCodes.EntryConfirmed, reason);
+        AssertExactShortGeometryAndStrength(candidate!);
+    }
+
+    private static void AssertExactLongGeometryAndStrength(MomoVolatilityRangeReversionCandidate candidate)
+    {
+        using var doc = JsonDocument.Parse(candidate.RawDataJson);
         var root = doc.RootElement;
         Assert.Equal(3150m, root.GetProperty("rangeHigh").GetDecimal());
         Assert.Equal(2850m, root.GetProperty("rangeLow").GetDecimal());
         Assert.Equal(3000m, root.GetProperty("rangeMidpoint").GetDecimal());
-        Assert.True(candidate.EntryPrice < 3150m);
-        Assert.True(candidate.StopLoss > candidate.EntryPrice);
+        Assert.Equal(42.254977905820253072474506656m, root.GetProperty("fastAtr").GetDecimal());
+        Assert.Equal(41.757693421895668357208512272m, root.GetProperty("slowAtr").GetDecimal());
+        Assert.Equal(1.0119088111237445250357590068m, root.GetProperty("volatilityRatio").GetDecimal());
+        Assert.Equal(0.3055329783023949879111162213m, root.GetProperty("emaSeparationAtr").GetDecimal());
+        Assert.Equal(-0.1320644848222473665370999215m, root.GetProperty("slowEmaSlopeAtr").GetDecimal());
+        Assert.Equal(13.34637324329802989223565014m, root.GetProperty("rsi").GetDecimal());
+        Assert.Equal(50.0m, root.GetProperty("wickPercent").GetDecimal());
+        Assert.Equal(4.3188425456732526504674263312m, root.GetProperty("rewardRisk").GetDecimal());
+        Assert.Equal(2868m, root.GetProperty("entry").GetDecimal());
+        Assert.Equal(2837.4362555235449367318813733m, root.GetProperty("stop").GetDecimal());
+        Assert.Equal(3000m, root.GetProperty("takeProfit").GetDecimal());
+        Assert.Equal(2868m, candidate.EntryPrice);
+        Assert.Equal(2837.4362555235449367318813733m, candidate.StopLoss);
         Assert.Equal(3000m, candidate.TakeProfit);
 
         var breakdown = root.GetProperty("strengthBreakdown");
-        var total =
-            breakdown.GetProperty("rangeQuality").GetDecimal()
-            + breakdown.GetProperty("volatilityQuality").GetDecimal()
-            + breakdown.GetProperty("rsiExtremity").GetDecimal()
-            + breakdown.GetProperty("wickQuality").GetDecimal()
-            + breakdown.GetProperty("rewardRiskQuality").GetDecimal()
-            + breakdown.GetProperty("trendFlatness").GetDecimal();
-        Assert.Equal(breakdown.GetProperty("total").GetDecimal(), total);
-        Assert.Equal(candidate.Strength, Math.Clamp(total, 0m, 100m));
+        Assert.Equal(19.110567157773203009015303198m, breakdown.GetProperty("rangeQuality").GetDecimal());
+        Assert.Equal(13.452279721906386874106024830m, breakdown.GetProperty("volatilityQuality").GetDecimal());
+        Assert.Equal(12.373501003829697204436771348m, breakdown.GetProperty("rsiExtremity").GetDecimal());
+        Assert.Equal(4.2857142857142857142857142855m, breakdown.GetProperty("wickQuality").GetDecimal());
+        Assert.Equal(15m, breakdown.GetProperty("rewardRiskQuality").GetDecimal());
+        Assert.Equal(3.8137810843517068544782606052m, breakdown.GetProperty("trendFlatness").GetDecimal());
+        Assert.Equal(68.035843253575279656322074267m, breakdown.GetProperty("total").GetDecimal());
+        Assert.Equal(68.035843253575279656322074267m, candidate.Strength);
+        Assert.Equal("43E14ED345E566C3", candidate.SetupFingerprint);
+    }
+
+    private static void AssertExactShortGeometryAndStrength(MomoVolatilityRangeReversionCandidate candidate)
+    {
+        using var doc = JsonDocument.Parse(candidate.RawDataJson);
+        var root = doc.RootElement;
+        Assert.Equal(3150m, root.GetProperty("rangeHigh").GetDecimal());
+        Assert.Equal(2850m, root.GetProperty("rangeLow").GetDecimal());
+        Assert.Equal(3000m, root.GetProperty("rangeMidpoint").GetDecimal());
+        Assert.Equal(42.263800494622537834775928682m, root.GetProperty("fastAtr").GetDecimal());
+        Assert.Equal(41.757889451795668357208512272m, root.GetProperty("slowAtr").GetDecimal());
+        Assert.Equal(1.0121153403457059620208324627m, root.GetProperty("volatilityRatio").GetDecimal());
+        Assert.Equal(0.3048893274823407784093282618m, root.GetProperty("emaSeparationAtr").GetDecimal());
+        Assert.Equal(0.1320393948889972179751438647m, root.GetProperty("slowEmaSlopeAtr").GetDecimal());
+        Assert.Equal(88.60845770296578220299390318m, root.GetProperty("rsi").GetDecimal());
+        Assert.Equal(50.0m, root.GetProperty("wickPercent").GetDecimal());
+        Assert.Equal(4.3185308968309285994022367671m, root.GetProperty("rewardRisk").GetDecimal());
+        Assert.Equal(3132m, root.GetProperty("entry").GetDecimal());
+        Assert.Equal(3162.5659501236556344586939822m, root.GetProperty("stop").GetDecimal());
+        Assert.Equal(3000m, root.GetProperty("takeProfit").GetDecimal());
+
+        var breakdown = root.GetProperty("strengthBreakdown");
+        Assert.Equal(19.107273652578651414226481444m, breakdown.GetProperty("rangeQuality").GetDecimal());
+        Assert.Equal(13.447116491357350949479188432m, breakdown.GetProperty("volatilityQuality").GetDecimal());
+        Assert.Equal(13.490547258837589830282230388m, breakdown.GetProperty("rsiExtremity").GetDecimal());
+        Assert.Equal(4.2857142857142857142857142855m, breakdown.GetProperty("wickQuality").GetDecimal());
+        Assert.Equal(15m, breakdown.GetProperty("rewardRiskQuality").GetDecimal());
+        Assert.Equal(3.8246903433150274251028828380m, breakdown.GetProperty("trendFlatness").GetDecimal());
+        Assert.Equal(69.155342031802905333376497388m, breakdown.GetProperty("total").GetDecimal());
+        Assert.Equal(69.155342031802905333376497388m, candidate.Strength);
+        Assert.Equal("033FADE1716FAF49", candidate.SetupFingerprint);
     }
 
     [Fact]
@@ -144,38 +173,103 @@ public sealed class MomoVolatilityRangeReversionFormulaTests
     [Fact]
     public void PenetrationExactlyInsideTolerance_Accepted()
     {
-        var candles = BuildValidLong();
-        var (baseline, _) = Eval(candles, Defaults());
-        Assert.NotNull(baseline);
-        using var doc = JsonDocument.Parse(baseline!.RawDataJson);
-        var atr = doc.RootElement.GetProperty("fastAtr").GetDecimal();
-        var tolerance = 0.15m * atr;
-        var rangeLow = 2850m;
-        var exact = rangeLow - tolerance;
-        var last = candles[^1];
-        candles[^1] = CloneCandle(last, close: last.Close, high: last.High, low: exact, open: last.Open);
+        const decimal rangeLow = 2850m;
+        const decimal boundaryToleranceAtr = 0.15m;
+
+        var (candles, probe, atr, tolerance) = BuildLongAtBoundaryProbe(offsetFromBoundary: 0m);
+        Assert.Equal(boundaryToleranceAtr * atr, tolerance);
+        Assert.True(Math.Abs(probe - (rangeLow - tolerance)) < 0.0000001m);
+        Assert.Equal(probe, candles[^1].Low);
+
         var (c, reason) = Eval(candles, Defaults());
         Assert.NotNull(c);
         Assert.Equal(MomoVolatilityRangeRejectionCodes.EntryConfirmed, reason);
+        using var doc = JsonDocument.Parse(c!.RawDataJson);
+        Assert.Equal(atr, doc.RootElement.GetProperty("fastAtr").GetDecimal());
+        Assert.True(Math.Abs(probe - doc.RootElement.GetProperty("acceptedLowerBoundaryProbe").GetDecimal()) < 0.0000001m);
     }
 
     [Fact]
     public void PenetrationJustOutsideTolerance_Rejected()
     {
-        var candles = BuildValidLong();
-        var (baseline, _) = Eval(candles, Defaults());
-        Assert.NotNull(baseline);
-        using var doc = JsonDocument.Parse(baseline!.RawDataJson);
-        // Deeper wick raises event ATR and expands tolerance; epsilon must exceed that feedback.
-        var atr = doc.RootElement.GetProperty("fastAtr").GetDecimal();
-        var tolerance = 0.15m * atr;
-        var rangeLow = 2850m;
-        var justOutside = rangeLow - tolerance - 0.50m;
-        var last = candles[^1];
-        candles[^1] = CloneCandle(last, close: last.Close, high: last.High, low: justOutside, open: last.Open);
+        const decimal rangeLow = 2850m;
+        const decimal boundaryToleranceAtr = 0.15m;
+        const decimal epsilon = 0.01m;
+
+        var (candles, probe, atr, tolerance) = BuildLongAtBoundaryProbe(offsetFromBoundary: -epsilon);
+        Assert.Equal(boundaryToleranceAtr * atr, tolerance);
+        Assert.True(Math.Abs(probe - (rangeLow - tolerance - epsilon)) < 0.0000001m);
+        Assert.True(probe < rangeLow - tolerance);
+        Assert.True(Math.Abs(epsilon - ((rangeLow - tolerance) - probe)) < 0.0000001m);
+        Assert.Equal(probe, candles[^1].Low);
+
         var (c, reason) = Eval(candles, Defaults());
         Assert.Null(c);
         Assert.Equal(MomoVolatilityRangeRejectionCodes.BoundaryPenetrationExceeded, reason);
+    }
+
+    /// <summary>
+    /// Builds a long fixture whose final probe low sits at rangeLow − (0.15×ATR) + offsetFromBoundary,
+    /// where ATR is taken from the final mutated candle series via the production ATR calculator.
+    /// Fails if the probe does not converge.
+    /// </summary>
+    private static (List<Candle> Candles, decimal Probe, decimal Atr, decimal Tolerance) BuildLongAtBoundaryProbe(
+        decimal offsetFromBoundary)
+    {
+        const decimal rangeLow = 2850m;
+        const decimal boundaryToleranceAtr = 0.15m;
+        const decimal convergenceTol = 0.00000001m;
+
+        var candles = BuildValidLong();
+        decimal probe = decimal.MinValue;
+        decimal atr = 0m;
+        decimal tolerance = 0m;
+        for (var i = 0; i < 32; i++)
+        {
+            atr = ComputeProductionAtrAtLast(candles, period: 14);
+            Assert.True(atr > 0m);
+            tolerance = boundaryToleranceAtr * atr;
+            var nextProbe = rangeLow - tolerance + offsetFromBoundary;
+            var last = candles[^1];
+            candles[^1] = CloneCandle(last, close: last.Close, high: last.High, low: nextProbe, open: last.Open);
+
+            if (i > 0 && Math.Abs(nextProbe - probe) <= convergenceTol)
+            {
+                atr = ComputeProductionAtrAtLast(candles, period: 14);
+                tolerance = boundaryToleranceAtr * atr;
+                probe = rangeLow - tolerance + offsetFromBoundary;
+                last = candles[^1];
+                candles[^1] = CloneCandle(last, close: last.Close, high: last.High, low: probe, open: last.Open);
+                atr = ComputeProductionAtrAtLast(candles, period: 14);
+                tolerance = boundaryToleranceAtr * atr;
+                var expected = rangeLow - tolerance + offsetFromBoundary;
+                Assert.True(
+                    Math.Abs(probe - expected) <= 0.0000001m
+                    || Math.Abs(candles[^1].Low - expected) <= 0.0000001m,
+                    $"probe={probe} low={candles[^1].Low} expected={expected} atr={atr} tol={tolerance}");
+                // Return the stored wick and the ATR/tolerance of that final series.
+                probe = candles[^1].Low;
+                return (candles, probe, atr, tolerance);
+            }
+
+            probe = nextProbe;
+        }
+
+        Assert.Fail("Boundary probe builder did not converge within 32 iterations.");
+        return (candles, probe, atr, tolerance);
+    }
+
+    private static decimal ComputeProductionAtrAtLast(IReadOnlyList<Candle> candles, int period)
+    {
+        var state = new MomoQuant.Application.Indicators.Calculators.AtrCalculator.State();
+        decimal? latest = null;
+        for (var i = 0; i < candles.Count; i++)
+        {
+            latest = MomoQuant.Application.Indicators.Calculators.AtrCalculator.CalculateNext(candles[i], state, period);
+        }
+
+        Assert.True(latest is > 0m);
+        return latest!.Value;
     }
 
     [Fact]
@@ -191,20 +285,128 @@ public sealed class MomoVolatilityRangeReversionFormulaTests
     [Fact]
     public void SingleOutsideCloseFollowedByReclaim_RemainsEligible()
     {
-        var candles = BuildValidLong();
-        // Earliest expansion-window bar closes below prior low; later tip bars stay at entry so RSI remains oversold.
-        var idx = candles.Count - 6;
-        var bar = candles[idx];
-        candles[idx] = CloneCandle(bar, close: 2849.5m, high: Math.Max(bar.High, 2860m), low: 2849.5m, open: 2855m);
-        var last = candles[^1];
-        candles[^1] = CloneCandle(last, close: last.Close, high: last.High, low: 2847.5m, open: last.Open);
-        // Isolate expansion eligibility from the strength penalty of the rewritten range low.
+        var candles = BuildSingleOutsideCloseReclaimEligibleLong();
         var p = Defaults();
-        p["minStrength"] = "50";
+        Assert.Equal("65", p["minStrength"]);
         var (c, reason) = Eval(candles, p);
-        Assert.True(c is not null, $"expected candidate, got {reason}");
+        Assert.True(c is not null, $"expected candidate under minStrength=65, got {reason}");
         Assert.Equal(MomoVolatilityRangeRejectionCodes.EntryConfirmed, reason);
-        Assert.NotEqual(MomoVolatilityRangeRejectionCodes.TrendFilterFailed, reason);
+        Assert.True(c!.Strength >= 65m);
+    }
+
+    /// <summary>
+    /// Single outside-close in the expansion window, then reclaim — eligible under complete defaults
+    /// including minStrength=65 (baseline lows raised so the outside is mild and RSI stays oversold).
+    /// </summary>
+    internal static List<Candle> BuildSingleOutsideCloseReclaimEligibleLong()
+    {
+        var candles = BuildValidLong();
+        var currentIndex = candles.Count - 1;
+        var baselineEnd = currentIndex - 5;
+        var baselineStart = baselineEnd - 48;
+        const decimal floor = 2867.5m;
+        for (var i = baselineStart; i < baselineEnd; i++)
+        {
+            var x = candles[i];
+            if (x.Low < floor)
+            {
+                var newLow = floor;
+                var newHigh = Math.Max(x.High, newLow + 1m);
+                var newOpen = Math.Min(newHigh, Math.Max(newLow, x.Open));
+                var newClose = Math.Min(newHigh, Math.Max(newLow, x.Close));
+                candles[i] = CloneCandle(x, close: newClose, high: newHigh, low: newLow, open: newOpen);
+            }
+        }
+
+        var deepIdx = baselineEnd + 1;
+        var deep = candles[deepIdx];
+        candles[deepIdx] = CloneCandle(deep, close: 2868m, high: Math.Max(deep.High, 3000m), low: 2850m, open: 2869m);
+
+        var priorLow = decimal.MaxValue;
+        for (var i = baselineStart; i < baselineEnd; i++)
+        {
+            priorLow = Math.Min(priorLow, candles[i].Low);
+        }
+
+        var ox = priorLow - 0.1m;
+        var bar = candles[baselineEnd];
+        candles[baselineEnd] = CloneCandle(bar, close: ox, high: ox + 3m, low: ox, open: ox + 1m);
+        return candles;
+    }
+
+    [Fact]
+    public void SameTime_FutureCandleMutation_HasNoEffect()
+    {
+        var clean = BuildValidLong();
+        for (var i = 0; i < clean.Count; i++)
+        {
+            clean[i].Id = i + 1;
+        }
+
+        var evaluationIndex = clean.Count - 1;
+        var evaluationCandle = clean[evaluationIndex];
+        var evaluationTimeUtc = evaluationCandle.CloseTimeUtc;
+
+        var pollutedSource = clean.Select(CloneCandleExact).ToList();
+        for (var i = 0; i < pollutedSource.Count; i++)
+        {
+            pollutedSource[i].Id = clean[i].Id;
+        }
+
+        var last = pollutedSource[^1];
+        pollutedSource.Add(new Candle
+        {
+            Id = 90_001,
+            SymbolId = last.SymbolId,
+            ExchangeId = last.ExchangeId,
+            Timeframe = last.Timeframe,
+            OpenTimeUtc = evaluationTimeUtc,
+            CloseTimeUtc = evaluationTimeUtc.AddMinutes(5),
+            Open = last.Close + 500m,
+            High = last.High + 800m,
+            Low = last.Low + 400m,
+            Close = last.Close + 700m,
+            Volume = last.Volume,
+            IsClosed = false,
+            CreatedAtUtc = evaluationTimeUtc
+        });
+        pollutedSource.Add(new Candle
+        {
+            Id = 90_002,
+            SymbolId = last.SymbolId,
+            ExchangeId = last.ExchangeId,
+            Timeframe = last.Timeframe,
+            OpenTimeUtc = evaluationTimeUtc.AddMinutes(5),
+            CloseTimeUtc = evaluationTimeUtc.AddMinutes(10),
+            Open = 1m,
+            High = 2m,
+            Low = 0.5m,
+            Close = 1.5m,
+            Volume = 1m,
+            IsClosed = true,
+            CreatedAtUtc = evaluationTimeUtc.AddMinutes(5)
+        });
+
+        // Production path: evaluate fixed index T from clean vs polluted source (prefix through T only).
+        var cleanThroughT = clean.Take(evaluationIndex + 1).ToList();
+        var pollutedThroughT = pollutedSource.Where(c => c.CloseTimeUtc <= evaluationTimeUtc && c.IsClosed).ToList();
+        Assert.Equal(cleanThroughT.Count, pollutedThroughT.Count);
+        Assert.Equal(cleanThroughT[^1].Id, pollutedThroughT[^1].Id);
+        Assert.Equal(cleanThroughT[^1].CloseTimeUtc, pollutedThroughT[^1].CloseTimeUtc);
+
+        var (first, reason1) = Eval(cleanThroughT, Defaults());
+        var (second, reason2) = Eval(pollutedThroughT, Defaults());
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(reason1, reason2);
+        Assert.Equal(first!.Direction, second!.Direction);
+        Assert.Equal(first.EntryPrice, second.EntryPrice);
+        Assert.Equal(first.StopLoss, second.StopLoss);
+        Assert.Equal(first.TakeProfit, second.TakeProfit);
+        Assert.Equal(first.Strength, second.Strength);
+        Assert.Equal(first.SetupFingerprint, second.SetupFingerprint);
+        Assert.Equal(first.RawDataJson, second.RawDataJson);
+        Assert.True(pollutedSource.Count > clean.Count);
     }
 
     [Fact]
@@ -422,36 +624,6 @@ public sealed class MomoVolatilityRangeReversionFormulaTests
             candles, Defaults(), new HashSet<string> { first!.SetupFingerprint }, Code, 1, "5m");
         Assert.Null(second);
         Assert.Equal(MomoVolatilityRangeRejectionCodes.DuplicateSetup, r2);
-    }
-
-    [Fact]
-    public void SameTime_FutureCandleMutation_HasNoEffect()
-    {
-        var throughT = BuildValidLong();
-        var (first, reason1) = Eval(throughT, Defaults());
-        Assert.NotNull(first);
-
-        var mutated = throughT.Select(CloneCandleExact).ToList();
-        var last = mutated[^1];
-        mutated.Add(CloneCandle(
-            last,
-            close: last.Close + 500m,
-            high: last.High + 500m,
-            low: last.Low + 500m,
-            open: last.Open + 500m,
-            openOffsetMinutes: 5));
-
-        var (second, reason2) = Eval(throughT, Defaults());
-        Assert.NotNull(second);
-        Assert.Equal(reason1, reason2);
-        Assert.Equal(first!.Direction, second!.Direction);
-        Assert.Equal(first.EntryPrice, second.EntryPrice);
-        Assert.Equal(first.StopLoss, second.StopLoss);
-        Assert.Equal(first.TakeProfit, second.TakeProfit);
-        Assert.Equal(first.Strength, second.Strength);
-        Assert.Equal(first.SetupFingerprint, second.SetupFingerprint);
-        Assert.Equal(first.RawDataJson, second.RawDataJson);
-        Assert.True(mutated.Count > throughT.Count);
     }
 
     private static Dictionary<string, string> Defaults() =>
