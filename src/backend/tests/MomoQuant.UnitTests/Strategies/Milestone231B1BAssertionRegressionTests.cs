@@ -19,7 +19,12 @@ public sealed class Milestone231B1BAssertionRegressionTests
         new(@"ExtractStrengthFromStructure\s*\([^)]*\)\s*\?\?", RegexOptions.CultureInvariant),
         new(@"actual\s*\?\?\s*expected", RegexOptions.CultureInvariant),
         new(@"missingValue\s*\?\?\s*directValue", RegexOptions.CultureInvariant),
-        new(@"direct\.Strength\s*\?\?", RegexOptions.CultureInvariant)
+        new(@"direct\.Strength\s*\?\?", RegexOptions.CultureInvariant),
+        // B1C3 evidence is immutable fixture evidence: a real parity case may not manufacture
+        // an expected fingerprint or rejection contract from an executed SUT value.
+        new(@"PositiveFingerprint\s*\(\s*direct", RegexOptions.CultureInvariant),
+        new(@"ExpectedLabRejectionCode\s*=\s*direct\.", RegexOptions.CultureInvariant),
+        new(@"Expected\w+\s*=\s*(?:direct|labEval|backtest|candidate)\.", RegexOptions.CultureInvariant)
     ];
 
     [Fact]
