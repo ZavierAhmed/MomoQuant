@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MomoQuant.Application.Strategies;
@@ -14,6 +15,49 @@ namespace MomoQuant.UnitTests.Strategies;
 /// <summary>Mandatory three-path parity evidence assertions (Milestone 23.1B1C2).</summary>
 internal static class ParityAssertionHelper
 {
+    public enum RawDataJsonRootState { Null, PresentJsonObject }
+
+    public enum JsonPropertyState
+    {
+        Absent,
+        ExplicitNull,
+        EmptyString,
+        WhitespaceString,
+        ExactString,
+        ExactNumber,
+        ExactBoolean,
+        ExactJsonValue
+    }
+
+    /// <summary>Immutable exact JSON-property expectation; no mutable JSON node is retained.</summary>
+    public sealed record JsonPropertyExpectation(
+        JsonPropertyState State,
+        string? StringValue = null,
+        decimal? NumberValue = null,
+        bool? BooleanValue = null,
+        string? CanonicalJsonValue = null)
+    {
+        public static JsonPropertyExpectation Absent() => new(JsonPropertyState.Absent);
+        public static JsonPropertyExpectation Null() => new(JsonPropertyState.ExplicitNull);
+        public static JsonPropertyExpectation Empty() => new(JsonPropertyState.EmptyString);
+        public static JsonPropertyExpectation Whitespace(string value) => new(JsonPropertyState.WhitespaceString, StringValue: value);
+        public static JsonPropertyExpectation String(string value) => new(JsonPropertyState.ExactString, StringValue: value);
+        public static JsonPropertyExpectation Number(decimal value) => new(JsonPropertyState.ExactNumber, NumberValue: value);
+        public static JsonPropertyExpectation Boolean(bool value) => new(JsonPropertyState.ExactBoolean, BooleanValue: value);
+        public static JsonPropertyExpectation Json(string canonicalValue) => new(JsonPropertyState.ExactJsonValue, CanonicalJsonValue: canonicalValue);
+    }
+
+    /// <summary>Immutable root and exact-property contract for a RawDataJson payload.</summary>
+    public sealed record RawDataJsonContract(
+        RawDataJsonRootState RootState,
+        ImmutableDictionary<string, JsonPropertyExpectation> Properties)
+    {
+        public static RawDataJsonContract Create(
+            RawDataJsonRootState rootState,
+            params (string Name, JsonPropertyExpectation Expectation)[] properties) =>
+            new(rootState, properties.ToImmutableDictionary(item => item.Name, item => item.Expectation, StringComparer.Ordinal));
+    }
+
     public abstract record FingerprintContract
     {
         public sealed record RequiredPresent(string ExpectedValue) : FingerprintContract;
@@ -45,6 +89,7 @@ internal static class ParityAssertionHelper
         public required FingerprintContract Fingerprint { get; init; }
         public required IReadOnlyList<string> RequiredRawDataJsonProperties { get; init; }
         public required IReadOnlyList<string> RequiredStructureJsonProperties { get; init; }
+        public RawDataJsonContract? RawDataContract { get; init; }
         public StrategyResearchCandidateStatus ExpectedCandidateStatus { get; init; } = StrategyResearchCandidateStatus.Detected;
     }
 
@@ -74,6 +119,7 @@ internal static class ParityAssertionHelper
         public required IndicatorSnapshot? ExpectedIndicatorSnapshot { get; init; }
         public required FingerprintContract Fingerprint { get; init; }
         public required IReadOnlyList<string> RequiredRawDataJsonProperties { get; init; }
+        public RawDataJsonContract? RawDataContract { get; init; }
     }
 
     public static void AssertPositiveThreePathParity(
@@ -121,11 +167,8 @@ internal static class ParityAssertionHelper
             backtestResult.RawDataJson,
             labCandidate.SetupFingerprint);
 
-        AssertRequiredJsonProperties(
-            evidence.RequiredRawDataJsonProperties,
-            direct.RawDataJson,
-            labEval.Result.RawDataJson,
-            backtestResult.RawDataJson);
+        AssertRawDataEvidence(evidence.RawDataContract, evidence.RequiredRawDataJsonProperties,
+            direct.RawDataJson, labEval.Result.RawDataJson, backtestResult.RawDataJson);
 
         AssertStrengthAndBreakdown(
             direct.RawDataJson,
@@ -189,11 +232,8 @@ internal static class ParityAssertionHelper
             backtestResult.RawDataJson,
             candidateFingerprint: null);
 
-        AssertRequiredJsonProperties(
-            evidence.RequiredRawDataJsonProperties,
-            direct.RawDataJson,
-            labEval.Result.RawDataJson,
-            backtestResult.RawDataJson);
+        AssertRawDataEvidence(evidence.RawDataContract, evidence.RequiredRawDataJsonProperties,
+            direct.RawDataJson, labEval.Result.RawDataJson, backtestResult.RawDataJson);
     }
 
     private static void AssertRejectionFunnelLinkage(RejectionThreePathEvidence evidence, int capturedLabEvaluationCount)
@@ -746,6 +786,119 @@ internal static class ParityAssertionHelper
             actual.BollingerMiddle20, actual.BollingerUpper20, actual.BollingerLower20, actual.BollingerBandwidth20,
             actual.DonchianHigh20, actual.DonchianLow20, actual.MacdLine, actual.MacdSignal, actual.MacdHistogram,
             actual.Supertrend, actual.SupertrendDirection, actual.SupportLevel, actual.ResistanceLevel, actual.CreatedAtUtc);
+    }
+
+    private static void AssertRawDataEvidence(
+        RawDataJsonContract? contract,
+        IReadOnlyList<string> legacyRequiredProperties,
+        params string?[] jsonSources)
+    {
+        if (contract is null)
+        {
+            AssertRequiredJsonProperties(legacyRequiredProperties, jsonSources);
+            return;
+        }
+
+        foreach (var json in jsonSources)
+        {
+            AssertRawDataJsonContract(contract, json);
+        }
+    }
+
+    public static void AssertRawDataJsonContract(RawDataJsonContract contract, string? actualJson)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        if (contract.RootState == RawDataJsonRootState.Null)
+        {
+            Assert.Null(actualJson);
+            return;
+        }
+
+        Assert.NotNull(actualJson);
+        Assert.False(string.IsNullOrEmpty(actualJson));
+        Assert.False(string.IsNullOrWhiteSpace(actualJson));
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(actualJson!);
+        }
+        catch (JsonException ex)
+        {
+            Assert.Fail($"RawDataJson must be a valid JSON object: {ex.Message}");
+            return;
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+            Assert.Equal(JsonValueKind.Object, root.ValueKind);
+            var actualProperties = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            foreach (var property in root.EnumerateObject())
+            {
+                Assert.True(actualProperties.TryAdd(property.Name, property.Value),
+                    $"RawDataJson contains duplicate property '{property.Name}'.");
+            }
+
+            Assert.Equal(
+                contract.Properties.Count(item => item.Value.State != JsonPropertyState.Absent),
+                actualProperties.Count);
+            foreach (var (name, expectation) in contract.Properties)
+            {
+                var exists = actualProperties.TryGetValue(name, out var actual);
+                AssertJsonPropertyState(name, expectation, exists, actual);
+            }
+        }
+    }
+
+    private static void AssertJsonPropertyState(
+        string propertyName,
+        JsonPropertyExpectation expectation,
+        bool exists,
+        JsonElement actual)
+    {
+        if (expectation.State == JsonPropertyState.Absent)
+        {
+            Assert.False(exists, $"Property '{propertyName}' must be absent.");
+            return;
+        }
+
+        Assert.True(exists, $"Required property '{propertyName}' is missing.");
+        switch (expectation.State)
+        {
+            case JsonPropertyState.ExplicitNull:
+                Assert.Equal(JsonValueKind.Null, actual.ValueKind);
+                break;
+            case JsonPropertyState.EmptyString:
+                Assert.Equal(JsonValueKind.String, actual.ValueKind);
+                Assert.Equal(string.Empty, actual.GetString());
+                break;
+            case JsonPropertyState.WhitespaceString:
+                Assert.Equal(JsonValueKind.String, actual.ValueKind);
+                Assert.Equal(expectation.StringValue, actual.GetString());
+                Assert.True(string.IsNullOrWhiteSpace(expectation.StringValue));
+                break;
+            case JsonPropertyState.ExactString:
+                Assert.Equal(JsonValueKind.String, actual.ValueKind);
+                Assert.Equal(expectation.StringValue, actual.GetString());
+                break;
+            case JsonPropertyState.ExactNumber:
+                Assert.Equal(JsonValueKind.Number, actual.ValueKind);
+                Assert.Equal(expectation.NumberValue, actual.GetDecimal());
+                break;
+            case JsonPropertyState.ExactBoolean:
+                Assert.True(actual.ValueKind is JsonValueKind.True or JsonValueKind.False);
+                Assert.Equal(expectation.BooleanValue, actual.GetBoolean());
+                break;
+            case JsonPropertyState.ExactJsonValue:
+                Assert.False(string.IsNullOrWhiteSpace(expectation.CanonicalJsonValue));
+                Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expectation.CanonicalJsonValue), JsonNode.Parse(actual.GetRawText())),
+                    $"Property '{propertyName}' differs from its canonical JSON value.");
+                break;
+            default:
+                Assert.Fail($"Unsupported property state '{expectation.State}'.");
+                break;
+        }
     }
 
     private static void AssertIndicatorSnapshotIdentity(
