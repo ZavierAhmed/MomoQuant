@@ -1,6 +1,7 @@
 using System.Text.Json;
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Backtesting;
+using MomoQuant.Application.Common;
 using MomoQuant.Application.MarketData;
 using MomoQuant.Application.Strategies;
 using MomoQuant.Application.Strategies.Implementations;
@@ -511,6 +512,8 @@ public sealed class Milestone231BParityTests
     public async Task CrossPath_Adaptive_DirectLabBacktest_IdenticalAtSameT()
     {
         const string expectedFingerprint = ParityEvidenceContracts.AdaptivePositiveFingerprint;
+        const long expectedLabRunId = 960;
+        var candidateCreatedAtUtc = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc);
         var rawDataContract = ParityEvidenceContracts.CreateAdaptivePositiveRawDataContract();
         var outcomeContract = ParityEvidenceContracts.CreateAdaptivePositiveOutcomeContract();
         var (fullLtf, fullHtf) = AdaptiveDefaultFixtures.BuildValidLong(Start);
@@ -531,6 +534,11 @@ public sealed class Milestone231BParityTests
         {
             ["__seenFingerprints"] = "[]"
         };
+        var candidateContract = ParityEvidenceContracts.CreatePositiveCandidateContract(
+            expectedLabRunId, StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
+            MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version, 1, 1, "BTCUSDT", "5m",
+            TradeDirection.Long, evaluationTimeUtc, outcomeContract, expectedFingerprint, parameters, rawDataContract,
+            candidateCreatedAtUtc);
         var plugin = new MomoAdaptiveMultiTimeframeTrendBreakoutStrategy();
         var context = BuildAdaptiveContext(ltf, visibleHtf, parameters, evaluationTimeUtc);
         var direct = plugin.Evaluate(context);
@@ -557,14 +565,15 @@ public sealed class Milestone231BParityTests
             }
         };
         var labRun = Milestone231BParityFixtures.CreateRun(
-            960, StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout, "5m", from, to);
+            expectedLabRunId, StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout, "5m", from, to);
         await Milestone231BParityFixtures.CreateRunner(
                 labRun,
                 recordingPlugin,
                 StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout,
                 MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
                 labDataset,
-                labCandidates)
+                labCandidates,
+                timeProvider: new ControllableTimeProvider(candidateCreatedAtUtc))
             .ExecuteAsync(labRun.Id, new StrategyLabExecutionContext
             {
                 ExecutionPurpose = ExecutionPurpose.GeneralResearch,
@@ -626,6 +635,7 @@ public sealed class Milestone231BParityTests
                 Fingerprint = ParityEvidenceContracts.PositiveFingerprint(expectedFingerprint),
                 RawDataContract = rawDataContract,
                 OutcomeContract = outcomeContract,
+                CandidateContract = candidateContract,
                 RequiredRawDataJsonProperties =
                     ["setupFingerprint", "strengthBreakdown", "setup", "version", "reasonCode"],
                 RequiredStructureJsonProperties = ParityEvidenceContracts.AdaptivePositiveStructure
@@ -636,6 +646,8 @@ public sealed class Milestone231BParityTests
     public async Task CrossPath_Range_DirectLabBacktest_IdenticalAtSameT()
     {
         const string expectedFingerprint = ParityEvidenceContracts.RangePositiveFingerprint;
+        const long expectedLabRunId = 961;
+        var candidateCreatedAtUtc = new DateTime(2026, 2, 1, 0, 5, 0, DateTimeKind.Utc);
         // BacktestEngine windows to 600 recent candles — use the same visible window on all three paths.
         var full = MomoVolatilityRangeReversionFormulaTests.BuildValidLong();
         var candles = full.Count <= 600 ? full : full.TakeLast(600).ToList();
@@ -651,6 +663,11 @@ public sealed class Milestone231BParityTests
         {
             ["__seenFingerprints"] = "[]"
         };
+        var candidateContract = ParityEvidenceContracts.CreatePositiveCandidateContract(
+            expectedLabRunId, StrategyCodes.MomoVolatilityRangeReversion,
+            MomoVolatilityRangeReversionStrategy.Version, 1, 1, "ETHUSDT", "5m",
+            TradeDirection.Long, evaluationTimeUtc, rangeEvidence.OutcomeContract, expectedFingerprint, parameters,
+            rangeEvidence.RawDataContract, candidateCreatedAtUtc);
         var plugin = new MomoVolatilityRangeReversionStrategy();
         var productionHtf = StrategyHigherTimeframeSupport.ResolveGeneralHigherTimeframe(Timeframe.M5);
         var directContext = new StrategyContext
@@ -684,13 +701,14 @@ public sealed class Milestone231BParityTests
             WarmupCandleCount = 0
         };
         var run = Milestone231BParityFixtures.CreateRun(
-            961, StrategyCodes.MomoVolatilityRangeReversion, "5m", from, to,
+            expectedLabRunId, StrategyCodes.MomoVolatilityRangeReversion, "5m", from, to,
             MomoVolatilityRangeReversionStrategy.Version);
         var labCandidates = new List<StrategyResearchCandidate>();
         var recordingPlugin = new RecordingTradingStrategyDecorator(plugin);
         var runner = Milestone231BParityFixtures.CreateRunner(
             run, recordingPlugin, StrategyCode.MomoVolatilityRangeReversion,
-            MomoVolatilityRangeReversionStrategy.Version, dataset, labCandidates);
+            MomoVolatilityRangeReversionStrategy.Version, dataset, labCandidates,
+            timeProvider: new ControllableTimeProvider(candidateCreatedAtUtc));
         await runner.ExecuteAsync(run.Id, new StrategyLabExecutionContext
         {
             ExecutionPurpose = ExecutionPurpose.GeneralResearch,
@@ -760,6 +778,7 @@ public sealed class Milestone231BParityTests
                 Fingerprint = ParityEvidenceContracts.PositiveFingerprint(expectedFingerprint),
                 RawDataContract = rangeEvidence.RawDataContract,
                 OutcomeContract = rangeEvidence.OutcomeContract,
+                CandidateContract = candidateContract,
                 RequiredRawDataJsonProperties = ["setupFingerprint", "version", "diagnostics"],
                 RequiredStructureJsonProperties = ParityEvidenceContracts.RangePositiveStructure
             });
@@ -769,6 +788,8 @@ public sealed class Milestone231BParityTests
     public async Task CrossPath_Psbr_DirectLabBacktest_IdenticalAtSameT()
     {
         const string expectedFingerprint = ParityEvidenceContracts.PsbrPositiveFingerprint;
+        const long expectedLabRunId = 962;
+        var candidateCreatedAtUtc = new DateTime(2026, 2, 1, 0, 10, 0, DateTimeKind.Utc);
         var candles = Milestone231BParityFixtures.BuildPsbrLongScenario();
         var evalIndex = candles.Count - 1;
         var evaluationTimeUtc = candles[evalIndex].CloseTimeUtc;
@@ -793,6 +814,11 @@ public sealed class Milestone231BParityTests
         };
         var psbrEvidence = ParityEvidenceContracts.CreatePsbrPositiveEvidence(candles);
         Assert.Equal(expectedFingerprint, psbrEvidence.RawDataContract.Properties["setupFingerprint"].StringValue);
+        var candidateContract = ParityEvidenceContracts.CreatePositiveCandidateContract(
+            expectedLabRunId, StrategyCodes.PriceStructureBreakoutRetest,
+            PriceStructureBreakoutRetestEvaluator.StrategyVersion, 1, 1, "BTCUSDT", "5m",
+            TradeDirection.Long, evaluationTimeUtc, psbrEvidence.OutcomeContract, expectedFingerprint, parameters,
+            psbrEvidence.RawDataContract, candidateCreatedAtUtc);
         var plugin = new PriceStructureBreakoutRetestStrategy();
         var productionHtf = StrategyHigherTimeframeSupport.ResolveGeneralHigherTimeframe(Timeframe.M5);
         var regime = DeterministicMarketRegimeClassifier.Classify(null, candles[evalIndex]);
@@ -829,13 +855,14 @@ public sealed class Milestone231BParityTests
             WarmupCandleCount = 0
         };
         var run = Milestone231BParityFixtures.CreateRun(
-            962, StrategyCodes.PriceStructureBreakoutRetest, "5m", from, to,
+            expectedLabRunId, StrategyCodes.PriceStructureBreakoutRetest, "5m", from, to,
             PriceStructureBreakoutRetestEvaluator.StrategyVersion);
         var labCandidates = new List<StrategyResearchCandidate>();
         var recordingPlugin = new RecordingTradingStrategyDecorator(plugin);
         var runner = Milestone231BParityFixtures.CreateRunner(
             run, recordingPlugin, StrategyCode.PriceStructureBreakoutRetest,
-            PriceStructureBreakoutRetestEvaluator.StrategyVersion, dataset, labCandidates);
+            PriceStructureBreakoutRetestEvaluator.StrategyVersion, dataset, labCandidates,
+            timeProvider: new ControllableTimeProvider(candidateCreatedAtUtc));
         await runner.ExecuteAsync(run.Id, new StrategyLabExecutionContext
         {
             ExecutionPurpose = ExecutionPurpose.GeneralResearch,
@@ -905,6 +932,7 @@ public sealed class Milestone231BParityTests
                 Fingerprint = ParityEvidenceContracts.PositiveFingerprint(expectedFingerprint),
                 RawDataContract = psbrEvidence.RawDataContract,
                 OutcomeContract = psbrEvidence.OutcomeContract,
+                CandidateContract = candidateContract,
                 RequiredRawDataJsonProperties = ["setupFingerprint", "structure", "version", "strengthBreakdown"],
                 RequiredStructureJsonProperties = Array.Empty<string>()
             });

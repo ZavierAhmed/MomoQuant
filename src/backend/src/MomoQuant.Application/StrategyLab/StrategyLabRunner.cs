@@ -63,6 +63,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
     private readonly IStrategyLabCandleWindowFactory _candleWindowFactory;
     private readonly IResearchExecutionContextAccessor _executionContextAccessor;
     private readonly ILogger<StrategyLabRunner> _logger;
+    private readonly TimeProvider _timeProvider;
 
     public StrategyLabRunner(
         IStrategyLabRunRepository runRepository,
@@ -80,7 +81,8 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         ILogger<StrategyLabRunner>? logger = null,
         StandardStrategyLabCandleDataSource? standardCandleDataSource = null,
         IResearchExecutionContextAccessor? executionContextAccessor = null,
-        IStrategyExecutionRequirementsResolver? executionRequirementsResolver = null)
+        IStrategyExecutionRequirementsResolver? executionRequirementsResolver = null,
+        TimeProvider? timeProvider = null)
     {
         _ = positionSizingService; // retained for DI compatibility; futures sizing is internal to risk observer
         _runRepository = runRepository;
@@ -99,6 +101,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         _candleWindowFactory = candleWindowFactory ?? new CandlePrefixViewStrategyLabCandleWindowFactory();
         _executionContextAccessor = executionContextAccessor ?? new ResearchExecutionContextAccessor();
         _logger = logger ?? NullLogger<StrategyLabRunner>.Instance;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public Task ExecuteAsync(long runId, CancellationToken cancellationToken = default) =>
@@ -1045,7 +1048,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         Reason = evt.Reason
     };
 
-    private static StrategyResearchCandidate BuildCandidate(
+    private StrategyResearchCandidate BuildCandidate(
         StrategyLabRun run,
         Strategy strategyEntity,
         TradeDirection direction,
@@ -1089,7 +1092,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)),
             StructureJson = structureJson,
             RawOutcomeStatus = RawOutcomeStatus.Pending,
-            CreatedAtUtc = DateTime.UtcNow
+            CreatedAtUtc = _timeProvider.GetUtcNow().UtcDateTime
         };
     }
 

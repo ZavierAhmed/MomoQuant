@@ -247,7 +247,8 @@ internal static class Milestone231BParityFixtures
         StrategyCode code,
         string version,
         StrategyLabDataset dataset,
-        List<StrategyResearchCandidate> sink)
+        List<StrategyResearchCandidate> sink,
+        TimeProvider? timeProvider = null)
     {
         var runRepo = new Mock<IStrategyLabRunRepository>();
         runRepo.Setup(r => r.GetByIdAsync(run.Id, It.IsAny<CancellationToken>())).ReturnsAsync(run);
@@ -335,7 +336,8 @@ internal static class Milestone231BParityFixtures
             Mock.Of<IRiskProfileRepository>(),
             new PositionSizingService(),
             Mock.Of<ICandidateConfidenceScorer>(),
-            standardCandleDataSource: new StandardStrategyLabCandleDataSource(Mock.Of<IBacktestDataLoader>()));
+            standardCandleDataSource: new StandardStrategyLabCandleDataSource(Mock.Of<IBacktestDataLoader>()),
+            timeProvider: timeProvider);
     }
 
     public static IStrategyParameterProvider CreateParameterProvider(IReadOnlyDictionary<string, string> parameters)

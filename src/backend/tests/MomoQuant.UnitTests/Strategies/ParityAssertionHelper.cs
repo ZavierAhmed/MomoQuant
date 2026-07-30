@@ -73,6 +73,43 @@ internal static class ParityAssertionHelper
         decimal Strength,
         string Reason);
 
+    public enum NullableDateTimeState { Null, Present }
+
+    /// <summary>Immutable persisted-candidate contract, independently declared before execution.</summary>
+    public sealed record CandidateContract(
+        long StrategyLabRunId,
+        string StrategyCode,
+        string StrategyVersion,
+        long ExchangeId,
+        long SymbolId,
+        string Symbol,
+        string Timeframe,
+        TradeDirection Direction,
+        DateTime SetupDetectedAtUtc,
+        DateTime ProposedEntryTimeUtc,
+        decimal ProposedEntryPrice,
+        decimal StopLoss,
+        decimal Target1,
+        decimal? Target2,
+        decimal RewardRisk,
+        StrategyResearchCandidateStatus CandidateStatus,
+        string StrategyReason,
+        string SetupFingerprint,
+        RawDataJsonContract ParametersContract,
+        RawDataJsonContract StructureContract,
+        RawOutcomeStatus RawOutcomeStatus,
+        DateTime CreatedAtUtc,
+        NullableDateTimeState UpdatedAtUtcState);
+
+    /// <summary>Exact persisted rejection-funnel contract for a one-evaluation rejection run.</summary>
+    public sealed record RejectionFunnelContract(string RejectionCode)
+    {
+        public const int ExpectedCount = 1;
+        public const int ExpectedEntryConfirmed = 0;
+        public const int ExpectedEvaluations = 1;
+        public const bool ExpectedReconciled = true;
+    }
+
     public sealed class PositiveThreePathEvidence
     {
         public required IReadOnlyList<(StrategyContext Context, StrategySignalResult Result)> LabEvaluations { get; init; }
@@ -100,6 +137,7 @@ internal static class ParityAssertionHelper
         public required IReadOnlyList<string> RequiredStructureJsonProperties { get; init; }
         public RawDataJsonContract? RawDataContract { get; init; }
         public PositiveOutcomeContract? OutcomeContract { get; init; }
+        public CandidateContract? CandidateContract { get; init; }
         public StrategyResearchCandidateStatus ExpectedCandidateStatus { get; init; } = StrategyResearchCandidateStatus.Detected;
     }
 
@@ -130,6 +168,7 @@ internal static class ParityAssertionHelper
         public required FingerprintContract Fingerprint { get; init; }
         public required IReadOnlyList<string> RequiredRawDataJsonProperties { get; init; }
         public RawDataJsonContract? RawDataContract { get; init; }
+        public RejectionFunnelContract? RejectionFunnelContract { get; init; }
     }
 
     public static void AssertPositiveThreePathParity(
@@ -263,6 +302,8 @@ internal static class ParityAssertionHelper
         {
             Assert.Equal(evidence.ExpectedStrategyLabRunId, persistedRun.Id);
             Assert.Equal(evidence.ExpectedStrategyCode.ToCode(), persistedRun.StrategyCode);
+            Assert.Equal(capturedLabEvaluationCount, persistedRun.EvaluationsCount);
+            Assert.Equal(0, persistedRun.RawCandidateCount);
             Assert.False(string.IsNullOrWhiteSpace(persistedRun.ResultSummaryJson));
             resultSummaryJson = persistedRun.ResultSummaryJson;
         }
@@ -289,6 +330,59 @@ internal static class ParityAssertionHelper
             rejectionFunnel.TryGetProperty("entryConfirmed", out var entryConfirmedEl),
             "rejectionFunnel.entryConfirmed is required.");
         Assert.Equal(0, entryConfirmedEl.GetInt32());
+
+        if (evidence.RejectionFunnelContract is { } contract)
+        {
+            Assert.Equal(contract.RejectionCode, evidence.ExpectedLabRejectionCode);
+            Assert.Equal(RejectionFunnelContract.ExpectedEvaluations, capturedLabEvaluationCount);
+            AssertExactRejectionFunnel(contract, resultSummaryJson);
+        }
+    }
+
+    private static void AssertExactRejectionFunnel(RejectionFunnelContract contract, string resultSummaryJson)
+    {
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(resultSummaryJson);
+        }
+        catch (JsonException ex)
+        {
+            Assert.Fail($"Persisted result summary must be valid JSON: {ex.Message}");
+            return;
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+            Assert.Equal(JsonValueKind.Object, root.ValueKind);
+            var rootProperties = ToUniquePropertyMap(root);
+            Assert.NotNull(rootProperties);
+            Assert.True(rootProperties!.TryGetValue("rejectionFunnel", out var funnel));
+            Assert.Equal(JsonValueKind.Object, funnel.ValueKind);
+
+            var properties = ToUniquePropertyMap(funnel);
+            Assert.NotNull(properties);
+            Assert.Equal(4, properties!.Count);
+            Assert.True(properties.TryGetValue("counts", out var counts));
+            Assert.True(properties.TryGetValue("entryConfirmed", out var entryConfirmed));
+            Assert.True(properties.TryGetValue("evaluations", out var evaluations));
+            Assert.True(properties.TryGetValue("reconciled", out var reconciled));
+            Assert.Equal(JsonValueKind.Object, counts.ValueKind);
+            Assert.Equal(JsonValueKind.Number, entryConfirmed.ValueKind);
+            Assert.Equal(JsonValueKind.Number, evaluations.ValueKind);
+            Assert.True(reconciled.ValueKind is JsonValueKind.True or JsonValueKind.False);
+
+            var countProperties = ToUniquePropertyMap(counts);
+            Assert.NotNull(countProperties);
+            Assert.Single(countProperties!);
+            Assert.True(countProperties.TryGetValue(contract.RejectionCode, out var rejectionCount));
+            Assert.Equal(JsonValueKind.Number, rejectionCount.ValueKind);
+            Assert.Equal(RejectionFunnelContract.ExpectedCount, rejectionCount.GetInt32());
+            Assert.Equal(RejectionFunnelContract.ExpectedEntryConfirmed, entryConfirmed.GetInt32());
+            Assert.Equal(RejectionFunnelContract.ExpectedEvaluations, evaluations.GetInt32());
+            Assert.Equal(RejectionFunnelContract.ExpectedReconciled, reconciled.GetBoolean());
+        }
     }
 
     public static decimal ExtractStrengthForTest(string json)
@@ -523,6 +617,40 @@ internal static class ParityAssertionHelper
         StrategySignalResult direct,
         PositiveThreePathEvidence evidence)
     {
+        if (evidence.CandidateContract is { } expected)
+        {
+        Assert.Equal(expected.StrategyLabRunId, labCandidate.StrategyLabRunId);
+        Assert.Equal(expected.StrategyCode, labCandidate.StrategyCode);
+        Assert.Equal(expected.StrategyVersion, labCandidate.StrategyVersion);
+        Assert.Equal(expected.ExchangeId, labCandidate.ExchangeId);
+        Assert.Equal(expected.SymbolId, labCandidate.SymbolId);
+        Assert.Equal(expected.Symbol, labCandidate.Symbol);
+        Assert.Equal(expected.Timeframe, labCandidate.Timeframe);
+        Assert.Equal(expected.Direction, labCandidate.Direction);
+        Assert.Equal(expected.SetupDetectedAtUtc, labCandidate.SetupDetectedAtUtc);
+        Assert.Equal(expected.ProposedEntryTimeUtc, labCandidate.ProposedEntryTimeUtc);
+        Assert.Equal(expected.ProposedEntryPrice, labCandidate.ProposedEntryPrice);
+        Assert.Equal(expected.StopLoss, labCandidate.StopLoss);
+        Assert.Equal(expected.Target1, labCandidate.Target1);
+        Assert.Equal(expected.Target2, labCandidate.Target2);
+        Assert.Equal(expected.RewardRisk, labCandidate.RewardRisk);
+        Assert.Equal(expected.CandidateStatus, labCandidate.CandidateStatus);
+        Assert.Equal(expected.StrategyReason, labCandidate.StrategyReason);
+        Assert.Equal(expected.SetupFingerprint, labCandidate.SetupFingerprint);
+        Assert.Equal(expected.RawOutcomeStatus, labCandidate.RawOutcomeStatus);
+        Assert.Equal(expected.CreatedAtUtc, labCandidate.CreatedAtUtc);
+        if (expected.UpdatedAtUtcState == NullableDateTimeState.Null)
+        {
+            Assert.Null(labCandidate.UpdatedAtUtc);
+        }
+        else
+        {
+            Assert.NotNull(labCandidate.UpdatedAtUtc);
+        }
+        AssertRawDataJsonContract(expected.ParametersContract, labCandidate.ParametersJson);
+            AssertRawDataJsonContract(expected.StructureContract, labCandidate.StructureJson);
+        }
+
         Assert.Equal(evidence.ExpectedStrategyLabRunId, labCandidate.StrategyLabRunId);
         Assert.Equal(evidence.ExpectedStrategyCode.ToCode(), labCandidate.StrategyCode);
         Assert.Equal(evidence.ExpectedStrategyVersion, labCandidate.StrategyVersion);

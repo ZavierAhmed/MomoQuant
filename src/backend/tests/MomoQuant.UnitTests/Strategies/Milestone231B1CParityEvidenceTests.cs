@@ -728,7 +728,7 @@ public sealed class Milestone231B1CParityEvidenceTests
     }
 
     [Fact]
-    public void PositiveParity_WrongFunnelCount_Fails()
+    public void RejectionParity_WrongFunnelCount_Fails()
     {
         var directContext = BuildDirectContext(MarketRegime.Ranging);
         var direct = RejectionSignal("TREND_FILTER_FAILED");
@@ -943,6 +943,67 @@ public sealed class Milestone231B1CParityEvidenceTests
                 }));
     }
 
+    [Theory]
+    [InlineData("run")]
+    [InlineData("code")]
+    [InlineData("version")]
+    [InlineData("exchange")]
+    [InlineData("symbolId")]
+    [InlineData("symbol")]
+    [InlineData("timeframe")]
+    [InlineData("direction")]
+    [InlineData("setupTime")]
+    [InlineData("entryTime")]
+    [InlineData("entry")]
+    [InlineData("stop")]
+    [InlineData("target")]
+    [InlineData("target2")]
+    [InlineData("rewardRisk")]
+    [InlineData("status")]
+    [InlineData("reason")]
+    [InlineData("fingerprint")]
+    [InlineData("parameters")]
+    [InlineData("structure")]
+    [InlineData("rawOutcome")]
+    [InlineData("created")]
+    [InlineData("updated")]
+    public void PositiveParity_CandidateContractFieldMismatch_Fails(string field)
+    {
+        var directContext = BuildDirectContext();
+        var direct = EntrySignal();
+        var lab = EntryLabEvaluation();
+        var backtest = EntryBacktest();
+        var capture = CaptureWithCandles([BuildCandle(1)]);
+        var candidate = EntryLabCandidate();
+        switch (field)
+        {
+            case "run": candidate.StrategyLabRunId = 999; break;
+            case "code": candidate.StrategyCode = "WRONG"; break;
+            case "version": candidate.StrategyVersion = "wrong"; break;
+            case "exchange": candidate.ExchangeId = 99; break;
+            case "symbolId": candidate.SymbolId = 99; break;
+            case "symbol": candidate.Symbol = "ETHUSDT"; break;
+            case "timeframe": candidate.Timeframe = "1h"; break;
+            case "direction": candidate.Direction = TradeDirection.Short; break;
+            case "setupTime": candidate.SetupDetectedAtUtc = EvalTime.AddMinutes(1); break;
+            case "entryTime": candidate.ProposedEntryTimeUtc = EvalTime.AddMinutes(1); break;
+            case "entry": candidate.ProposedEntryPrice = 101m; break;
+            case "stop": candidate.StopLoss = 98m; break;
+            case "target": candidate.Target1 = 103m; break;
+            case "target2": candidate.Target2 = 104m; break;
+            case "rewardRisk": candidate.RewardRisk = 3m; break;
+            case "status": candidate.CandidateStatus = StrategyResearchCandidateStatus.Closed; break;
+            case "reason": candidate.StrategyReason = "wrong"; break;
+            case "fingerprint": candidate.SetupFingerprint = "wrong"; break;
+            case "parameters": candidate.ParametersJson = "{\"extra\":\"x\"}"; break;
+            case "structure": candidate.StructureJson = "{}"; break;
+            case "rawOutcome": candidate.RawOutcomeStatus = RawOutcomeStatus.Winner; break;
+            case "created": candidate.CreatedAtUtc = EvalTime; break;
+            case "updated": candidate.UpdatedAtUtc = EvalTime; break;
+        }
+        Assert.ThrowsAny<Exception>(() => AssertPositive(directContext, direct, lab, backtest, capture, candidate));
+    }
+
     private static void AssertPositive(
         StrategyContext directContext,
         StrategySignalResult direct,
@@ -979,6 +1040,7 @@ public sealed class Milestone231B1CParityEvidenceTests
             RequiredStructureJsonProperties = baseEvidence.RequiredStructureJsonProperties,
             RawDataContract = baseEvidence.RawDataContract,
             OutcomeContract = baseEvidence.OutcomeContract,
+            CandidateContract = baseEvidence.CandidateContract,
             ExpectedCandidateStatus = baseEvidence.ExpectedCandidateStatus
         };
         ParityAssertionHelper.AssertPositiveThreePathParity(directContext, direct, backtest, evidence);
@@ -1020,7 +1082,8 @@ public sealed class Milestone231B1CParityEvidenceTests
                 ExpectedParameters = baseEvidence.ExpectedParameters,
                 ExpectedIndicatorSnapshot = baseEvidence.ExpectedIndicatorSnapshot,
                 Fingerprint = baseEvidence.Fingerprint,
-                RequiredRawDataJsonProperties = baseEvidence.RequiredRawDataJsonProperties
+                RequiredRawDataJsonProperties = baseEvidence.RequiredRawDataJsonProperties,
+                RejectionFunnelContract = baseEvidence.RejectionFunnelContract
             });
     }
 
@@ -1048,7 +1111,18 @@ public sealed class Milestone231B1CParityEvidenceTests
             ExpectedIndicatorSnapshot = BuildSnapshot(capture.Candles.FirstOrDefault()?.Id ?? 1),
             Fingerprint = new ParityAssertionHelper.FingerprintContract.RequiredPresent("fp-1"),
             RequiredRawDataJsonProperties = ["setupFingerprint", "strength", "strengthBreakdown"],
-            RequiredStructureJsonProperties = ["strength", "strengthBreakdown"]
+            RequiredStructureJsonProperties = ["strength", "strengthBreakdown"],
+            OutcomeContract = new ParityAssertionHelper.PositiveOutcomeContract(TradeDirection.Long, 100m, 99m, 102m, 0.75m, "ENTRY"),
+            CandidateContract = new ParityAssertionHelper.CandidateContract(
+                100, StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout, "1.0.0", 42, 7, "BTCUSDT", "5m",
+                TradeDirection.Long, EvalTime, EvalTime, 100m, 99m, 102m, null, 2m,
+                StrategyResearchCandidateStatus.Detected, "ENTRY", "fp-1",
+                ParityAssertionHelper.RawDataJsonContract.Create(ParityAssertionHelper.RawDataJsonRootState.PresentJsonObject),
+                ParityAssertionHelper.RawDataJsonContract.Create(
+                    ParityAssertionHelper.RawDataJsonRootState.PresentJsonObject,
+                    ("strength", ParityAssertionHelper.JsonPropertyExpectation.Number(0.75m)),
+                    ("strengthBreakdown", ParityAssertionHelper.JsonPropertyExpectation.Json("{\"total\":0.75}"))),
+                RawOutcomeStatus.Pending, EvalTime.AddMinutes(1), ParityAssertionHelper.NullableDateTimeState.Null)
         };
 
     private static ParityAssertionHelper.RejectionThreePathEvidence BuildRejectionEvidence(
@@ -1063,7 +1137,7 @@ public sealed class Milestone231B1CParityEvidenceTests
             ExpectedStrategyLabRunId = 100,
             ExpectedRegime = MarketRegime.Ranging,
             ExpectedLabRejectionCode = rejectionCode,
-            LabResultSummaryJson = $"{{\"rejectionFunnel\":{{\"counts\":{{\"{rejectionCode}\":1}},\"evaluations\":1,\"entryConfirmed\":0}}}}",
+            LabResultSummaryJson = $"{{\"rejectionFunnel\":{{\"counts\":{{\"{rejectionCode}\":1}},\"entryConfirmed\":0,\"evaluations\":1,\"reconciled\":true}}}}",
             ExpectedEvaluationTimestamp = EvalTime,
             ExpectedCurrentCandleIndex = 0,
             ExpectedExecutionCandleIds = capture.Candles.Select(c => c.Id).ToArray(),
@@ -1076,7 +1150,8 @@ public sealed class Milestone231B1CParityEvidenceTests
             ExpectedParameters = DefaultParameters(),
             ExpectedIndicatorSnapshot = BuildSnapshot(capture.Candles.FirstOrDefault()?.Id ?? 1),
             Fingerprint = new ParityAssertionHelper.FingerprintContract.RequiredPresent("fp-rej"),
-            RequiredRawDataJsonProperties = ["setupFingerprint"]
+            RequiredRawDataJsonProperties = ["setupFingerprint"],
+            RejectionFunnelContract = new ParityAssertionHelper.RejectionFunnelContract(rejectionCode)
         };
 
     private static ParityAssertionHelper.PositiveThreePathEvidence CopyPositiveEvidence(
@@ -1112,7 +1187,8 @@ public sealed class Milestone231B1CParityEvidenceTests
             RequiredRawDataJsonProperties = source.RequiredRawDataJsonProperties,
             RequiredStructureJsonProperties = source.RequiredStructureJsonProperties,
             RawDataContract = rawDataContract ?? source.RawDataContract,
-            OutcomeContract = outcomeContract ?? source.OutcomeContract
+            OutcomeContract = outcomeContract ?? source.OutcomeContract,
+            CandidateContract = source.CandidateContract
         };
 
     private static ParityAssertionHelper.RejectionThreePathEvidence CopyRejectionEvidence(
@@ -1140,7 +1216,8 @@ public sealed class Milestone231B1CParityEvidenceTests
             ExpectedParameters = source.ExpectedParameters,
             ExpectedIndicatorSnapshot = source.ExpectedIndicatorSnapshot,
             Fingerprint = fingerprint ?? source.Fingerprint,
-            RequiredRawDataJsonProperties = source.RequiredRawDataJsonProperties
+            RequiredRawDataJsonProperties = source.RequiredRawDataJsonProperties,
+            RejectionFunnelContract = source.RejectionFunnelContract
         };
 
     private static StrategyContext BuildDirectContext(
@@ -1278,6 +1355,7 @@ public sealed class Milestone231B1CParityEvidenceTests
             SetupFingerprint = "fp-1",
             ParametersJson = "{}",
             StructureJson = "{\"strength\":0.75,\"strengthBreakdown\":{\"total\":0.75}}"
+            ,CreatedAtUtc = EvalTime.AddMinutes(1)
         };
 
     private static StrategyEvaluationResult EntryBacktest(string? rawDataJson = null) => new()

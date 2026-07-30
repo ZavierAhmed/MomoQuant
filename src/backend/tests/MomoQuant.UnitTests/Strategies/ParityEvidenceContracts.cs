@@ -1,6 +1,7 @@
 using System.Text.Json;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
+using MomoQuant.Domain.StrategyLab;
 
 namespace MomoQuant.UnitTests.Strategies;
 
@@ -48,6 +49,63 @@ internal static class ParityEvidenceContracts
     public sealed record PsbrPositiveEvidence(
         ParityAssertionHelper.RawDataJsonContract RawDataContract,
         ParityAssertionHelper.PositiveOutcomeContract OutcomeContract);
+
+    /// <summary>Independent persisted-candidate expectation shared by the three fixed positive fixtures.</summary>
+    public static ParityAssertionHelper.CandidateContract CreatePositiveCandidateContract(
+        long strategyLabRunId,
+        string strategyCode,
+        string strategyVersion,
+        long exchangeId,
+        long symbolId,
+        string symbol,
+        string timeframe,
+        TradeDirection direction,
+        DateTime evaluationTimeUtc,
+        ParityAssertionHelper.PositiveOutcomeContract outcome,
+        string fingerprint,
+        IReadOnlyDictionary<string, string> parameters,
+        ParityAssertionHelper.RawDataJsonContract structureContract,
+        DateTime createdAtUtc) =>
+        new(
+            strategyLabRunId,
+            strategyCode,
+            strategyVersion,
+            exchangeId,
+            symbolId,
+            symbol,
+            timeframe,
+            direction,
+            evaluationTimeUtc,
+            evaluationTimeUtc,
+            outcome.EntryPrice,
+            outcome.StopLoss,
+            outcome.TakeProfit,
+            Target2: null,
+            RewardRisk: Math.Abs((outcome.TakeProfit - outcome.EntryPrice) /
+                (direction == TradeDirection.Long
+                    ? outcome.EntryPrice - outcome.StopLoss
+                    : outcome.StopLoss - outcome.EntryPrice)),
+            CandidateStatus: StrategyResearchCandidateStatus.Closed,
+            StrategyReason: outcome.Reason,
+            SetupFingerprint: fingerprint,
+            ParametersContract: CreateCanonicalParametersContract(parameters),
+            StructureContract: structureContract,
+            RawOutcomeStatus: RawOutcomeStatus.Expired,
+            CreatedAtUtc: createdAtUtc,
+            UpdatedAtUtcState: ParityAssertionHelper.NullableDateTimeState.Present);
+
+    public static ParityAssertionHelper.RejectionFunnelContract CreateOneEvaluationRejectionFunnelContract(string rejectionCode) =>
+        new(rejectionCode);
+
+    private static ParityAssertionHelper.RawDataJsonContract CreateCanonicalParametersContract(
+        IReadOnlyDictionary<string, string> parameters) =>
+        ParityAssertionHelper.RawDataJsonContract.Create(
+            ParityAssertionHelper.RawDataJsonRootState.PresentJsonObject,
+            parameters
+                .Where(pair => !string.Equals(pair.Key, "__seenFingerprints", StringComparison.Ordinal))
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => (pair.Key, ParityAssertionHelper.JsonPropertyExpectation.String(pair.Value)))
+                .ToArray());
 
     /// <summary>
     /// Independent PSBR v1.1 reference calculation for the fixed bullish parity fixture.

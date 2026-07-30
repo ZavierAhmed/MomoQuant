@@ -453,6 +453,8 @@ public sealed class Milestone231B1ATests
                 ExpectedStrategyCode = StrategyCode.MomoVolatilityRangeReversion,
                 ExpectedRegime = regime,
                 ExpectedLabRejectionCode = MomoVolatilityRangeRejectionCodes.TrendFilterFailed,
+                RejectionFunnelContract = ParityEvidenceContracts.CreateOneEvaluationRejectionFunnelContract(
+                    MomoVolatilityRangeRejectionCodes.TrendFilterFailed),
                 LabResultSummaryJson = run.ResultSummaryJson!,
                 ExpectedEvaluationTimestamp = evaluationTimeUtc,
                 ExpectedCurrentCandleIndex = evalIndex,
@@ -595,6 +597,8 @@ public sealed class Milestone231B1ATests
                 ExpectedStrategyCode = StrategyCode.PriceStructureBreakoutRetest,
                 ExpectedRegime = regime,
                 ExpectedLabRejectionCode = PriceStructureRejectionCodes.InsufficientData,
+                RejectionFunnelContract = ParityEvidenceContracts.CreateOneEvaluationRejectionFunnelContract(
+                    PriceStructureRejectionCodes.InsufficientData),
                 LabResultSummaryJson = run.ResultSummaryJson!,
                 ExpectedEvaluationTimestamp = evaluationTimeUtc,
                 ExpectedCurrentCandleIndex = evalIndex,
@@ -713,6 +717,8 @@ public sealed class Milestone231B1ATests
                 ExpectedStrategyCode = StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout,
                 ExpectedRegime = regime,
                 ExpectedLabRejectionCode = MomoAdaptiveMtfRejectionCodes.MtfDataUnavailable,
+                RejectionFunnelContract = ParityEvidenceContracts.CreateOneEvaluationRejectionFunnelContract(
+                    MomoAdaptiveMtfRejectionCodes.MtfDataUnavailable),
                 LabResultSummaryJson = run.ResultSummaryJson!,
                 ExpectedEvaluationTimestamp = evaluationTimeUtc,
                 ExpectedCurrentCandleIndex = evalIndex,
