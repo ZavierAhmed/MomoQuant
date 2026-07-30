@@ -152,7 +152,7 @@ public sealed class Milestone231B1C1FactoryRecoveryTests : IClassFixture<MomoQua
 
                 var requirements = await ResolveRequirementsAsync(sp1, experiment);
 
-                scopeRequest = BuildCanonicalScopeRequest(experiment, requirements, evalEnd, execution);
+                scopeRequest = BuildCanonicalScopeRequest(experiment, requirements, evalEnd, execution, trial);
 
 
 
@@ -248,7 +248,8 @@ public sealed class Milestone231B1C1FactoryRecoveryTests : IClassFixture<MomoQua
                     experiment,
                     requirements,
                     DateTime.SpecifyKind(experiment.TrainingEndUtc!.Value, DateTimeKind.Utc),
-                    execution);
+                    execution,
+                    trial);
 
 
 
@@ -426,7 +427,7 @@ public sealed class Milestone231B1C1FactoryRecoveryTests : IClassFixture<MomoQua
 
                 var requirements = await ResolveRequirementsAsync(sp1, experiment);
 
-                scopeRequest = BuildCanonicalScopeRequest(experiment, requirements, evalEnd, execution);
+                scopeRequest = BuildCanonicalScopeRequest(experiment, requirements, evalEnd, execution, trial);
 
 
 
@@ -486,6 +487,10 @@ public sealed class Milestone231B1C1FactoryRecoveryTests : IClassFixture<MomoQua
 
                 var experiment = await db2.ValidationExperiments.AsNoTracking().FirstAsync(e => e.Id == experimentId);
 
+                var trial = await db2.ValidationParameterTrials.AsNoTracking()
+
+                    .FirstAsync(t => t.ValidationExperimentId == experimentId && t.TrialNumber == 1);
+
                 var execution = await db2.ValidationAuditExecutions.AsNoTracking()
 
                     .FirstAsync(e => e.ValidationExperimentId == experimentId);
@@ -498,7 +503,8 @@ public sealed class Milestone231B1C1FactoryRecoveryTests : IClassFixture<MomoQua
                     experiment,
                     requirements,
                     DateTime.SpecifyKind(experiment.TrainingEndUtc!.Value, DateTimeKind.Utc),
-                    execution);
+                    execution,
+                    trial);
 
 
 
@@ -686,7 +692,9 @@ public sealed class Milestone231B1C1FactoryRecoveryTests : IClassFixture<MomoQua
 
         DateTime evalEnd,
 
-        ValidationAuditExecution execution) =>
+        ValidationAuditExecution execution,
+
+        ValidationParameterTrial trial) =>
 
         new()
 
@@ -697,6 +705,8 @@ public sealed class Milestone231B1C1FactoryRecoveryTests : IClassFixture<MomoQua
             Requirements = requirements,
 
             AuditExecution = execution,
+
+            Trial = trial,
 
             TrainingEvaluationEndExclusiveUtc = DateTime.SpecifyKind(evalEnd, DateTimeKind.Utc)
 

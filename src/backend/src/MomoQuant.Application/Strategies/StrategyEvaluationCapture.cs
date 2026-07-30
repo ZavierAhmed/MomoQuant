@@ -1,4 +1,5 @@
 using MomoQuant.Domain.Enums;
+using MomoQuant.Domain.Indicators;
 using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.Strategies;
 
@@ -27,7 +28,14 @@ public sealed class StrategyEvaluationCaptureRecording : IStrategyEvaluationCapt
             ExecutionTimeframe: context.Timeframe,
             HigherTimeframe: context.HigherTimeframe,
             Candles: context.Candles.ToList(),
-            HigherTimeframeCandles: context.HigherTimeframeCandles.ToList()));
+            HigherTimeframeCandles: context.HigherTimeframeCandles.ToList(),
+            ExchangeId: context.ExchangeId,
+            SymbolId: context.SymbolId,
+            Symbol: context.Symbol,
+            MarketRegime: context.MarketRegime,
+            CurrentCandleIndex: context.CurrentCandleIndex,
+            IndicatorSnapshot: context.IndicatorSnapshot,
+            StrategyParameters: new Dictionary<string, string>(context.StrategyParameters)));
     }
 
     public void Clear() => _records.Clear();
@@ -39,4 +47,11 @@ public sealed record StrategyEvaluationCaptureRecord(
     Timeframe ExecutionTimeframe,
     Timeframe HigherTimeframe,
     IReadOnlyList<Candle> Candles,
-    IReadOnlyList<Candle> HigherTimeframeCandles);
+    IReadOnlyList<Candle> HigherTimeframeCandles,
+    long? ExchangeId,
+    long SymbolId,
+    string? Symbol,
+    MarketRegime MarketRegime,
+    int? CurrentCandleIndex,
+    IndicatorSnapshot? IndicatorSnapshot,
+    IReadOnlyDictionary<string, string> StrategyParameters);

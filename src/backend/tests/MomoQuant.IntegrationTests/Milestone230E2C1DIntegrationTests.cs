@@ -155,6 +155,7 @@ public sealed class Milestone230E2C1DIntegrationTests : IClassFixture<E2C1Instru
                     RequiresHigherTimeframePartition = false
                 },
                 AuditExecution = execution,
+                Trial = trial,
                 TrainingEvaluationEndExclusiveUtc = evalEnd
             };
 

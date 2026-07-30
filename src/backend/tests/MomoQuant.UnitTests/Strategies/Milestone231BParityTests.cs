@@ -571,9 +571,6 @@ public sealed class Milestone231BParityTests
                 CallerComponent = "Milestone231BParityTests"
             });
         Assert.Equal(StrategyLabRunStatus.Completed, labRun.Status);
-        var labEval = Assert.Single(recordingPlugin.Evaluations, e => e.Context.EvaluatedAtUtc == evaluationTimeUtc);
-        Assert.NotEmpty(labCandidates);
-        var lab = Assert.Single(labCandidates, c => c.SetupFingerprint == directFp);
 
         var recording = new ClosedHtfCaptureHarness.RecordingStrategyEngine(new StrategyEvaluationCaptureRecording());
         var engine = Milestone231BParityFixtures.CreateBacktestEngine(recording, parameters);
@@ -597,20 +594,23 @@ public sealed class Milestone231BParityTests
             evaluationIndex: 0);
 
         var backtestResult = Assert.Single(recording.Results);
-        var capture = Assert.Single(recording.Capture.Records);
         Assert.False(backtestResult.Skipped);
         ParityAssertionHelper.AssertPositiveThreePathParity(
+            context,
             direct,
-            labEval.Context,
-            labEval.Result,
-            lab,
             backtestResult,
             new ParityAssertionHelper.PositiveThreePathEvidence
             {
-                BacktestCapture = capture,
+                LabEvaluations = recordingPlugin.Evaluations,
+                BacktestCaptures = recording.Capture.Records,
+                LabCandidates = labCandidates,
+                ExpectedStrategyCode = StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout,
+                ExpectedStrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
+                ExpectedStrategyLabRunId = labRun.Id,
                 ExpectedRegime = classifiedRegime,
                 ExpectedHigherTimeframe = Timeframe.H1,
                 ExpectedTimeframe = Timeframe.M5,
+                ExpectedTimeframeApi = "5m",
                 ExpectedSymbol = "BTCUSDT",
                 ExpectedSymbolId = 1,
                 ExpectedExchangeId = 1,
@@ -619,7 +619,10 @@ public sealed class Milestone231BParityTests
                 ExpectedExecutionCandleIds = ltf.Take(evalIndex + 1).Select(c => c.Id).ToArray(),
                 ExpectedHtfCandleIds = visibleHtf.Select(c => c.Id).ToArray(),
                 ExpectedParameters = parameters,
-                ExpectedIndicatorSnapshot = context.IndicatorSnapshot
+                ExpectedIndicatorSnapshot = context.IndicatorSnapshot,
+                Fingerprint = ParityEvidenceContracts.PositiveFingerprint(directFp!),
+                RequiredRawDataJsonProperties = ParityEvidenceContracts.AdaptivePositiveRawData,
+                RequiredStructureJsonProperties = ParityEvidenceContracts.AdaptivePositiveStructure
             });
     }
 
@@ -642,7 +645,7 @@ public sealed class Milestone231BParityTests
         };
         var plugin = new MomoVolatilityRangeReversionStrategy();
         var productionHtf = StrategyHigherTimeframeSupport.ResolveGeneralHigherTimeframe(Timeframe.M5);
-        var direct = plugin.Evaluate(new StrategyContext
+        var directContext = new StrategyContext
         {
             ExchangeId = 1,
             SymbolId = 1,
@@ -655,7 +658,8 @@ public sealed class Milestone231BParityTests
             StrategyParameters = parameters,
             EvaluatedAtUtc = evaluationTimeUtc,
             CurrentCandleIndex = evalIndex
-        });
+        };
+        var direct = plugin.Evaluate(directContext);
         Assert.Equal(SignalType.Entry, direct.SignalType);
         Assert.NotNull(direct.EntryPrice);
         var directFp = StrategyLabRunner.ExtractFingerprint(direct.RawDataJson ?? "{}");
@@ -689,9 +693,6 @@ public sealed class Milestone231BParityTests
             CallerComponent = "Milestone231BParityTests"
         });
         Assert.Equal(StrategyLabRunStatus.Completed, run.Status);
-        var labEval = Assert.Single(recordingPlugin.Evaluations, e => e.Context.EvaluatedAtUtc == evaluationTimeUtc);
-        Assert.NotEmpty(labCandidates);
-        var lab = Assert.Single(labCandidates, c => c.SetupFingerprint == directFp);
 
         var recording = new ClosedHtfCaptureHarness.RecordingStrategyEngine(new StrategyEvaluationCaptureRecording());
         var engine = Milestone231BParityFixtures.CreateBacktestEngine(recording, parameters);
@@ -724,19 +725,22 @@ public sealed class Milestone231BParityTests
             evaluationIndex: 0);
 
         var backtestResult = Assert.Single(recording.Results);
-        var capture = Assert.Single(recording.Capture.Records);
         ParityAssertionHelper.AssertPositiveThreePathParity(
+            directContext,
             direct,
-            labEval.Context,
-            labEval.Result,
-            lab,
             backtestResult,
             new ParityAssertionHelper.PositiveThreePathEvidence
             {
-                BacktestCapture = capture,
+                LabEvaluations = recordingPlugin.Evaluations,
+                BacktestCaptures = recording.Capture.Records,
+                LabCandidates = labCandidates,
+                ExpectedStrategyCode = StrategyCode.MomoVolatilityRangeReversion,
+                ExpectedStrategyVersion = MomoVolatilityRangeReversionStrategy.Version,
+                ExpectedStrategyLabRunId = run.Id,
                 ExpectedRegime = regime,
                 ExpectedHigherTimeframe = productionHtf,
                 ExpectedTimeframe = Timeframe.M5,
+                ExpectedTimeframeApi = "5m",
                 ExpectedSymbol = "ETHUSDT",
                 ExpectedSymbolId = 1,
                 ExpectedExchangeId = 1,
@@ -745,7 +749,10 @@ public sealed class Milestone231BParityTests
                 ExpectedExecutionCandleIds = candles.Take(evalIndex + 1).Select(c => c.Id).ToArray(),
                 ExpectedHtfCandleIds = Array.Empty<long>(),
                 ExpectedParameters = parameters,
-                ExpectedIndicatorSnapshot = snapshots[candles[evalIndex].Id]
+                ExpectedIndicatorSnapshot = snapshots[candles[evalIndex].Id],
+                Fingerprint = ParityEvidenceContracts.PositiveFingerprint(directFp!),
+                RequiredRawDataJsonProperties = ParityEvidenceContracts.RangePositiveRawData,
+                RequiredStructureJsonProperties = ParityEvidenceContracts.RangePositiveStructure
             });
     }
 
@@ -778,7 +785,7 @@ public sealed class Milestone231BParityTests
         var productionHtf = StrategyHigherTimeframeSupport.ResolveGeneralHigherTimeframe(Timeframe.M5);
         var regime = DeterministicMarketRegimeClassifier.Classify(null, candles[evalIndex]);
 
-        var direct = plugin.Evaluate(new StrategyContext
+        var directContext = new StrategyContext
         {
             ExchangeId = 1,
             SymbolId = 1,
@@ -791,7 +798,8 @@ public sealed class Milestone231BParityTests
             StrategyParameters = parameters,
             EvaluatedAtUtc = evaluationTimeUtc,
             CurrentCandleIndex = evalIndex
-        });
+        };
+        var direct = plugin.Evaluate(directContext);
         Assert.Equal(SignalType.Entry, direct.SignalType);
         Assert.NotNull(direct.EntryPrice);
         var directFp = StrategyLabRunner.ExtractFingerprint(direct.RawDataJson ?? "{}");
@@ -826,9 +834,6 @@ public sealed class Milestone231BParityTests
             CallerComponent = "Milestone231BParityTests"
         });
         Assert.Equal(StrategyLabRunStatus.Completed, run.Status);
-        var labEval = Assert.Single(recordingPlugin.Evaluations, e => e.Context.EvaluatedAtUtc == evaluationTimeUtc);
-        Assert.NotEmpty(labCandidates);
-        var lab = Assert.Single(labCandidates, c => c.SetupFingerprint == directFp);
 
         var recording = new ClosedHtfCaptureHarness.RecordingStrategyEngine(new StrategyEvaluationCaptureRecording());
         var engine = Milestone231BParityFixtures.CreateBacktestEngine(recording, parameters);
@@ -861,19 +866,22 @@ public sealed class Milestone231BParityTests
             evaluationIndex: 0);
 
         var backtestResult = Assert.Single(recording.Results);
-        var capture = Assert.Single(recording.Capture.Records);
         ParityAssertionHelper.AssertPositiveThreePathParity(
+            directContext,
             direct,
-            labEval.Context,
-            labEval.Result,
-            lab,
             backtestResult,
             new ParityAssertionHelper.PositiveThreePathEvidence
             {
-                BacktestCapture = capture,
+                LabEvaluations = recordingPlugin.Evaluations,
+                BacktestCaptures = recording.Capture.Records,
+                LabCandidates = labCandidates,
+                ExpectedStrategyCode = StrategyCode.PriceStructureBreakoutRetest,
+                ExpectedStrategyVersion = PriceStructureBreakoutRetestEvaluator.StrategyVersion,
+                ExpectedStrategyLabRunId = run.Id,
                 ExpectedRegime = regime,
                 ExpectedHigherTimeframe = productionHtf,
                 ExpectedTimeframe = Timeframe.M5,
+                ExpectedTimeframeApi = "5m",
                 ExpectedSymbol = "BTCUSDT",
                 ExpectedSymbolId = 1,
                 ExpectedExchangeId = 1,
@@ -882,7 +890,10 @@ public sealed class Milestone231BParityTests
                 ExpectedExecutionCandleIds = candles.Take(evalIndex + 1).Select(c => c.Id).ToArray(),
                 ExpectedHtfCandleIds = Array.Empty<long>(),
                 ExpectedParameters = parameters,
-                ExpectedIndicatorSnapshot = null
+                ExpectedIndicatorSnapshot = null,
+                Fingerprint = ParityEvidenceContracts.PositiveFingerprint(directFp!),
+                RequiredRawDataJsonProperties = ParityEvidenceContracts.PsbrPositiveRawData,
+                RequiredStructureJsonProperties = ParityEvidenceContracts.PsbrPositiveStructure
             });
     }
 

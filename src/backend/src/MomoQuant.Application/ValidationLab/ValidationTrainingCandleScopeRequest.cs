@@ -483,6 +483,7 @@ public sealed class ValidationCanonicalTrainingCandleScopeRequest
     public required ValidationExperiment Experiment { get; init; }
     public required StrategyExecutionRequirements Requirements { get; init; }
     public required ValidationAuditExecution AuditExecution { get; init; }
+    public required ValidationParameterTrial Trial { get; init; }
     public required DateTime TrainingEvaluationEndExclusiveUtc { get; init; }
 
     /// <summary>
@@ -493,6 +494,7 @@ public sealed class ValidationCanonicalTrainingCandleScopeRequest
         ArgumentNullException.ThrowIfNull(Experiment);
         ArgumentNullException.ThrowIfNull(Requirements);
         ArgumentNullException.ThrowIfNull(AuditExecution);
+        ArgumentNullException.ThrowIfNull(Trial);
 
         if (TrainingEvaluationEndExclusiveUtc.Kind != DateTimeKind.Utc)
         {
@@ -603,6 +605,72 @@ public sealed class ValidationCanonicalTrainingCandleScopeRequest
         if (AuditExecution.AttemptNumber <= 0)
         {
             throw new ArgumentException("AuditExecution AttemptNumber must be positive.", nameof(AuditExecution));
+        }
+
+        if (Trial.Id <= 0)
+        {
+            throw new ArgumentException("Trial Id must be positive.", nameof(Trial));
+        }
+
+        if (Trial.ValidationExperimentId != Experiment.Id)
+        {
+            throw new ArgumentException(
+                $"Trial experiment {Trial.ValidationExperimentId} does not match experiment {Experiment.Id}.",
+                nameof(Trial));
+        }
+
+        if (Trial.TrialNumber <= 0)
+        {
+            throw new ArgumentException("Trial TrialNumber must be positive.", nameof(Trial));
+        }
+
+        if (AuditExecution.ValidationTrialId != Trial.Id)
+        {
+            throw new ArgumentException(
+                $"Audit execution trial {AuditExecution.ValidationTrialId} does not match trial {Trial.Id}.",
+                nameof(AuditExecution));
+        }
+
+        if (AuditExecution.TrialNumber != Trial.TrialNumber)
+        {
+            throw new ArgumentException(
+                $"Audit execution trial number {AuditExecution.TrialNumber} does not match trial {Trial.TrialNumber}.",
+                nameof(AuditExecution));
+        }
+
+        if (AuditExecution.ExecutionType != ValidationAuditExecutionType.Trial)
+        {
+            throw new ArgumentException(
+                $"Audit execution type {AuditExecution.ExecutionType} must be Trial.",
+                nameof(AuditExecution));
+        }
+
+        if (Trial.AuthoritativeAuditExecutionId != AuditExecution.AuditExecutionId)
+        {
+            throw new ArgumentException(
+                $"Trial authoritative audit execution {Trial.AuthoritativeAuditExecutionId} does not match audit {AuditExecution.AuditExecutionId}.",
+                nameof(Trial));
+        }
+
+        if (Trial.AuditAttemptNumber > 0 && Trial.AuditAttemptNumber != AuditExecution.AttemptNumber)
+        {
+            throw new ArgumentException(
+                $"Trial audit attempt {Trial.AuditAttemptNumber} does not match audit attempt {AuditExecution.AttemptNumber}.",
+                nameof(Trial));
+        }
+
+        if (AuditExecution.Status == ValidationAuditExecutionStatus.Superseded)
+        {
+            throw new ArgumentException(
+                "Audit execution is Superseded and cannot bind canonical training scope.",
+                nameof(AuditExecution));
+        }
+
+        if (AuditExecution.Status == ValidationAuditExecutionStatus.Failed)
+        {
+            throw new ArgumentException(
+                "Audit execution is Failed and cannot bind canonical training scope.",
+                nameof(AuditExecution));
         }
 
         StrategyCode strategyEnum;

@@ -106,6 +106,7 @@ public sealed class Milestone231B1BFactoryRestartTests : IClassFixture<MomoQuant
                     HigherTimeframeMappingContractVersion = StrategyHigherTimeframeSupport.AdaptiveHtfMappingContractVersion
                 },
                 AuditExecution = execution,
+                Trial = trial,
                 TrainingEvaluationEndExclusiveUtc = evalEnd
             };
 
@@ -253,6 +254,7 @@ public sealed class Milestone231B1BFactoryRestartTests : IClassFixture<MomoQuant
                     HigherTimeframeMappingContractVersion = StrategyHigherTimeframeSupport.AdaptiveHtfMappingContractVersion
                 },
                 AuditExecution = execution,
+                Trial = trial,
                 TrainingEvaluationEndExclusiveUtc = evalEnd
             };
 

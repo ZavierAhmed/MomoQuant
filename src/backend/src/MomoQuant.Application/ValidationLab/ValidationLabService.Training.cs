@@ -457,6 +457,7 @@ public sealed partial class ValidationLabService
                         Experiment = experiment,
                         Requirements = requirements,
                         AuditExecution = auditExecution,
+                        Trial = trial,
                         TrainingEvaluationEndExclusiveUtc = scopeRequest.TrainingEvaluationEndExclusiveUtc
                     };
 

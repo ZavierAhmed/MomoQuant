@@ -394,9 +394,23 @@ public sealed class Milestone231B1BTests
             {
                 AuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
                 ValidationExperimentId = 2311,
+                ValidationTrialId = 1,
+                TrialNumber = 1,
                 ScopeExecutionId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
                 ExecutionToken = "token-b1b",
-                AttemptNumber = 1
+                AttemptNumber = 1,
+                ExecutionType = ValidationAuditExecutionType.Trial,
+                Status = ValidationAuditExecutionStatus.InProgress
+            },
+            Trial = new ValidationParameterTrial
+            {
+                Id = 1,
+                ValidationExperimentId = 2311,
+                TrialNumber = 1,
+                AuthoritativeAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+                AuditAttemptNumber = 1,
+                ParameterFingerprint = "test",
+                ParameterSnapshotJson = "{}"
             },
             TrainingEvaluationEndExclusiveUtc = Boundary
         };

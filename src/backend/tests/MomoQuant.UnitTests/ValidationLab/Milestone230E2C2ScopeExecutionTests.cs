@@ -340,6 +340,16 @@ public sealed class Milestone230E2C2ScopeExecutionTests
             Experiment = experiment,
             Requirements = requirements,
             AuditExecution = audit,
+            Trial = new ValidationParameterTrial
+            {
+                Id = 1,
+                ValidationExperimentId = 42,
+                TrialNumber = 1,
+                AuthoritativeAuditExecutionId = auditExecutionId,
+                AuditAttemptNumber = 1,
+                ParameterFingerprint = "fp",
+                ParameterSnapshotJson = "{}"
+            },
             TrainingEvaluationEndExclusiveUtc = factory.Scope.SegmentEndExclusiveUtc
         };
 

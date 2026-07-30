@@ -214,6 +214,7 @@ public sealed class Milestone231B1C1FactoryTests
             Experiment = null!,
             Requirements = BuildAdaptiveRequirements(),
             AuditExecution = BuildAuditExecution(),
+            Trial = BuildTrial(),
             TrainingEvaluationEndExclusiveUtc = Boundary
         };
 
@@ -242,6 +243,7 @@ public sealed class Milestone231B1C1FactoryTests
             Experiment = BuildExperiment(),
             Requirements = null!,
             AuditExecution = BuildAuditExecution(),
+            Trial = BuildTrial(),
             TrainingEvaluationEndExclusiveUtc = Boundary
         };
 
@@ -270,6 +272,7 @@ public sealed class Milestone231B1C1FactoryTests
             Experiment = BuildExperiment(),
             Requirements = BuildAdaptiveRequirements(),
             AuditExecution = null!,
+            Trial = BuildTrial(),
             TrainingEvaluationEndExclusiveUtc = Boundary
         };
 
@@ -833,13 +836,49 @@ public sealed class Milestone231B1C1FactoryTests
 
         ValidationExperimentId = 2311,
 
+        ValidationTrialId = 1,
+
+        TrialNumber = 1,
+
         ScopeExecutionId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
 
         ExecutionToken = "token-b1c1",
 
-        AttemptNumber = 2
+        AttemptNumber = 2,
+
+        ExecutionType = ValidationAuditExecutionType.Trial,
+
+        Status = ValidationAuditExecutionStatus.InProgress
 
     };
+
+
+
+    private static ValidationParameterTrial BuildTrial(
+
+        ValidationAuditExecution? auditExecution = null,
+
+        ValidationExperiment? experiment = null) =>
+
+        new()
+
+        {
+
+            Id = 1,
+
+            ValidationExperimentId = experiment?.Id ?? 2311,
+
+            TrialNumber = auditExecution?.TrialNumber ?? 1,
+
+            AuthoritativeAuditExecutionId = auditExecution?.AuditExecutionId ?? Guid.Parse("22222222-2222-2222-2222-222222222222"),
+
+            AuditAttemptNumber = auditExecution?.AttemptNumber ?? 2,
+
+            ParameterFingerprint = "test",
+
+            ParameterSnapshotJson = "{}"
+
+        };
 
 
 
@@ -849,7 +888,9 @@ public sealed class Milestone231B1C1FactoryTests
 
         StrategyExecutionRequirements? requirements = null,
 
-        ValidationAuditExecution? auditExecution = null) =>
+        ValidationAuditExecution? auditExecution = null,
+
+        ValidationParameterTrial? trial = null) =>
 
         new()
 
@@ -860,6 +901,8 @@ public sealed class Milestone231B1C1FactoryTests
             Requirements = requirements ?? BuildAdaptiveRequirements(),
 
             AuditExecution = auditExecution ?? BuildAuditExecution(),
+
+            Trial = trial ?? BuildTrial(auditExecution ?? BuildAuditExecution(), experiment ?? BuildExperiment()),
 
             TrainingEvaluationEndExclusiveUtc = Boundary
 

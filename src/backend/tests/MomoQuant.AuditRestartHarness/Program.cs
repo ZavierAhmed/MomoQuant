@@ -138,6 +138,7 @@ public static class Program
                 Experiment = fixture.Experiment,
                 Requirements = BuildHarnessRequirements(fixture.Experiment, requiredWarmup),
                 AuditExecution = execution,
+                Trial = fixture.Trial,
                 TrainingEvaluationEndExclusiveUtc = evalEnd
             };
 
@@ -397,11 +398,14 @@ public static class Program
                 evalCandles: 10);
 
             var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
+            var replacementTrial = await db.ValidationParameterTrials.AsNoTracking()
+                .FirstAsync(t => t.Id == replacement.ValidationTrialId);
             var scopeRequest = new ValidationCanonicalTrainingCandleScopeRequest
             {
                 Experiment = experiment,
                 Requirements = BuildHarnessRequirements(experiment, replacementWarmup),
                 AuditExecution = replacement,
+                Trial = replacementTrial,
                 TrainingEvaluationEndExclusiveUtc = evalEndUtc
             };
 
