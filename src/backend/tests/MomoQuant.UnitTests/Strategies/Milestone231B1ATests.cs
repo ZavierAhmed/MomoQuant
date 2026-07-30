@@ -346,6 +346,15 @@ public sealed class Milestone231B1ATests
         var snapshots = Milestone231BParityFixtures.BuildTrendingSnapshots(candles);
         var regime = DeterministicMarketRegimeClassifier.Classify(snapshots[candles[evalIndex].Id], candles[evalIndex]);
         Assert.NotEqual(MarketRegime.Ranging, regime);
+        var rawDataContract = ParityEvidenceContracts.CreateRangeRejectionEnvelopeContract(
+            StrategyCodes.MomoVolatilityRangeReversion,
+            MomoVolatilityRangeReversionStrategy.Version,
+            MomoVolatilityRangeRejectionCodes.TrendFilterFailed,
+            symbolId: 1,
+            symbol: "ETHUSDT",
+            timeframe: "5m",
+            marketRegime: regime.ToString(),
+            evaluatedAtUtc: evaluationTimeUtc);
 
         var parameters = new Dictionary<string, string>(MomoVolatilityRangeReversionParameters.GetDefaultParameterContract())
         {
@@ -457,7 +466,9 @@ public sealed class Milestone231B1ATests
                 ExpectedParameters = parameters,
                 ExpectedIndicatorSnapshot = snapshots[candles[evalIndex].Id],
                 Fingerprint = ParityEvidenceContracts.RejectionFingerprintAbsent,
-                RequiredRawDataJsonProperties = ParityEvidenceContracts.RangeRejectionRawData
+                RawDataContract = rawDataContract,
+                RequiredRawDataJsonProperties =
+                    ["strategyCode", "version", "reason", "symbolId", "symbol", "timeframe", "marketRegime", "evaluatedAtUtc"]
             });
     }
 

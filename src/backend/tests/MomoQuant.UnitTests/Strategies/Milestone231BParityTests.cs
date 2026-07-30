@@ -635,10 +635,11 @@ public sealed class Milestone231BParityTests
     [Fact]
     public async Task CrossPath_Range_DirectLabBacktest_IdenticalAtSameT()
     {
-        const string expectedFingerprint = "43E14ED345E566C3";
+        const string expectedFingerprint = ParityEvidenceContracts.RangePositiveFingerprint;
         // BacktestEngine windows to 600 recent candles — use the same visible window on all three paths.
         var full = MomoVolatilityRangeReversionFormulaTests.BuildValidLong();
         var candles = full.Count <= 600 ? full : full.TakeLast(600).ToList();
+        var rangeEvidence = ParityEvidenceContracts.CreateRangePositiveEvidence(candles);
         Milestone231BParityFixtures.AssignSequentialIds(candles);
         var evalIndex = candles.Count - 1;
         var evaluationTimeUtc = candles[evalIndex].CloseTimeUtc;
@@ -757,7 +758,9 @@ public sealed class Milestone231BParityTests
                 ExpectedParameters = parameters,
                 ExpectedIndicatorSnapshot = snapshots[candles[evalIndex].Id],
                 Fingerprint = ParityEvidenceContracts.PositiveFingerprint(expectedFingerprint),
-                RequiredRawDataJsonProperties = ParityEvidenceContracts.RangePositiveRawData,
+                RawDataContract = rangeEvidence.RawDataContract,
+                OutcomeContract = rangeEvidence.OutcomeContract,
+                RequiredRawDataJsonProperties = ["setupFingerprint", "version", "diagnostics"],
                 RequiredStructureJsonProperties = ParityEvidenceContracts.RangePositiveStructure
             });
     }
