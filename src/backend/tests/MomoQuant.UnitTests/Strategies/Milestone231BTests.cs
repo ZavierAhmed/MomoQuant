@@ -332,10 +332,6 @@ public sealed class Milestone231BTests
         var plugin = new PriceStructureBreakoutRetestStrategy();
         Assert.Equal("1.1.0", PriceStructureBreakoutRetestStrategy.Version);
 
-        // Detector path is PSBR Lab production path — verify detector factory + plugin version parity.
-        var detector = PriceStructureDetectorFactory.Create(StrategyCodes.PriceStructureBreakoutRetest);
-        Assert.NotNull(detector);
-
         var candles = new List<Candle>();
         var t = Start;
         for (var i = 0; i < 30; i++)
@@ -428,9 +424,13 @@ public sealed class Milestone231BTests
     [Fact]
     public void CrossPath_DirectAndLabFingerprintExtraction_Consistent()
     {
-        var raw = JsonSerializer.Serialize(new { setupFingerprint = "ABC123", version = "1.0.0" });
-        Assert.Equal("ABC123", StrategyLabRunner.ExtractFingerprint(raw));
+        var canonical = Application.Strategies.PriceStructure.SetupFingerprintHasher.Hash("parity-probe");
+        var raw = JsonSerializer.Serialize(new { setupFingerprint = canonical, version = "1.0.0" });
+        Assert.Equal(canonical, StrategyLabRunner.ExtractFingerprint(raw));
+        Assert.True(StrategyLabRunner.IsCanonicalSetupFingerprint(canonical));
         Assert.Equal(string.Empty, StrategyLabRunner.ExtractFingerprint("{}"));
+        Assert.False(StrategyLabRunner.IsCanonicalSetupFingerprint("ABC123"));
+        Assert.False(StrategyLabRunner.IsCanonicalSetupFingerprint("missing-fp-1"));
         Assert.DoesNotContain("legacy-", StrategyLabRunner.ExtractFingerprint("{}"));
     }
 

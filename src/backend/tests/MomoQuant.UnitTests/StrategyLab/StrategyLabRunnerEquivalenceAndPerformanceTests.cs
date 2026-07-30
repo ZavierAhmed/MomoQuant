@@ -483,7 +483,9 @@ public sealed class StrategyLabRunnerEquivalenceAndPerformanceTests
             var entry = candle.Close;
             var stop = longSide ? entry - 1m : entry + 1m;
             var target = longSide ? entry + 2m : entry - 2m;
-            var fp = $"det-{index}-{direction}";
+            // Canonical production fingerprint format (16 hex) — synthetic missing-fp-* is forbidden.
+            var fp = MomoQuant.Application.Strategies.PriceStructure.SetupFingerprintHasher.Hash(
+                $"det|{index}|{direction}|{entry:G29}|{stop:G29}|{target:G29}");
             var raw = JsonSerializer.Serialize(new { setupFingerprint = fp });
             return Entry(direction, 80m, 80m, entry, stop, target, "deterministic-entry", raw);
         }

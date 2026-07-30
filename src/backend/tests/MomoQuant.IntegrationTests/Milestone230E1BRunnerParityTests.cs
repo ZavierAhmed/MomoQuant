@@ -1513,7 +1513,8 @@ public sealed class Milestone230E1BRunnerParityTests
             var stop = direction == TradeDirection.Long ? entry - 1m : entry + 1m;
             var target = direction == TradeDirection.Long ? entry + 2m : entry - 2m;
 
-            var fingerprint = $"e1b-{index}-{direction}";
+            var fingerprint = MomoQuant.Application.Strategies.PriceStructure.SetupFingerprintHasher.Hash(
+                $"e1b|{index}|{direction}|{entry:G29}|{stop:G29}|{target:G29}");
             var rawData = JsonSerializer.Serialize(new { setupFingerprint = fingerprint });
 
             return Entry(

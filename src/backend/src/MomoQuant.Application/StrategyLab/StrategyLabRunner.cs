@@ -401,9 +401,6 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             PersistObservationSettings(run, observationSettings);
             await _runRepository.UpdateAsync(run, cancellationToken);
 
-            var detector = PriceStructureDetectorFactory.Create(run.StrategyCode);
-            detector?.Initialize(parameters);
-
             var evaluationIndices = dataset.EvaluationIndices
                 .Where(i => StrategyLabCandleLoadContract.ContainsEvaluationOpenTime(
                     run.CandleLoadContractVersion, 
@@ -419,15 +416,6 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                     run.FromUtc, 
                     run.ToUtc));
 
-            if (detector is not null)
-            {
-                var diagnostics = detector.GetDiagnostics();
-                diagnostics.CandlesLoaded = dataset.Candles.Count;
-                diagnostics.WarmupCandlesLoaded = warmupCandlesLoaded;
-                diagnostics.TestRangeCandles = testRangeCandles;
-                diagnostics.EligibleEvaluationCandles = evaluationIndices.Count;
-            }
-
             run.Status = StrategyLabRunStatus.Evaluating;
             run.CurrentStage = "Running strategy...";
             run.PercentComplete = 40m;
@@ -438,6 +426,8 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             var totalEvals = Math.Max(evaluationIndices.Count, 1);
             var detectedInMemory = 0;
             var missingFingerprintCount = 0;
+            var missingSnapshotCount = 0;
+            var mustFailMissingFingerprint = false;
             var rejectionFunnel = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var regimeDistribution = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var entryCandidatesByRegime = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -447,7 +437,6 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             var candleWindow = _candleWindowFactory.CreateVisibleWindow(dataset.Candles, 0);
             var checkpointEvery = Math.Clamp(50, 10, 500);
             var checkpointCount = 0;
-            var evalStartedUtc = DateTime.UtcNow;
             var seenFingerprints = new HashSet<string>(StringComparer.Ordinal);
             parameters["__seenFingerprints"] = JsonSerializer.Serialize(seenFingerprints);
 
@@ -467,141 +456,83 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                     slice = _candleWindowFactory.CreateVisibleWindow(dataset.Candles, candleIndex + 1);
                 }
 
-                PriceStructureCandidateDto? structureCandidate = null;
-                string? structureJson = null;
-                string fingerprint;
-                TradeDirection direction;
-                decimal? entry;
-                decimal? stop;
-                decimal? target;
-                string reason;
                 CandidateConfidenceResult? confidenceResult = null;
-                MarketRegime regime = MarketRegime.Unknown;
 
-                if (detector is not null)
+                var snapshot = dataset.IndicatorSnapshots.GetValueOrDefault(candle.Id);
+                if (snapshot is null)
                 {
-                    var detectorResult = detector.ProcessCandle(
-                        slice,
-                        run.StrategyCode,
-                        run.SymbolId,
-                        canonicalTimeframe);
-                    structureCandidate = detectorResult.Candidate;
-                    reason = detectorResult.Reason;
-                    if (structureCandidate is null)
-                    {
-                        IncrementReason(rejectionFunnel, reason);
-                        if (idx % checkpointEvery == 0)
-                        {
-                            checkpointCount++;
-                            run.PercentComplete = 40m + Math.Round((decimal)idx / totalEvals * 45m, 1);
-                            run.EvaluationsCount = evaluations;
-                            await _runRepository.UpdateAsync(run, cancellationToken);
-                        }
-
-                        continue;
-                    }
-
-                    detectedInMemory++;
-                    entryConfirmed++;
-                    fingerprint = structureCandidate.SetupFingerprint;
-                    direction = structureCandidate.Direction;
-                    entry = structureCandidate.EntryPrice;
-                    stop = structureCandidate.StopLoss;
-                    target = structureCandidate.Target1;
-                    reason = structureCandidate.Reason;
-                    structureJson = JsonSerializer.Serialize(new
-                    {
-                        setupFingerprint = fingerprint,
-                        structure = structureCandidate.Structure,
-                        version = strategyEntity.Version
-                    }, JsonOptions);
-                }
-                else
-                {
-                    var snapshot = dataset.IndicatorSnapshots.GetValueOrDefault(candle.Id);
-                    regime = DeterministicMarketRegimeClassifier.Classify(snapshot, candle);
-                    IncrementReason(regimeDistribution, regime.ToString());
-
-                    var (higherTimeframe, higherTimeframeCandles) = StrategyHigherTimeframeSupport.BuildContextHigherTimeframe(
-                        plugin,
-                        parsedTimeframe,
-                        dataset.HigherTimeframeSeriesByTimeframe,
-                        candle.CloseTimeUtc);
-
-                    var context = new StrategyContext
-                    {
-                        ExchangeId = run.ExchangeId,
-                        SymbolId = run.SymbolId,
-                        Symbol = run.Symbol,
-                        Timeframe = parsedTimeframe,
-                        HigherTimeframe = higherTimeframe,
-                        HigherTimeframeCandles = higherTimeframeCandles,
-                        MarketRegime = regime,
-                        Candles = slice,
-                        IndicatorSnapshot = snapshot,
-                        StrategyParameters = parameters,
-                        EvaluatedAtUtc = candle.CloseTimeUtc,
-                        CurrentCandleIndex = candleIndex
-                    };
-
-                    var signal = plugin.Evaluate(context);
-                    if (signal.SignalType != SignalType.Entry || signal.Direction == TradeDirection.None)
-                    {
-                        IncrementReason(rejectionFunnel, string.IsNullOrWhiteSpace(signal.Reason) ? "NoTrade" : signal.Reason);
-                        if (idx % checkpointEvery == 0)
-                        {
-                            checkpointCount++;
-                            run.PercentComplete = 40m + Math.Round((decimal)idx / totalEvals * 45m, 1);
-                            run.EvaluationsCount = evaluations;
-                            await _runRepository.UpdateAsync(run, cancellationToken);
-                        }
-
-                        continue;
-                    }
-
-                    detectedInMemory++;
-                    entryConfirmed++;
-                    IncrementReason(entryCandidatesByRegime, regime.ToString());
-                    structureJson = signal.RawDataJson ?? "{}";
-                    fingerprint = ExtractFingerprint(structureJson);
-                    if (string.IsNullOrWhiteSpace(fingerprint))
-                    {
-                        missingFingerprintCount++;
-                        var invalid = BuildCandidate(
-                            run,
-                            strategyEntity,
-                            signal.Direction,
-                            signal.EntryPrice ?? candle.Close,
-                            signal.SuggestedStopLoss ?? 0m,
-                            signal.SuggestedTakeProfit ?? 0m,
-                            $"missing-fp-{run.Id}-{candle.CloseTimeUtc:yyyyMMddHHmmss}-{signal.Direction}",
-                            structureJson,
-                            parameters,
-                            candle,
-                            "MissingSetupFingerprint");
-                        invalid.CandidateStatus = StrategyResearchCandidateStatus.SimulationInvalid;
-                        invalid.RawOutcomeStatus = RawOutcomeStatus.Invalid;
-                        invalid.RawExitReason = "MissingSetupFingerprint";
-                        candidates.Add(invalid);
-                        IncrementReason(rejectionFunnel, "MissingSetupFingerprint");
-                        continue;
-                    }
-
-                    direction = signal.Direction;
-                    entry = signal.EntryPrice;
-                    stop = signal.SuggestedStopLoss;
-                    target = signal.SuggestedTakeProfit;
-                    reason = signal.Reason;
-                    seenFingerprints.Add(fingerprint);
-                    parameters["__seenFingerprints"] = JsonSerializer.Serialize(seenFingerprints);
+                    missingSnapshotCount++;
                 }
 
-                if (string.IsNullOrWhiteSpace(fingerprint))
+                var regime = DeterministicMarketRegimeClassifier.Classify(snapshot, candle);
+                IncrementReason(regimeDistribution, regime.ToString());
+
+                var (higherTimeframe, higherTimeframeCandles) = StrategyHigherTimeframeSupport.BuildContextHigherTimeframe(
+                    plugin,
+                    parsedTimeframe,
+                    dataset.HigherTimeframeSeriesByTimeframe,
+                    candle.CloseTimeUtc);
+
+                var context = new StrategyContext
                 {
-                    missingFingerprintCount++;
-                    IncrementReason(rejectionFunnel, "MissingSetupFingerprint");
+                    ExchangeId = run.ExchangeId,
+                    SymbolId = run.SymbolId,
+                    Symbol = run.Symbol,
+                    Timeframe = parsedTimeframe,
+                    HigherTimeframe = higherTimeframe,
+                    HigherTimeframeCandles = higherTimeframeCandles,
+                    MarketRegime = regime,
+                    Candles = slice,
+                    IndicatorSnapshot = snapshot,
+                    StrategyParameters = parameters,
+                    EvaluatedAtUtc = candle.CloseTimeUtc,
+                    CurrentCandleIndex = candleIndex
+                };
+
+                var signal = plugin.Evaluate(context);
+                if (signal.SignalType != SignalType.Entry || signal.Direction == TradeDirection.None)
+                {
+                    IncrementReason(rejectionFunnel, string.IsNullOrWhiteSpace(signal.Reason) ? "NoTrade" : signal.Reason);
+                    if (idx % checkpointEvery == 0)
+                    {
+                        checkpointCount++;
+                        run.PercentComplete = 40m + Math.Round((decimal)idx / totalEvals * 45m, 1);
+                        run.EvaluationsCount = evaluations;
+                        await _runRepository.UpdateAsync(run, cancellationToken);
+                    }
+
                     continue;
                 }
+
+                var structureJson = signal.RawDataJson ?? "{}";
+                var fingerprint = ExtractFingerprint(structureJson);
+                if (!IsCanonicalSetupFingerprint(fingerprint))
+                {
+                    // Count as rejection once; never persist a synthetic fingerprint candidate.
+                    missingFingerprintCount++;
+                    mustFailMissingFingerprint = true;
+                    IncrementReason(rejectionFunnel, "MissingSetupFingerprint");
+                    if (idx % checkpointEvery == 0)
+                    {
+                        checkpointCount++;
+                        run.PercentComplete = 40m + Math.Round((decimal)idx / totalEvals * 45m, 1);
+                        run.EvaluationsCount = evaluations;
+                        await _runRepository.UpdateAsync(run, cancellationToken);
+                    }
+
+                    continue;
+                }
+
+                detectedInMemory++;
+                entryConfirmed++;
+                IncrementReason(entryCandidatesByRegime, regime.ToString());
+                var direction = signal.Direction;
+                var entry = signal.EntryPrice;
+                var stop = signal.SuggestedStopLoss;
+                var target = signal.SuggestedTakeProfit;
+                var reason = signal.Reason;
+                seenFingerprints.Add(fingerprint);
+                parameters["__seenFingerprints"] = JsonSerializer.Serialize(seenFingerprints);
 
                 var candidate = BuildCandidate(
                     run,
@@ -611,7 +542,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                     stop ?? 0m,
                     target ?? 0m,
                     fingerprint,
-                    structureJson ?? "{}",
+                    structureJson,
                     parameters,
                     candle,
                     reason);
@@ -637,7 +568,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                     confidenceResult = ScoreCandidateConfidence(
                         run.StrategyCode,
                         candidate,
-                        structureCandidate,
+                        structureCandidate: null,
                         slice);
                 }
 
@@ -675,11 +606,34 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 }
             }
 
-            if (missingFingerprintCount > 0 && candidates.Count == 0)
+            if (missingSnapshotCount > 0)
             {
+                MergeResultSummary(run, "regimeDiagnostics", new
+                {
+                    missingSnapshotCount,
+                    unknownRegimeCount = regimeDistribution.GetValueOrDefault(MarketRegime.Unknown.ToString(), 0)
+                });
+            }
+
+            if (mustFailMissingFingerprint || missingFingerprintCount > 0)
+            {
+                candidates.Clear();
+                var rejectionTotalOnFail = rejectionFunnel.Values.Sum();
+                MergeResultSummary(run, "rejectionFunnel", new
+                {
+                    counts = rejectionFunnel.OrderBy(kv => kv.Key, StringComparer.Ordinal).ToDictionary(kv => kv.Key, kv => kv.Value),
+                    entryConfirmed = 0,
+                    evaluations,
+                    missingFingerprintCount,
+                    reconciled = rejectionTotalOnFail == evaluations
+                });
+                MergeResultSummary(run, "regimeDistribution",
+                    regimeDistribution.OrderBy(kv => kv.Key, StringComparer.Ordinal).ToDictionary(kv => kv.Key, kv => kv.Value));
+                run.EvaluationsCount = evaluations;
+                run.RawCandidateCount = 0;
                 await FailRunAsync(
                     run,
-                    $"MissingSetupFingerprint: {missingFingerprintCount} entry signal(s) lacked a setup fingerprint; no candidates persisted.",
+                    $"MissingSetupFingerprint: {missingFingerprintCount} entry signal(s) lacked a canonical setup fingerprint; run failed and no candidates persisted.",
                     cancellationToken);
                 return;
             }
@@ -739,25 +693,37 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 await _candidateRepository.AddRangeAsync(candidates, cancellationToken);
             }
 
-            var funnelDiagnostics = detector?.GetDiagnostics() ?? new PriceStructureFunnelDiagnostics
+            var rejectionTotal = rejectionFunnel.Values.Sum();
+            var funnelDiagnostics = new PriceStructureFunnelDiagnostics
             {
+                StrategyFamily = run.StrategyCode,
                 CandlesEvaluated = evaluations,
                 CandidatesDetectedInMemory = detectedInMemory,
                 CandidatesPersisted = candidates.Count,
-                RawCandidatesCreated = candidates.Count
+                RawCandidatesCreated = candidates.Count,
+                CandidatesSimulationInvalid = candidates.Count(c => c.CandidateStatus == StrategyResearchCandidateStatus.SimulationInvalid),
+                SimulationInvalidCandidates = candidates.Count(c => c.CandidateStatus == StrategyResearchCandidateStatus.SimulationInvalid),
+                CandlesLoaded = dataset.Candles.Count,
+                WarmupCandlesLoaded = warmupCandlesLoaded,
+                TestRangeCandles = testRangeCandles,
+                EligibleEvaluationCandles = evaluationIndices.Count
             };
 
-            funnelDiagnostics.CandidatesDetectedInMemory = Math.Max(funnelDiagnostics.CandidatesDetectedInMemory, detectedInMemory);
-            funnelDiagnostics.CandidatesSimulationInvalid = candidates.Count(c => c.CandidateStatus == StrategyResearchCandidateStatus.SimulationInvalid);
-            funnelDiagnostics.CandidatesPersisted = candidates.Count;
-            funnelDiagnostics.SimulationInvalidCandidates = funnelDiagnostics.CandidatesSimulationInvalid;
-            funnelDiagnostics.CandlesLoaded = dataset.Candles.Count;
-            funnelDiagnostics.WarmupCandlesLoaded = warmupCandlesLoaded;
-            funnelDiagnostics.TestRangeCandles = testRangeCandles;
-            funnelDiagnostics.EligibleEvaluationCandles = evaluationIndices.Count;
-
-            var syntheticPassed = true;
-            PriceStructureZeroCandidateExplainer.Populate(funnelDiagnostics, syntheticPassed);
+            if (candidates.Count == 0 && rejectionFunnel.Count > 0)
+            {
+                var top = rejectionFunnel.OrderByDescending(kv => kv.Value).First();
+                funnelDiagnostics.ZeroCandidateClassification = "RejectionFunnel";
+                funnelDiagnostics.PrimaryBlocker = top.Key;
+                funnelDiagnostics.PrimaryBlockerDetails =
+                    $"Rejection funnel: {string.Join(", ", rejectionFunnel.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}={kv.Value}"))}; evaluations={evaluations}; entryConfirmed={entryConfirmed}; reconciled={rejectionTotal + entryConfirmed == evaluations}.";
+                funnelDiagnostics.SuggestedNextAction = "Inspect rejectionFunnel counts and regimeDistribution in run diagnostics.";
+            }
+            else if (candidates.Count == 0)
+            {
+                funnelDiagnostics.ZeroCandidateClassification = "NoCandidates";
+                funnelDiagnostics.PrimaryBlocker = "No candidates";
+                funnelDiagnostics.PrimaryBlockerDetails = $"evaluations={evaluations}; entryConfirmed={entryConfirmed}.";
+            }
 
             if (funnelDiagnostics.CandidatesDetectedInMemory > 0
                 && funnelDiagnostics.CandidatesPersisted == 0
@@ -778,7 +744,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             var closedCount = candidates.Count(c => c.CandidateStatus == StrategyResearchCandidateStatus.Closed);
             var evidence = EvidenceQualityCalculator.Calculate(closedCount);
             var summary = StrategyLabPerformanceCalculator.BuildSummary(candidates, opportunity, evidence, run.InitialBalance);
-            var funnel = BuildFunnel(funnelDiagnostics, candidates);
+            var funnel = BuildFunnel(funnelDiagnostics, candidates, evaluations, entryConfirmed, rejectionFunnel);
             RawVsGatedComparisonDto? gated = run.ExecutionMode != StrategyLabExecutionMode.RawStrategy
                 ? StrategyLabPerformanceCalculator.BuildGatedComparison(candidates)
                 : null;
@@ -799,7 +765,6 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 }
                 : null;
 
-            var rejectionTotal = rejectionFunnel.Values.Sum();
             run.ResultSummaryJson = JsonSerializer.Serialize(new
             {
                 summary,
@@ -837,7 +802,14 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                     ? null
                     : BuildPortfolioScoreDiagnostics(shadowResult.PortfolioRiskScores),
                 drawdownCalculationMode = DrawdownCalculationMode.RealizedOnly.ToString(),
-                pathDiagnostics = shadowResult?.Diagnostics
+                pathDiagnostics = shadowResult?.Diagnostics,
+                regimeDiagnostics = missingSnapshotCount > 0
+                    ? new
+                    {
+                        missingSnapshotCount,
+                        unknownRegimeCount = regimeDistribution.GetValueOrDefault(MarketRegime.Unknown.ToString(), 0)
+                    }
+                    : null
             }, JsonOptions);
 
             // Final serialize replaces ResultSummaryJson; re-merge durable research fingerprints.
@@ -849,6 +821,14 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 legacyMetadataFingerprint = contentFp.LegacyMetadataFingerprint,
                 candleCount = contentFp.CandleCount
             });
+            if (missingSnapshotCount > 0)
+            {
+                MergeResultSummary(run, "regimeDiagnostics", new
+                {
+                    missingSnapshotCount,
+                    unknownRegimeCount = regimeDistribution.GetValueOrDefault(MarketRegime.Unknown.ToString(), 0)
+                });
+            }
             PersistMultiSeriesFingerprints(
                 run,
                 dataset,
@@ -1443,6 +1423,32 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         return string.Empty;
     }
 
+    /// <summary>
+    /// Production setup fingerprints are 16 uppercase hex characters from <see cref="SetupFingerprintHasher"/>.
+    /// Empty or non-matching values are malformed.
+    /// </summary>
+    public static bool IsCanonicalSetupFingerprint(string? fingerprint)
+    {
+        if (string.IsNullOrWhiteSpace(fingerprint) || fingerprint.Length != 16)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < fingerprint.Length; i++)
+        {
+            var c = fingerprint[i];
+            var isHex = (c >= '0' && c <= '9')
+                || (c >= 'A' && c <= 'F')
+                || (c >= 'a' && c <= 'f');
+            if (!isHex)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static bool TryGetPropertyIgnoreCase(JsonElement element, string name, out JsonElement value)
     {
         if (element.TryGetProperty(name, out value))
@@ -1465,13 +1471,16 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
 
     private static CandidateFunnelDto BuildFunnel(
         PriceStructureFunnelDiagnostics diagnostics,
-        IReadOnlyList<StrategyResearchCandidate> candidates) => new()
+        IReadOnlyList<StrategyResearchCandidate> candidates,
+        int evaluations,
+        int entryConfirmed,
+        IReadOnlyDictionary<string, int> rejectionFunnel) => new()
     {
         CandlesLoaded = diagnostics.CandlesLoaded,
         WarmupCandlesLoaded = diagnostics.WarmupCandlesLoaded,
         TestRangeCandles = diagnostics.TestRangeCandles,
         EligibleEvaluationCandles = diagnostics.EligibleEvaluationCandles,
-        CandlesEvaluated = diagnostics.CandlesEvaluated,
+        CandlesEvaluated = evaluations > 0 ? evaluations : diagnostics.CandlesEvaluated,
         ConfirmedSwingHighs = diagnostics.ConfirmedSwingHighs,
         ConfirmedSwingLows = diagnostics.ConfirmedSwingLows,
         BullishBreakoutChecks = diagnostics.BullishBreakoutChecks,
@@ -1481,7 +1490,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         RetestChecks = diagnostics.RetestChecks,
         ValidRetests = diagnostics.ValidRetests,
         ConfirmationChecks = diagnostics.ConfirmationChecks,
-        ConfirmationsPassed = diagnostics.ConfirmationsPassed,
+        ConfirmationsPassed = entryConfirmed > 0 ? entryConfirmed : diagnostics.ConfirmationsPassed,
         ActiveBuySideLiquidityLevels = diagnostics.ActiveBuySideLiquidityLevels,
         ActiveSellSideLiquidityLevels = diagnostics.ActiveSellSideLiquidityLevels,
         BuySideSweepChecks = diagnostics.BuySideSweepChecks,
@@ -1490,7 +1499,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         SellSideSweepsDetected = diagnostics.SellSideSweepsDetected,
         SameCandleReclaims = diagnostics.SameCandleReclaims,
         DelayedReclaims = diagnostics.DelayedReclaims,
-        CandidatesDetectedInMemory = diagnostics.CandidatesDetectedInMemory,
+        CandidatesDetectedInMemory = Math.Max(diagnostics.CandidatesDetectedInMemory, entryConfirmed),
         CandidatesRejectedAsDuplicate = diagnostics.CandidatesRejectedAsDuplicate,
         CandidatesSimulationInvalid = diagnostics.CandidatesSimulationInvalid,
         CandidatesPersisted = diagnostics.CandidatesPersisted,
@@ -1503,11 +1512,16 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         RiskApproved = candidates.Count(c => c.RiskDecision == ResearchRiskDecision.Approved),
         RiskRejected = candidates.Count(c => c.RiskDecision == ResearchRiskDecision.Rejected),
         FullPipelineApproved = candidates.Count(c => c.FinalPipelineDecision == ResearchFinalPipelineDecision.Approved),
-        PrimaryBlocker = diagnostics.PrimaryBlocker,
+        PrimaryBlocker = diagnostics.PrimaryBlocker
+            ?? (rejectionFunnel.Count > 0
+                ? rejectionFunnel.OrderByDescending(kv => kv.Value).First().Key
+                : null),
         PrimaryBlockerDetails = diagnostics.PrimaryBlockerDetails,
         SuggestedNextAction = diagnostics.SuggestedNextAction,
         ZeroCandidateClassification = diagnostics.ZeroCandidateClassification,
-        StrategyFamily = diagnostics.StrategyFamily
+        StrategyFamily = string.IsNullOrWhiteSpace(diagnostics.StrategyFamily)
+            ? string.Empty
+            : diagnostics.StrategyFamily
     };
 
     private static IReadOnlyList<string> BuildWarnings(

@@ -111,23 +111,35 @@ public sealed class StrategyLabService : IStrategyLabService
             var entity = await _strategyRepository.GetByCodeAsync(strategyEnum, cancellationToken);
             requirementsByCode.TryGetValue(code, out var requirement);
 
+            if (requirement is null && entity is not null)
+            {
+                var byId = await _requirementService.GetByStrategyIdAsync(entity.Id, cancellationToken);
+                if (byId.Succeeded)
+                {
+                    requirement = byId.Data;
+                }
+            }
+
+            var catalogCategory = ResolveCatalogCategory(strategyEnum, entity, plugin);
             var allowed = requirement?.AllowedExecutionTimeframes?.Count > 0
                 ? (IReadOnlyList<string>)requirement.AllowedExecutionTimeframes
                 : (IReadOnlyList<string>)(plugin?.SupportedTimeframes.Select(TimeframeParser.ToApiString).ToList()
                   ?? new List<string>());
             var htfMappings = (IReadOnlyList<string>)(requirement?.HigherTimeframeFilters ?? Array.Empty<string>());
+            var requiredData = (IReadOnlyList<string>)(requirement?.RequiredDataTimeframes ?? Array.Empty<string>());
             var preferred = requirement?.PreferredExecutionTimeframe
                 ?? (allowed.Count > 0 ? allowed[0] : null);
+            var version = ResolveRegisteredVersion(plugin, entity) ?? entity?.Version ?? "1.0.0";
 
             strategies.Add(new StrategyLabStrategyDto
             {
                 Code = code,
-                Name = plugin?.Name ?? entity?.Name ?? code,
-                Version = entity?.Version ?? ResolvePluginVersion(plugin),
-                Category = ResolveLabCategory(strategyEnum),
+                Name = entity?.Name ?? plugin?.Name ?? code,
+                Version = version,
+                Category = catalogCategory,
                 AllowedTimeframes = allowed,
                 PreferredTimeframe = preferred,
-                RequiredDataTimeframes = BuildRequiredDataTimeframes(allowed, htfMappings),
+                RequiredDataTimeframes = requiredData,
                 HtfMappings = htfMappings,
                 WarmupBars = requirement?.WarmupCandles ?? 100,
                 SupportedRegimes = (plugin?.SupportedRegimes ?? Array.Empty<MarketRegime>())
@@ -1218,37 +1230,60 @@ public sealed class StrategyLabService : IStrategyLabService
         return $"Timeframe '{canonical}' is not supported for strategy '{strategyCode.ToCode()}'. Allowed: {string.Join(", ", allowed)}.";
     }
 
-    private static IReadOnlyList<string> BuildRequiredDataTimeframes(
-        IReadOnlyList<string> allowedExecution,
-        IReadOnlyList<string> htfMappings)
+    private static string ResolveCatalogCategory(
+        StrategyCode code,
+        Strategy? entity,
+        ITradingStrategy? plugin)
     {
-        var required = new HashSet<string>(allowedExecution, StringComparer.OrdinalIgnoreCase);
-        foreach (var mapping in htfMappings)
+        if (entity is not null)
         {
-            var parts = mapping.Split(':', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length != 2)
+            var catalog = StrategyCatalogMapper.MapToCatalogDto(entity, requirement: null, parameterDefinitionsAvailable: false);
+            if (!string.IsNullOrWhiteSpace(catalog.Category) && catalog.Category != "General")
             {
-                continue;
+                return catalog.Category;
             }
-
-            required.Add(parts[0]);
-            required.Add(parts[1]);
         }
 
-        return required.OrderBy(t => t, StringComparer.OrdinalIgnoreCase).ToList();
+        if (plugin is not null)
+        {
+            var synthetic = new Strategy
+            {
+                Id = 0,
+                Code = code,
+                Name = plugin.Name,
+                Description = plugin.Description,
+                Version = ResolveRegisteredVersion(plugin, entity) ?? "1.0.0",
+                IsEnabled = true,
+                CreatedAtUtc = DateTime.UtcNow
+            };
+            return StrategyCatalogMapper.MapToCatalogDto(synthetic, requirement: null, parameterDefinitionsAvailable: false).Category
+                ?? "General";
+        }
+
+        return StrategyCatalogMapper.MapToCatalogDto(
+            new Strategy
+            {
+                Id = 0,
+                Code = code,
+                Name = code.ToCode(),
+                Description = string.Empty,
+                Version = "1.0.0",
+                IsEnabled = true,
+                CreatedAtUtc = DateTime.UtcNow
+            },
+            requirement: null,
+            parameterDefinitionsAvailable: false).Category
+            ?? "General";
     }
 
-    private static string ResolveLabCategory(StrategyCode code) =>
-        code switch
+    private static string? ResolveRegisteredVersion(ITradingStrategy? plugin, Strategy? entity)
+    {
+        if (!string.IsNullOrWhiteSpace(entity?.Version))
         {
-            StrategyCode.PriceStructureBreakoutRetest => "Price Action / Market Structure",
-            StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout => "Trend / Breakout",
-            StrategyCode.MomoVolatilityRangeReversion => "Range / Mean Reversion",
-            _ => "General"
-        };
+            return entity.Version;
+        }
 
-    private static string ResolvePluginVersion(ITradingStrategy? plugin) =>
-        plugin switch
+        return plugin switch
         {
             MomoAdaptiveMultiTimeframeTrendBreakoutStrategy =>
                 MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
@@ -1256,6 +1291,7 @@ public sealed class StrategyLabService : IStrategyLabService
                 MomoVolatilityRangeReversionStrategy.Version,
             PriceStructureBreakoutRetestStrategy =>
                 PriceStructureBreakoutRetestStrategy.Version,
-            _ => "1.0.0"
+            _ => null
         };
+    }
 }

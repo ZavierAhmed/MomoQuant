@@ -37,6 +37,8 @@ public sealed class Milestone231BParityTests
         var plugin = new MomoAdaptiveMultiTimeframeTrendBreakoutStrategy();
         var parameters = new Dictionary<string, string>(MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract());
         parameters["__seenFingerprints"] = JsonSerializer.Serialize(new HashSet<string>());
+        var snapshot = Milestone231BParityFixtures.BuildTrendingSnapshots(ltf).GetValueOrDefault(ltf[^1].Id);
+        var regime = DeterministicMarketRegimeClassifier.Classify(snapshot, ltf[^1]);
 
         var direct = plugin.Evaluate(new StrategyContext
         {
@@ -46,9 +48,9 @@ public sealed class Milestone231BParityTests
             Timeframe = Timeframe.H4,
             HigherTimeframe = Timeframe.D1,
             HigherTimeframeCandles = htf,
-            MarketRegime = MarketRegime.Trending,
+            MarketRegime = regime,
             Candles = ltf,
-            IndicatorSnapshot = null,
+            IndicatorSnapshot = snapshot,
             StrategyParameters = parameters,
             EvaluatedAtUtc = ltf[^1].CloseTimeUtc,
             CurrentCandleIndex = ltf.Count - 1
@@ -275,6 +277,8 @@ public sealed class Milestone231BParityTests
         {
             ["__seenFingerprints"] = "[]"
         };
+        var rangingSnapshot = Milestone231BParityFixtures.BuildRangingSnapshots(rangingCandles).GetValueOrDefault(rangingCandles[^1].Id);
+        var rangingRegime = DeterministicMarketRegimeClassifier.Classify(rangingSnapshot, rangingCandles[^1]);
         var direct = plugin.Evaluate(new StrategyContext
         {
             ExchangeId = 1,
@@ -282,9 +286,9 @@ public sealed class Milestone231BParityTests
             Symbol = "ETHUSDT",
             Timeframe = tf,
             HigherTimeframe = Timeframe.H1,
-            MarketRegime = MarketRegime.Ranging,
+            MarketRegime = rangingRegime,
             Candles = rangingCandles,
-            IndicatorSnapshot = null,
+            IndicatorSnapshot = rangingSnapshot,
             StrategyParameters = directParams,
             EvaluatedAtUtc = rangingCandles[^1].CloseTimeUtc,
             CurrentCandleIndex = rangingCandles.Count - 1
@@ -392,28 +396,8 @@ public sealed class Milestone231BParityTests
         Assert.Equal("1.1.0", PriceStructureBreakoutRetestStrategy.Version);
 
         var candles = Milestone231BParityFixtures.BuildPsbrLongScenario();
-        var detector = PriceStructureDetectorFactory.Create(StrategyCodes.PriceStructureBreakoutRetest);
-        Assert.NotNull(detector);
-        detector!.Initialize(new Dictionary<string, string>());
-
-        PriceStructureCandidateDto? detectorCandidate = null;
-        for (var i = 0; i < candles.Count; i++)
-        {
-            var slice = candles.Take(i + 1).ToList();
-            var result = detector.ProcessCandle(slice, StrategyCodes.PriceStructureBreakoutRetest, 1, "5m");
-            if (result.Candidate is not null)
-            {
-                detectorCandidate = result.Candidate;
-            }
-        }
-
-        Assert.NotNull(detectorCandidate);
-        Assert.Equal(TradeDirection.Long, detectorCandidate!.Direction);
-        Assert.Equal(100.80m, detectorCandidate.EntryPrice);
-        Assert.Equal(99.95m, detectorCandidate.StopLoss);
-        Assert.Equal(102.50m, detectorCandidate.Target1);
-        Assert.False(string.IsNullOrWhiteSpace(detectorCandidate.SetupFingerprint));
-        Assert.Equal(candles.Count - 1, detectorCandidate.Structure.ConfirmationIndex);
+        var regime = DeterministicMarketRegimeClassifier.Classify(null, candles[^1]);
+        Assert.Equal(MarketRegime.Unknown, regime);
 
         var pluginEval = plugin.Evaluate(new StrategyContext
         {
@@ -422,7 +406,7 @@ public sealed class Milestone231BParityTests
             Symbol = "BTCUSDT",
             Timeframe = Timeframe.M5,
             HigherTimeframe = Timeframe.H1,
-            MarketRegime = MarketRegime.Breakout,
+            MarketRegime = regime,
             Candles = candles,
             IndicatorSnapshot = null,
             StrategyParameters = new Dictionary<string, string> { ["__seenFingerprints"] = "[]" },
@@ -430,10 +414,15 @@ public sealed class Milestone231BParityTests
             CurrentCandleIndex = candles.Count - 1
         });
         Assert.Equal(SignalType.Entry, pluginEval.SignalType);
-        Assert.Equal(detectorCandidate.EntryPrice, pluginEval.EntryPrice);
-        Assert.Equal(detectorCandidate.StopLoss, pluginEval.SuggestedStopLoss);
-        Assert.Equal(detectorCandidate.Target1, pluginEval.SuggestedTakeProfit);
-        Assert.Equal(detectorCandidate.SetupFingerprint, StrategyLabRunner.ExtractFingerprint(pluginEval.RawDataJson ?? "{}"));
+        Assert.Equal(TradeDirection.Long, pluginEval.Direction);
+        Assert.Equal(100.80m, pluginEval.EntryPrice);
+        Assert.Equal(99.95m, pluginEval.SuggestedStopLoss);
+        Assert.Equal(102.50m, pluginEval.SuggestedTakeProfit);
+        var pluginFp = StrategyLabRunner.ExtractFingerprint(pluginEval.RawDataJson ?? "{}");
+        Assert.True(StrategyLabRunner.IsCanonicalSetupFingerprint(pluginFp));
+        Assert.True(
+            Milestone231BParityFixtures.HasStrengthBreakdown(pluginEval.RawDataJson ?? "{}"),
+            "Plugin RawDataJson must include strengthBreakdown (detector structure-only JSON does not).");
 
         var from = candles[0].OpenTimeUtc;
         var to = candles[^1].OpenTimeUtc.AddMinutes(5);
@@ -474,12 +463,17 @@ public sealed class Milestone231BParityTests
 
         Assert.Equal(StrategyLabRunStatus.Completed, run.Status);
         Assert.NotEmpty(candidates);
-        var lab = Assert.Single(candidates, c => c.SetupFingerprint == detectorCandidate.SetupFingerprint);
-        Assert.Equal(detectorCandidate.Direction, lab.Direction);
-        Assert.Equal(detectorCandidate.EntryPrice, lab.ProposedEntryPrice);
-        Assert.Equal(detectorCandidate.StopLoss, lab.StopLoss);
-        Assert.Equal(detectorCandidate.Target1, lab.Target1);
+        var lab = Assert.Single(candidates, c => c.SetupFingerprint == pluginFp);
+        Assert.Equal(pluginEval.Direction, lab.Direction);
+        Assert.Equal(pluginEval.EntryPrice, lab.ProposedEntryPrice);
+        Assert.Equal(pluginEval.SuggestedStopLoss, lab.StopLoss);
+        Assert.Equal(pluginEval.SuggestedTakeProfit, lab.Target1);
+        Assert.True(Milestone231BParityFixtures.HasStrengthBreakdown(lab.StructureJson));
         Assert.Contains(PriceStructureBreakoutRetestEvaluator.StrategyVersion, run.StrategyVersion);
+
+        using var summary = JsonDocument.Parse(run.ResultSummaryJson);
+        Assert.True(summary.RootElement.TryGetProperty("regimeDistribution", out var regimes));
+        Assert.True(regimes.TryGetProperty(MarketRegime.Unknown.ToString(), out _));
 
         var service = new StrategyLabService(
             Mock.Of<IStrategyLabRunRepository>(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>()) == Task.FromResult<StrategyLabRun?>(new StrategyLabRun
@@ -709,6 +703,7 @@ public sealed class Milestone231BParityTests
         var evaluationTimeUtc = candles[evalIndex].CloseTimeUtc;
         var parameters = new Dictionary<string, string> { ["__seenFingerprints"] = "[]" };
         var plugin = new PriceStructureBreakoutRetestStrategy();
+        var regime = DeterministicMarketRegimeClassifier.Classify(null, candles[evalIndex]);
 
         var direct = plugin.Evaluate(new StrategyContext
         {
@@ -717,7 +712,7 @@ public sealed class Milestone231BParityTests
             Symbol = "BTCUSDT",
             Timeframe = Timeframe.M5,
             HigherTimeframe = Timeframe.H1,
-            MarketRegime = MarketRegime.Breakout,
+            MarketRegime = regime,
             Candles = candles,
             IndicatorSnapshot = null,
             StrategyParameters = parameters,
@@ -727,7 +722,8 @@ public sealed class Milestone231BParityTests
         Assert.Equal(SignalType.Entry, direct.SignalType);
         Assert.NotNull(direct.EntryPrice);
         var directFp = StrategyLabRunner.ExtractFingerprint(direct.RawDataJson ?? "{}");
-        Assert.False(string.IsNullOrWhiteSpace(directFp));
+        Assert.True(StrategyLabRunner.IsCanonicalSetupFingerprint(directFp));
+        Assert.True(Milestone231BParityFixtures.HasStrengthBreakdown(direct.RawDataJson ?? "{}"));
 
         var from = candles[0].OpenTimeUtc;
         var to = candles[^1].OpenTimeUtc.AddMinutes(5);
@@ -809,8 +805,11 @@ public sealed class Milestone231BParityTests
         IReadOnlyList<Candle> ltf,
         IReadOnlyList<Candle> htf,
         IReadOnlyDictionary<string, string> parameters,
-        DateTime evaluatedAtUtc) =>
-        new()
+        DateTime evaluatedAtUtc)
+    {
+        var snapshot = Milestone231BParityFixtures.BuildTrendingSnapshots(ltf).GetValueOrDefault(ltf[^1].Id);
+        var regime = DeterministicMarketRegimeClassifier.Classify(snapshot, ltf[^1]);
+        return new StrategyContext
         {
             ExchangeId = 1,
             SymbolId = 1,
@@ -818,13 +817,14 @@ public sealed class Milestone231BParityTests
             Timeframe = Timeframe.M5,
             HigherTimeframe = Timeframe.H1,
             HigherTimeframeCandles = htf,
-            MarketRegime = MarketRegime.Trending,
+            MarketRegime = regime,
             Candles = ltf,
-            IndicatorSnapshot = null,
+            IndicatorSnapshot = snapshot,
             StrategyParameters = parameters,
             EvaluatedAtUtc = evaluatedAtUtc,
             CurrentCandleIndex = ltf.Count - 1
         };
+    }
 
     private static async Task<List<StrategyResearchCandidate>> RunAdaptiveLabAsync(
         long runId,

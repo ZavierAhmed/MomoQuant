@@ -12,7 +12,8 @@ public static class StrategyHigherTimeframeSupport
     public const string AdaptiveHtfMappingContractVersion = "AdaptiveHtfMapping/v1";
 
     public static bool UsesMomoAdaptiveMapping(ITradingStrategy strategy) =>
-        strategy is MomoAdaptiveMultiTimeframeTrendBreakoutStrategy;
+        strategy is MomoAdaptiveMultiTimeframeTrendBreakoutStrategy
+        || strategy.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout;
 
     public static Timeframe ResolveHigherTimeframe(ITradingStrategy strategy, Timeframe executionTimeframe)
     {

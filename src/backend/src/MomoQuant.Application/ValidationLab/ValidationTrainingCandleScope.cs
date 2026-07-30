@@ -1018,6 +1018,16 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
 
         var htfSeries = MaterializeScopedHigherTimeframeSeries(request, parsedTimeframe);
 
+        // Record HTF access evidence BEFORE returning the dataset used by strategy evaluation.
+        foreach (var (tf, htfCandles) in htfSeries.OrderBy(kv => (int)kv.Key))
+        {
+            RecordHtfAccess(
+                tf,
+                htfCandles,
+                request,
+                ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.HigherTimeframeAccess));
+        }
+
         return new StrategyLabDataset
         {
             SymbolId = request.SymbolId,
@@ -1061,12 +1071,26 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
             }
         }
 
+        var expectedSymbolId = Partition.SymbolId > 0 ? Partition.SymbolId : request.SymbolId;
+        var expectedExchangeId = ResolvePartitionExchangeId();
+
         if (!needsAdaptiveHtf)
         {
-            return FilterScopedHtf(request.HigherTimeframeSeriesByTimeframe);
+            return ValidateAndFilterScopedHtf(
+                request.HigherTimeframeSeriesByTimeframe,
+                mappedHtf: null,
+                expectedSymbolId,
+                expectedExchangeId,
+                requireMappedKey: false);
         }
 
-        var scoped = FilterScopedHtf(request.HigherTimeframeSeriesByTimeframe);
+        var scoped = ValidateAndFilterScopedHtf(
+            request.HigherTimeframeSeriesByTimeframe,
+            mappedHtf,
+            expectedSymbolId,
+            expectedExchangeId,
+            requireMappedKey: true);
+
         if (!scoped.TryGetValue(mappedHtf, out var series) || series.Count == 0)
         {
             var denial =
@@ -1096,8 +1120,22 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         return scoped;
     }
 
-    private IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>> FilterScopedHtf(
-        IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>? source)
+    private long? ResolvePartitionExchangeId()
+    {
+        if (_all.Length == 0)
+        {
+            return null;
+        }
+
+        return _all[0].ExchangeId;
+    }
+
+    private IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>> ValidateAndFilterScopedHtf(
+        IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>? source,
+        Timeframe? mappedHtf,
+        long expectedSymbolId,
+        long? expectedExchangeId,
+        bool requireMappedKey)
     {
         if (source is null || source.Count == 0)
         {
@@ -1113,13 +1151,10 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         var filtered = new Dictionary<Timeframe, IReadOnlyList<Candle>>();
         foreach (var (tf, candles) in source)
         {
-            var kept = candles
-                .Where(c => c.OpenTimeUtc < boundExclusive)
-                .ToList();
-            if (kept.Count != candles.Count)
+            if (requireMappedKey && mappedHtf.HasValue && tf != mappedHtf.Value)
             {
                 var denial =
-                    $"Higher-timeframe candles for {TimeframeParser.ToApiString(tf)} extend beyond TrainingEvaluationEndExclusiveUtc/ValidationBoundaryUtc and are rejected.";
+                    $"Adaptive validation HTF dictionary key '{TimeframeParser.ToApiString(tf)}' is not the mapped HTF '{TimeframeParser.ToApiString(mappedHtf.Value)}'.";
                 throw new ValidationCandlePartitionViolationException(
                     ValidationExperimentId,
                     ScopeExecutionId,
@@ -1134,10 +1169,155 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                     "ValidationTrainingCandleScope");
             }
 
+            DateTime? previousOpen = null;
+            DateTime? previousClose = null;
+            var seenOpens = new HashSet<DateTime>();
+            var kept = new List<Candle>(candles.Count);
+
+            for (var i = 0; i < candles.Count; i++)
+            {
+                var c = candles[i];
+                var open = DateTime.SpecifyKind(c.OpenTimeUtc, DateTimeKind.Utc);
+                var close = DateTime.SpecifyKind(c.CloseTimeUtc, DateTimeKind.Utc);
+
+                if (c.Timeframe != tf)
+                {
+                    throw HtfViolation(
+                        $"Higher-timeframe candle timeframe '{TimeframeParser.ToApiString(c.Timeframe)}' does not match dictionary key '{TimeframeParser.ToApiString(tf)}'.");
+                }
+
+                if (mappedHtf.HasValue && requireMappedKey && c.Timeframe != mappedHtf.Value)
+                {
+                    throw HtfViolation(
+                        $"Adaptive HTF candle timeframe '{TimeframeParser.ToApiString(c.Timeframe)}' does not match mapped HTF '{TimeframeParser.ToApiString(mappedHtf.Value)}' under key '{TimeframeParser.ToApiString(tf)}'.");
+                }
+
+                if (expectedSymbolId > 0 && c.SymbolId != expectedSymbolId)
+                {
+                    throw HtfViolation(
+                        $"Higher-timeframe candle SymbolId {c.SymbolId} does not match partition/request symbol {expectedSymbolId}.");
+                }
+
+                if (expectedExchangeId.HasValue && c.ExchangeId != expectedExchangeId.Value)
+                {
+                    throw HtfViolation(
+                        $"Higher-timeframe candle ExchangeId {c.ExchangeId} does not match partition exchange {expectedExchangeId.Value}.");
+                }
+
+                if (!c.IsClosed)
+                {
+                    throw HtfViolation(
+                        $"Higher-timeframe candle at {open:O} is not closed (IsClosed=false).");
+                }
+
+                if (!seenOpens.Add(open))
+                {
+                    throw HtfViolation(
+                        $"Higher-timeframe candles for {TimeframeParser.ToApiString(tf)} contain duplicate OpenTimeUtc {open:O}.");
+                }
+
+                if (previousOpen.HasValue && open <= previousOpen.Value)
+                {
+                    throw HtfViolation(
+                        $"Higher-timeframe candles for {TimeframeParser.ToApiString(tf)} are not strictly ascending by OpenTimeUtc (got {open:O} after {previousOpen.Value:O}).");
+                }
+
+                if (previousClose.HasValue && close < previousClose.Value)
+                {
+                    throw HtfViolation(
+                        $"Higher-timeframe candles for {TimeframeParser.ToApiString(tf)} are not ascending by CloseTimeUtc (got {close:O} after {previousClose.Value:O}).");
+                }
+
+                // Reject open-before-boundary / close-after-boundary leakage (not OpenTime-only).
+                if (close > boundExclusive || close > ValidationBoundaryUtc)
+                {
+                    throw HtfViolation(
+                        $"Higher-timeframe candle OpenTimeUtc={open:O} CloseTimeUtc={close:O} for {TimeframeParser.ToApiString(tf)} extends beyond TrainingEvaluationEndExclusiveUtc/ValidationBoundaryUtc ({boundExclusive:O}) and is rejected.");
+                }
+
+                if (open >= boundExclusive)
+                {
+                    throw HtfViolation(
+                        $"Higher-timeframe candles for {TimeframeParser.ToApiString(tf)} extend beyond TrainingEvaluationEndExclusiveUtc/ValidationBoundaryUtc and are rejected.");
+                }
+
+                previousOpen = open;
+                previousClose = close;
+                kept.Add(c);
+            }
+
             filtered[tf] = kept;
         }
 
         return filtered;
+    }
+
+    private ValidationCandlePartitionViolationException HtfViolation(string denial) =>
+        new(
+            ValidationExperimentId,
+            ScopeExecutionId,
+            ValidationBoundaryUtc,
+            SegmentStartUtc,
+            SegmentEndExclusiveUtc,
+            Partition.RequiredWarmupCandleCount,
+            SegmentStartUtc,
+            SegmentEndExclusiveUtc,
+            ValidationCandlePartitionDenialCodes.TimeframeMismatch,
+            denial,
+            "ValidationTrainingCandleScope");
+
+    private void RecordHtfAccess(
+        Timeframe timeframe,
+        IReadOnlyList<Candle> returned,
+        ValidationDatasetMaterializationRequest request,
+        ValidationCandleAccessContext context)
+    {
+        var partitionLabel = $"HTF:{TimeframeParser.ToApiString(timeframe)}";
+        var requestedStart = returned.Count > 0 ? returned[0].OpenTimeUtc : request.EvaluationFromUtc;
+        var requestedEnd = returned.Count > 0 ? returned[^1].CloseTimeUtc : request.EvaluationToExclusiveUtc;
+
+        lock (_gate)
+        {
+            _accessLog.Add(new ValidationCandleAccessRecord
+            {
+                AccessEventId = Guid.NewGuid(),
+                ScopeExecutionId = ScopeExecutionId,
+                ScopeSequenceNumber = ++_nextScopeSequence,
+                ValidationExperimentId = ValidationExperimentId,
+                TrialId = ActiveTrialId,
+                TrialNumber = ActiveTrialNumber,
+                CallerComponent = context.ToCallerAuditLabel(),
+                AccessPurpose = context.AccessPurpose,
+                RequestedStartUtc = requestedStart,
+                RequestedEndUtc = requestedEnd,
+                RequestedCandleCount = returned.Count,
+                ReturnedStartUtc = returned.Count > 0 ? returned[0].OpenTimeUtc : null,
+                ReturnedEndUtc = returned.Count > 0 ? returned[^1].OpenTimeUtc : null,
+                ReturnedCandleCount = returned.Count,
+                MinimumReturnedTimestampUtc = returned.Count > 0 ? returned.Min(c => c.OpenTimeUtc) : null,
+                MaximumReturnedTimestampUtc = returned.Count > 0 ? returned.Max(c => c.OpenTimeUtc) : null,
+                CandleContentFingerprint = returned.Count > 0 ? ComputeContentFingerprint(returned) : null,
+                AccessedAtUtc = DateTime.UtcNow,
+                WasDenied = false,
+                DenialCode = null,
+                DenialReason = null,
+                CorrelationId = CorrelationId,
+                DatasetPartition = partitionLabel,
+                RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion
+            });
+        }
+    }
+
+    [Obsolete("Use ValidateAndFilterScopedHtf.")]
+    private IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>> FilterScopedHtf(
+        IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>? source)
+    {
+        return ValidateAndFilterScopedHtf(
+            source,
+            mappedHtf: null,
+            expectedSymbolId: Partition.SymbolId > 0 ? Partition.SymbolId : 0,
+            expectedExchangeId: ResolvePartitionExchangeId(),
+            requireMappedKey: false);
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -1267,6 +1447,8 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
 
             ValidationCandleAccessPurpose.DatasetMaterialization or
             ValidationCandleAccessPurpose.StrategyLabDataset => "Combined",
+
+            ValidationCandleAccessPurpose.HigherTimeframeAccess => "HTF",
 
             ValidationCandleAccessPurpose.DirectWarmup => "DirectWarmup",
             ValidationCandleAccessPurpose.DirectEvaluation => "DirectEvaluation",

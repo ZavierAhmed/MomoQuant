@@ -30,7 +30,9 @@ public enum ValidationCandleAccessPurpose
     EvaluationPartial = 13,
     WarmupDiagnostic = 14,
     DirectWarmup = 15,
-    DirectEvaluation = 16
+    DirectEvaluation = 16,
+    /// <summary>Higher-timeframe series access during dataset materialization.</summary>
+    HigherTimeframeAccess = 17
 }
 
 /// <summary>Caller identity + access purpose for audited candle reads.</summary>

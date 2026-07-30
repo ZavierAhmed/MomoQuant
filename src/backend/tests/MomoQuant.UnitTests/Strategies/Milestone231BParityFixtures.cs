@@ -395,6 +395,9 @@ internal static class Milestone231BParityFixtures
             : null;
     }
 
+    public static bool HasStrengthBreakdown(string? rawDataJson) =>
+        ExtractStrengthBreakdown(rawDataJson) is not null;
+
     public sealed class FixedStrategyLabCandleDataSource : IStrategyLabCandleDataSource
     {
         private readonly StrategyLabDataset _dataset;
