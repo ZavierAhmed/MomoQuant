@@ -212,12 +212,16 @@ public sealed class ValidationDatasetMaterializationRequest
     public required int WarmupCandleCount { get; init; }
     public required string CallerComponent { get; init; }
 
-    /// <summary>Optional strategy code used for Adaptive HTF partition safety checks.</summary>
+    /// <summary>
+    /// Optional; when present must match the bound scope strategy identity.
+    /// Never trusted as the source of Adaptive HTF requirements (Milestone 23.1B1A).
+    /// </summary>
     public string? StrategyCode { get; init; }
 
     /// <summary>
-    /// Optional higher-timeframe candles already scoped to the validation partition.
-    /// Must never be filled from unrestricted candle repositories.
+    /// Compatibility remnant. Non-empty values are rejected as untrusted
+    /// (<see cref="ValidationCandlePartitionDenialCodes.UntrustedCallerHtf"/>).
+    /// HTF must be bound on the scope/partition at construction.
     /// </summary>
     public IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>? HigherTimeframeSeriesByTimeframe { get; init; }
 }
@@ -242,6 +246,21 @@ public sealed class ValidationCandlePartitionMetadata
     public string? WarmupContentFingerprint { get; set; }
     public string? EvaluationContentFingerprint { get; init; }
     public string? CombinedContentFingerprint { get; init; }
+
+    /// <summary>Bound strategy identity from scope construction (Milestone 23.1B1A).</summary>
+    public string? StrategyCode { get; init; }
+
+    /// <summary>Bound strategy version from scope construction.</summary>
+    public string? StrategyVersion { get; init; }
+
+    /// <summary>Exchange captured from LTF candles / request when available.</summary>
+    public long? ExchangeId { get; init; }
+
+    /// <summary>Mapped Adaptive HTF when the bound strategy requires one.</summary>
+    public string? MappedHigherTimeframe { get; init; }
+
+    /// <summary>Content fingerprint of the immutable HTF partition (when bound).</summary>
+    public string? HigherTimeframeContentFingerprint { get; init; }
     
     // v2 fields
     public DateTime? WarmupStartUtc { get; init; }

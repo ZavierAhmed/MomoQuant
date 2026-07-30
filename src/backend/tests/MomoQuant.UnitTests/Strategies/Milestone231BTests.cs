@@ -452,7 +452,13 @@ public sealed class Milestone231BTests
         var candles = Enumerable.Range(0, 24)
             .Select(i => Candle(i + 1, Timeframe.M5, start.AddMinutes(i * 5), 100m))
             .ToList();
-        var scope = new ValidationTrainingCandleScope(42, start, boundary, candles);
+        var scope = new ValidationTrainingCandleScope(
+            42,
+            start,
+            boundary,
+            candles,
+            strategyCode: StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
+            strategyVersion: MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version);
         var request = new ValidationDatasetMaterializationRequest
         {
             SymbolId = candles[0].SymbolId,
@@ -466,6 +472,7 @@ public sealed class Milestone231BTests
         };
 
         var ex = Assert.Throws<ValidationCandlePartitionViolationException>(() => scope.CreateStrategyLabDataset(request));
+        Assert.Equal(ValidationCandlePartitionDenialCodes.MissingPartitionHtf, ex.DenialCode);
         Assert.Contains("HTF", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -477,12 +484,22 @@ public sealed class Milestone231BTests
         var candles = Enumerable.Range(0, 24)
             .Select(i => Candle(i + 1, Timeframe.M5, start.AddMinutes(i * 5), 100m))
             .ToList();
-        var scope = new ValidationTrainingCandleScope(43, start, boundary, candles);
         var poisonedHtf = new List<Candle>
         {
             Candle(500, Timeframe.H1, start, 100m),
             Candle(501, Timeframe.H1, boundary, 101m) // open at boundary — rejected
         };
+        var scope = new ValidationTrainingCandleScope(
+            43,
+            start,
+            boundary,
+            candles,
+            higherTimeframePartition: new Dictionary<Timeframe, IReadOnlyList<Candle>>
+            {
+                [Timeframe.H1] = poisonedHtf
+            },
+            strategyCode: StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
+            strategyVersion: MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version);
         var request = new ValidationDatasetMaterializationRequest
         {
             SymbolId = candles[0].SymbolId,
@@ -492,14 +509,11 @@ public sealed class Milestone231BTests
             EvaluationToExclusiveUtc = boundary,
             WarmupCandleCount = 0,
             CallerComponent = "Milestone231BTests",
-            StrategyCode = StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
-            HigherTimeframeSeriesByTimeframe = new Dictionary<Timeframe, IReadOnlyList<Candle>>
-            {
-                [Timeframe.H1] = poisonedHtf
-            }
+            StrategyCode = StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout
         };
 
         var ex = Assert.Throws<ValidationCandlePartitionViolationException>(() => scope.CreateStrategyLabDataset(request));
+        Assert.Equal(ValidationCandlePartitionDenialCodes.HtfCloseBeyondBoundary, ex.DenialCode);
         Assert.Contains("beyond", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 

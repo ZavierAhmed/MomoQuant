@@ -18,6 +18,23 @@ public static class ValidationCandlePartitionDenialCodes
     public const string TimeframeMismatch = "TIMEFRAME_MISMATCH";
     public const string PartitionRangeInvalid = "PARTITION_RANGE_INVALID";
     public const string CrossPartitionCompatibilityReadForbidden = "CROSS_PARTITION_COMPATIBILITY_READ_FORBIDDEN";
+
+    /// <summary>Caller-supplied HTF on materialization request is untrusted (Milestone 23.1B1A).</summary>
+    public const string UntrustedCallerHtf = "UntrustedCallerHtf";
+
+    /// <summary>Materialization StrategyCode differs from bound scope strategy identity.</summary>
+    public const string SpoofedStrategyIdentity = "SpoofedStrategyIdentity";
+
+    /// <summary>Adaptive requires mapped HTF but the scope-owned partition has none.</summary>
+    public const string MissingPartitionHtf = "MissingPartitionHtf";
+
+    public const string HtfCloseBeyondBoundary = "HtfCloseBeyondBoundary";
+    public const string HtfOpenCandle = "HtfOpenCandle";
+    public const string HtfWrongSymbol = "HtfWrongSymbol";
+    public const string HtfWrongExchange = "HtfWrongExchange";
+    public const string HtfWrongTimeframe = "HtfWrongTimeframe";
+    public const string HtfUnordered = "HtfUnordered";
+    public const string HtfDuplicate = "HtfDuplicate";
 }
 
 /// <summary>

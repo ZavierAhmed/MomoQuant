@@ -622,10 +622,10 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 MergeResultSummary(run, "rejectionFunnel", new
                 {
                     counts = rejectionFunnel.OrderBy(kv => kv.Key, StringComparer.Ordinal).ToDictionary(kv => kv.Key, kv => kv.Value),
-                    entryConfirmed = 0,
+                    entryConfirmed,
                     evaluations,
                     missingFingerprintCount,
-                    reconciled = rejectionTotalOnFail == evaluations
+                    reconciled = rejectionTotalOnFail + entryConfirmed == evaluations
                 });
                 MergeResultSummary(run, "regimeDistribution",
                     regimeDistribution.OrderBy(kv => kv.Key, StringComparer.Ordinal).ToDictionary(kv => kv.Key, kv => kv.Value));

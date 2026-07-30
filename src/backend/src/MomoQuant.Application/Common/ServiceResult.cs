@@ -7,7 +7,13 @@ public sealed class ServiceResult<T>
     public string? ErrorMessage { get; init; }
     public string? ErrorField { get; init; }
 
+    /// <summary>Optional non-failure diagnostic (e.g. omitted catalog entries).</summary>
+    public string? Message { get; init; }
+
     public static ServiceResult<T> Ok(T data) => new() { Succeeded = true, Data = data };
+
+    public static ServiceResult<T> Ok(T data, string? message) =>
+        new() { Succeeded = true, Data = data, Message = message };
 
     public static ServiceResult<T> Fail(string message, string? field = null) =>
         new() { Succeeded = false, ErrorMessage = message, ErrorField = field };

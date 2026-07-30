@@ -273,6 +273,7 @@ public sealed class Milestone231B1Tests
         Assert.Equal(3, result.Data!.Count);
 
         var adaptive = Assert.Single(result.Data, s => s.Code == StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout);
+        Assert.Equal(MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version, adaptive.Version);
         Assert.Equal(["5m", "15m", "1h", "4h"], adaptive.AllowedTimeframes);
         Assert.Equal(["5m:1h", "15m:4h", "1h:4h", "4h:1d"], adaptive.HtfMappings);
         Assert.Equal(["5m"], adaptive.RequiredDataTimeframes);
@@ -282,6 +283,7 @@ public sealed class Milestone231B1Tests
         Assert.False(adaptive.SupportsValidation);
 
         var psbr = Assert.Single(result.Data, s => s.Code == StrategyCodes.PriceStructureBreakoutRetest);
+        Assert.Equal(PriceStructureBreakoutRetestStrategy.Version, psbr.Version);
         Assert.Equal(["5m", "15m", "30m", "1h", "4h"], psbr.AllowedTimeframes);
         Assert.Empty(psbr.HtfMappings);
         Assert.Equal("Price Action / Market Structure", psbr.Category);
@@ -289,6 +291,7 @@ public sealed class Milestone231B1Tests
         Assert.True(psbr.SupportsValidation);
 
         var range = Assert.Single(result.Data, s => s.Code == StrategyCodes.MomoVolatilityRangeReversion);
+        Assert.Equal(MomoVolatilityRangeReversionStrategy.Version, range.Version);
         Assert.Equal(["5m", "15m", "30m", "1h"], range.AllowedTimeframes);
         Assert.Empty(range.HtfMappings);
         Assert.Equal("Range / Mean Reversion", range.Category);
@@ -331,68 +334,65 @@ public sealed class Milestone231B1Tests
     [Fact]
     public void G_Htf_OpensBeforeBoundaryClosesAfter_Rejected()
     {
-        var (scope, request) = CreateAdaptiveScopeRequest();
-        var open = Start;
-        var close = Start.AddHours(3); // closes after 2h boundary
-        request = WithHtf(request, [HtfCandle(1, Timeframe.H1, open, close, symbolId: 1, exchangeId: 1)]);
+        var (scope, request) = CreateAdaptiveScopeRequest(
+            htf: [HtfCandle(1, Timeframe.H1, Start, Start.AddHours(3), symbolId: 1, exchangeId: 1)]);
         var ex = Assert.Throws<ValidationCandlePartitionViolationException>(() => scope.CreateStrategyLabDataset(request));
-        Assert.Contains("beyond", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ValidationCandlePartitionDenialCodes.HtfCloseBeyondBoundary, ex.DenialCode);
+        Assert.Contains(scope.AccessLog, a => a.WasDenied && a.DenialCode == ValidationCandlePartitionDenialCodes.HtfCloseBeyondBoundary);
     }
 
     [Fact]
     public void G_Htf_OpenCandle_Rejected()
     {
-        var (scope, request) = CreateAdaptiveScopeRequest();
         var c = HtfCandle(1, Timeframe.H1, Start, Start.AddHours(1), symbolId: 1, exchangeId: 1);
         c.IsClosed = false;
-        request = WithHtf(request, [c]);
+        var (scope, request) = CreateAdaptiveScopeRequest(htf: [c]);
         var ex = Assert.Throws<ValidationCandlePartitionViolationException>(() => scope.CreateStrategyLabDataset(request));
-        Assert.Contains("not closed", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ValidationCandlePartitionDenialCodes.HtfOpenCandle, ex.DenialCode);
     }
 
     [Fact]
     public void G_Htf_WrongSymbol_Rejected()
     {
-        var (scope, request) = CreateAdaptiveScopeRequest();
-        request = WithHtf(request, [HtfCandle(1, Timeframe.H1, Start, Start.AddHours(1), symbolId: 99, exchangeId: 1)]);
+        var (scope, request) = CreateAdaptiveScopeRequest(
+            htf: [HtfCandle(1, Timeframe.H1, Start, Start.AddHours(1), symbolId: 99, exchangeId: 1)]);
         var ex = Assert.Throws<ValidationCandlePartitionViolationException>(() => scope.CreateStrategyLabDataset(request));
-        Assert.Contains("SymbolId", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ValidationCandlePartitionDenialCodes.HtfWrongSymbol, ex.DenialCode);
     }
 
     [Fact]
     public void G_Htf_WrongExchange_Rejected()
     {
-        var (scope, request) = CreateAdaptiveScopeRequest();
-        request = WithHtf(request, [HtfCandle(1, Timeframe.H1, Start, Start.AddHours(1), symbolId: 1, exchangeId: 99)]);
+        var (scope, request) = CreateAdaptiveScopeRequest(
+            htf: [HtfCandle(1, Timeframe.H1, Start, Start.AddHours(1), symbolId: 1, exchangeId: 99)]);
         var ex = Assert.Throws<ValidationCandlePartitionViolationException>(() => scope.CreateStrategyLabDataset(request));
-        Assert.Contains("ExchangeId", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ValidationCandlePartitionDenialCodes.HtfWrongExchange, ex.DenialCode);
     }
 
     [Fact]
     public void G_Htf_WrongTimeframeUnderMappedKey_Rejected()
     {
-        var (scope, request) = CreateAdaptiveScopeRequest();
-        request = WithHtf(request, [HtfCandle(1, Timeframe.H4, Start, Start.AddHours(4), symbolId: 1, exchangeId: 1)]);
+        var (scope, request) = CreateAdaptiveScopeRequest(
+            htf: [HtfCandle(1, Timeframe.H4, Start, Start.AddHours(4), symbolId: 1, exchangeId: 1)],
+            htfKey: Timeframe.H1);
         var ex = Assert.Throws<ValidationCandlePartitionViolationException>(() => scope.CreateStrategyLabDataset(request));
-        Assert.Contains("does not match", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ValidationCandlePartitionDenialCodes.HtfWrongTimeframe, ex.DenialCode);
     }
 
     [Fact]
     public void G_Htf_UnorderedOrDuplicate_Rejected()
     {
-        var (scope, request) = CreateAdaptiveScopeRequest();
         var a = HtfCandle(1, Timeframe.H1, Start.AddHours(1), Start.AddHours(2), 1, 1);
         var b = HtfCandle(2, Timeframe.H1, Start, Start.AddHours(1), 1, 1);
-        request = WithHtf(request, [a, b]);
+        var (scope, request) = CreateAdaptiveScopeRequest(htf: [a, b]);
         var unordered = Assert.Throws<ValidationCandlePartitionViolationException>(() => scope.CreateStrategyLabDataset(request));
-        Assert.Contains("ascending", unordered.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ValidationCandlePartitionDenialCodes.HtfUnordered, unordered.DenialCode);
 
-        var (scope2, request2) = CreateAdaptiveScopeRequest();
         var d1 = HtfCandle(1, Timeframe.H1, Start, Start.AddHours(1), 1, 1);
         var d2 = HtfCandle(2, Timeframe.H1, Start, Start.AddHours(1), 1, 1);
-        request2 = WithHtf(request2, [d1, d2]);
+        var (scope2, request2) = CreateAdaptiveScopeRequest(htf: [d1, d2]);
         var dup = Assert.Throws<ValidationCandlePartitionViolationException>(() => scope2.CreateStrategyLabDataset(request2));
-        Assert.Contains("duplicate", dup.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ValidationCandlePartitionDenialCodes.HtfDuplicate, dup.DenialCode);
     }
 
     [Fact]
@@ -400,6 +400,7 @@ public sealed class Milestone231B1Tests
     {
         var (scope, request) = CreateAdaptiveScopeRequest();
         var ex = Assert.Throws<ValidationCandlePartitionViolationException>(() => scope.CreateStrategyLabDataset(request));
+        Assert.Equal(ValidationCandlePartitionDenialCodes.MissingPartitionHtf, ex.DenialCode);
         Assert.Contains("HTF", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -407,9 +408,8 @@ public sealed class Milestone231B1Tests
     public void G_Htf_RepositoryNeverCalled_AndAccessEvidenceRecorded()
     {
         var candleRepo = new Mock<ICandleRepository>(MockBehavior.Strict);
-        var (scope, request) = CreateAdaptiveScopeRequest();
         var valid = HtfCandle(1, Timeframe.H1, Start, Start.AddHours(1), 1, 1);
-        request = WithHtf(request, [valid]);
+        var (scope, request) = CreateAdaptiveScopeRequest(htf: [valid]);
 
         // Scope materialization must not touch unrestricted candle repositories.
         _ = candleRepo;
@@ -426,6 +426,10 @@ public sealed class Milestone231B1Tests
         var lastHtf = scope.AccessLog.Last(a => a.AccessPurpose == ValidationCandleAccessPurpose.HigherTimeframeAccess);
         var materialization = scope.AccessLog.Last(a => a.AccessPurpose == ValidationCandleAccessPurpose.DatasetMaterialization);
         Assert.True(lastHtf.ScopeSequenceNumber > materialization.ScopeSequenceNumber);
+        Assert.Equal(Start, lastHtf.RequestedStartUtc);
+        Assert.Equal(Start.AddHours(2), lastHtf.RequestedEndUtc);
+        Assert.Equal(valid.OpenTimeUtc, lastHtf.ReturnedStartUtc);
+        Assert.Equal(valid.CloseTimeUtc, lastHtf.ReturnedEndUtc);
     }
 
     [Fact]
@@ -556,7 +560,10 @@ public sealed class Milestone231B1Tests
         };
     }
 
-    private static (ValidationTrainingCandleScope Scope, ValidationDatasetMaterializationRequest Request) CreateAdaptiveScopeRequest()
+    private static (ValidationTrainingCandleScope Scope, ValidationDatasetMaterializationRequest Request) CreateAdaptiveScopeRequest(
+        IReadOnlyList<Candle>? htf = null,
+        Timeframe htfKey = Timeframe.H1,
+        Guid? boundAuditExecutionId = null)
     {
         var boundary = Start.AddHours(2);
         var candles = Enumerable.Range(0, 24)
@@ -577,7 +584,22 @@ public sealed class Milestone231B1Tests
                 CreatedAtUtc = Start.AddMinutes(i * 5)
             })
             .ToList();
-        var scope = new ValidationTrainingCandleScope(42, Start, boundary, candles);
+
+        IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>? partition = null;
+        if (htf is not null)
+        {
+            partition = new Dictionary<Timeframe, IReadOnlyList<Candle>> { [htfKey] = htf };
+        }
+
+        var scope = new ValidationTrainingCandleScope(
+            42,
+            Start,
+            boundary,
+            candles,
+            higherTimeframePartition: partition,
+            strategyCode: StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
+            strategyVersion: MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
+            boundAuditExecutionId: boundAuditExecutionId);
         var request = new ValidationDatasetMaterializationRequest
         {
             SymbolId = 1,
@@ -591,25 +613,6 @@ public sealed class Milestone231B1Tests
         };
         return (scope, request);
     }
-
-    private static ValidationDatasetMaterializationRequest WithHtf(
-        ValidationDatasetMaterializationRequest request,
-        IReadOnlyList<Candle> htf) =>
-        new()
-        {
-            SymbolId = request.SymbolId,
-            SymbolName = request.SymbolName,
-            Timeframe = request.Timeframe,
-            EvaluationFromUtc = request.EvaluationFromUtc,
-            EvaluationToExclusiveUtc = request.EvaluationToExclusiveUtc,
-            WarmupCandleCount = request.WarmupCandleCount,
-            CallerComponent = request.CallerComponent,
-            StrategyCode = request.StrategyCode,
-            HigherTimeframeSeriesByTimeframe = new Dictionary<Timeframe, IReadOnlyList<Candle>>
-            {
-                [Timeframe.H1] = htf
-            }
-        };
 
     private static Candle HtfCandle(long id, Timeframe tf, DateTime open, DateTime close, long symbolId, long exchangeId) =>
         new()

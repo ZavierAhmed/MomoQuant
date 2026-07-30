@@ -509,7 +509,10 @@ public sealed class Milestone231BParityTests
     [Fact]
     public async Task CrossPath_Adaptive_DirectLabBacktest_IdenticalAtSameT()
     {
-        var (ltf, htf) = AdaptiveDefaultFixtures.BuildValidLong(Start);
+        var (fullLtf, fullHtf) = AdaptiveDefaultFixtures.BuildValidLong(Start);
+        // Align with BacktestEngine's 600-candle visible window so absolute indices in RawDataJson match.
+        var ltf = fullLtf.Count <= 600 ? fullLtf : fullLtf.TakeLast(600).ToList();
+        var htf = fullHtf;
         Milestone231BParityFixtures.AssignSequentialIds(ltf);
         Milestone231BParityFixtures.AssignSequentialIds(htf, 10_000);
         var evalIndex = ltf.Count - 1;
@@ -525,10 +528,12 @@ public sealed class Milestone231BParityTests
             ["__seenFingerprints"] = "[]"
         };
         var plugin = new MomoAdaptiveMultiTimeframeTrendBreakoutStrategy();
-        var direct = plugin.Evaluate(BuildAdaptiveContext(ltf, visibleHtf, parameters, evaluationTimeUtc));
+        var context = BuildAdaptiveContext(ltf, visibleHtf, parameters, evaluationTimeUtc);
+        var direct = plugin.Evaluate(context);
         Assert.Equal(SignalType.Entry, direct.SignalType);
         Assert.NotNull(direct.EntryPrice);
         var directFp = StrategyLabRunner.ExtractFingerprint(direct.RawDataJson ?? "{}");
+        var classifiedRegime = context.MarketRegime;
 
         var from = ltf[evalIndex].OpenTimeUtc;
         var to = from.AddMinutes(5);
@@ -561,13 +566,22 @@ public sealed class Milestone231BParityTests
         var capture = Assert.Single(recording.Capture.Records);
         Assert.False(backtestResult.Skipped);
         Assert.Equal(SignalType.Entry, backtestResult.SignalType);
+        Assert.Equal(direct.Reason, backtestResult.Reason);
         Assert.Equal(direct.Direction, backtestResult.Direction);
         Assert.Equal(direct.EntryPrice, backtestResult.EntryPrice);
         Assert.Equal(direct.SuggestedStopLoss, backtestResult.SuggestedStopLoss);
         Assert.Equal(direct.SuggestedTakeProfit, backtestResult.SuggestedTakeProfit);
         Assert.Equal(direct.Strength, backtestResult.Strength);
+        Assert.Equal(direct.RawDataJson, backtestResult.RawDataJson);
+        Assert.Equal(
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(direct.RawDataJson),
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(backtestResult.RawDataJson));
         Assert.Equal(directFp, Milestone231BParityFixtures.ExtractFingerprint(backtestResult.RawDataJson));
-        Assert.Equal(MarketRegime.Trending.ToString(), backtestResult.Regime);
+        Assert.Equal(classifiedRegime.ToString(), backtestResult.Regime);
+        Assert.Equal(evaluationTimeUtc, capture.EvaluatedAtUtc);
+        Assert.Equal(
+            ltf.Take(evalIndex + 1).Select(c => c.Id).ToArray(),
+            capture.Candles.Select(c => c.Id).ToArray());
         Assert.Equal(
             visibleHtf.Select(c => c.Id).ToArray(),
             capture.HigherTimeframeCandles.Select(c => c.Id).ToArray());
@@ -576,6 +590,10 @@ public sealed class Milestone231BParityTests
         Assert.Equal(direct.EntryPrice, lab.ProposedEntryPrice);
         Assert.Equal(direct.SuggestedStopLoss, lab.StopLoss);
         Assert.Equal(direct.SuggestedTakeProfit, lab.Target1);
+        Assert.Equal(direct.Strength, ExtractStrengthFromStructure(lab.StructureJson) ?? direct.Strength);
+        Assert.Equal(
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(direct.RawDataJson),
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(lab.StructureJson));
         Assert.Equal(directFp, lab.SetupFingerprint);
         Assert.Equal(backtestResult.EntryPrice, lab.ProposedEntryPrice);
         Assert.Equal(Milestone231BParityFixtures.ExtractFingerprint(backtestResult.RawDataJson), lab.SetupFingerprint);
@@ -685,12 +703,20 @@ public sealed class Milestone231BParityTests
         Assert.Equal(direct.SuggestedStopLoss, backtestResult.SuggestedStopLoss);
         Assert.Equal(direct.SuggestedTakeProfit, backtestResult.SuggestedTakeProfit);
         Assert.Equal(direct.Strength, backtestResult.Strength);
+        Assert.Equal(direct.RawDataJson, backtestResult.RawDataJson);
+        Assert.Equal(
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(direct.RawDataJson),
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(backtestResult.RawDataJson));
         Assert.Equal(directFp, Milestone231BParityFixtures.ExtractFingerprint(backtestResult.RawDataJson));
-        Assert.Equal(MarketRegime.Ranging.ToString(), backtestResult.Regime);
+        Assert.Equal(regime.ToString(), backtestResult.Regime);
 
         Assert.Equal(direct.EntryPrice, lab.ProposedEntryPrice);
         Assert.Equal(direct.SuggestedStopLoss, lab.StopLoss);
         Assert.Equal(direct.SuggestedTakeProfit, lab.Target1);
+        Assert.Equal(direct.Strength, ExtractStrengthFromStructure(lab.StructureJson) ?? direct.Strength);
+        Assert.Equal(
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(direct.RawDataJson),
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(lab.StructureJson));
         Assert.Equal(directFp, lab.SetupFingerprint);
         Assert.Equal(backtestResult.EntryPrice, lab.ProposedEntryPrice);
     }
@@ -787,15 +813,26 @@ public sealed class Milestone231BParityTests
 
         var backtestResult = Assert.Single(recording.Results);
         Assert.Equal(SignalType.Entry, backtestResult.SignalType);
+        Assert.Equal(direct.Reason, backtestResult.Reason);
         Assert.Equal(direct.Direction, backtestResult.Direction);
         Assert.Equal(direct.EntryPrice, backtestResult.EntryPrice);
         Assert.Equal(direct.SuggestedStopLoss, backtestResult.SuggestedStopLoss);
         Assert.Equal(direct.SuggestedTakeProfit, backtestResult.SuggestedTakeProfit);
+        Assert.Equal(direct.Strength, backtestResult.Strength);
+        Assert.Equal(direct.RawDataJson, backtestResult.RawDataJson);
+        Assert.Equal(
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(direct.RawDataJson),
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(backtestResult.RawDataJson));
         Assert.Equal(directFp, Milestone231BParityFixtures.ExtractFingerprint(backtestResult.RawDataJson));
+        Assert.Equal(regime.ToString(), backtestResult.Regime);
 
         Assert.Equal(direct.EntryPrice, lab.ProposedEntryPrice);
         Assert.Equal(direct.SuggestedStopLoss, lab.StopLoss);
         Assert.Equal(direct.SuggestedTakeProfit, lab.Target1);
+        Assert.Equal(direct.Strength, ExtractStrengthFromStructure(lab.StructureJson) ?? direct.Strength);
+        Assert.Equal(
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(direct.RawDataJson),
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(lab.StructureJson));
         Assert.Equal(directFp, lab.SetupFingerprint);
         Assert.Equal(backtestResult.EntryPrice, lab.ProposedEntryPrice);
         Assert.Equal(Milestone231BParityFixtures.ExtractFingerprint(backtestResult.RawDataJson), lab.SetupFingerprint);

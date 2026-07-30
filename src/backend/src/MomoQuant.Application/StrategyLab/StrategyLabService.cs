@@ -99,6 +99,7 @@ public sealed class StrategyLabService : IStrategyLabService
             .ToDictionary(r => r.StrategyCode, StringComparer.OrdinalIgnoreCase);
 
         var strategies = new List<StrategyLabStrategyDto>();
+        var diagnostics = new List<string>();
         foreach (var code in CanonicalStrategyPortfolio.StrategyLabNewRunCodes)
         {
             if (!StrategyCapabilityPolicy.SupportsStrategyLab(code))
@@ -120,29 +121,51 @@ public sealed class StrategyLabService : IStrategyLabService
                 }
             }
 
+            if (entity is null || string.IsNullOrWhiteSpace(entity.Version))
+            {
+                diagnostics.Add($"Omitted {code}: missing strategy entity or blank Version.");
+                continue;
+            }
+
+            if (plugin is null)
+            {
+                diagnostics.Add($"Omitted {code}: registered plugin missing.");
+                continue;
+            }
+
+            if (requirement is null)
+            {
+                diagnostics.Add($"Omitted {code}: strategy data requirements missing.");
+                continue;
+            }
+
             var catalogCategory = ResolveCatalogCategory(strategyEnum, entity, plugin);
-            var allowed = requirement?.AllowedExecutionTimeframes?.Count > 0
+            var allowed = requirement.AllowedExecutionTimeframes?.Count > 0
                 ? (IReadOnlyList<string>)requirement.AllowedExecutionTimeframes
-                : (IReadOnlyList<string>)(plugin?.SupportedTimeframes.Select(TimeframeParser.ToApiString).ToList()
-                  ?? new List<string>());
-            var htfMappings = (IReadOnlyList<string>)(requirement?.HigherTimeframeFilters ?? Array.Empty<string>());
-            var requiredData = (IReadOnlyList<string>)(requirement?.RequiredDataTimeframes ?? Array.Empty<string>());
-            var preferred = requirement?.PreferredExecutionTimeframe
-                ?? (allowed.Count > 0 ? allowed[0] : null);
-            var version = ResolveRegisteredVersion(plugin, entity) ?? entity?.Version ?? "1.0.0";
+                : Array.Empty<string>();
+            if (allowed.Count == 0)
+            {
+                diagnostics.Add($"Omitted {code}: allowed execution timeframes missing.");
+                continue;
+            }
+
+            var htfMappings = (IReadOnlyList<string>)(requirement.HigherTimeframeFilters ?? Array.Empty<string>());
+            var requiredData = (IReadOnlyList<string>)(requirement.RequiredDataTimeframes ?? Array.Empty<string>());
+            var preferred = requirement.PreferredExecutionTimeframe
+                ?? allowed[0];
 
             strategies.Add(new StrategyLabStrategyDto
             {
                 Code = code,
-                Name = entity?.Name ?? plugin?.Name ?? code,
-                Version = version,
+                Name = entity.Name,
+                Version = entity.Version,
                 Category = catalogCategory,
                 AllowedTimeframes = allowed,
                 PreferredTimeframe = preferred,
                 RequiredDataTimeframes = requiredData,
                 HtfMappings = htfMappings,
-                WarmupBars = requirement?.WarmupCandles ?? 100,
-                SupportedRegimes = (plugin?.SupportedRegimes ?? Array.Empty<MarketRegime>())
+                WarmupBars = requirement.WarmupCandles,
+                SupportedRegimes = plugin.SupportedRegimes
                     .Select(r => r.ToString())
                     .ToList(),
                 SupportsValidation = StrategyCapabilityPolicy.SupportsValidation(strategyEnum),
@@ -150,7 +173,15 @@ public sealed class StrategyLabService : IStrategyLabService
             });
         }
 
-        return ServiceResult<IReadOnlyList<StrategyLabStrategyDto>>.Ok(strategies);
+        if (strategies.Count == 0 && diagnostics.Count > 0)
+        {
+            return ServiceResult<IReadOnlyList<StrategyLabStrategyDto>>.Fail(
+                "No lab strategies could be resolved. " + string.Join(" ", diagnostics));
+        }
+
+        return ServiceResult<IReadOnlyList<StrategyLabStrategyDto>>.Ok(
+            strategies,
+            diagnostics.Count > 0 ? string.Join(" ", diagnostics) : null);
     }
 
     public async Task<ServiceResult<StrategyLabRunDto>> CreateRunAsync(CreateStrategyLabRunRequest request, CancellationToken cancellationToken = default)
@@ -1238,7 +1269,7 @@ public sealed class StrategyLabService : IStrategyLabService
         if (entity is not null)
         {
             var catalog = StrategyCatalogMapper.MapToCatalogDto(entity, requirement: null, parameterDefinitionsAvailable: false);
-            if (!string.IsNullOrWhiteSpace(catalog.Category) && catalog.Category != "General")
+            if (!string.IsNullOrWhiteSpace(catalog.Category))
             {
                 return catalog.Category;
             }
@@ -1252,7 +1283,7 @@ public sealed class StrategyLabService : IStrategyLabService
                 Code = code,
                 Name = plugin.Name,
                 Description = plugin.Description,
-                Version = ResolveRegisteredVersion(plugin, entity) ?? "1.0.0",
+                Version = entity?.Version ?? string.Empty,
                 IsEnabled = true,
                 CreatedAtUtc = DateTime.UtcNow
             };
@@ -1260,38 +1291,6 @@ public sealed class StrategyLabService : IStrategyLabService
                 ?? "General";
         }
 
-        return StrategyCatalogMapper.MapToCatalogDto(
-            new Strategy
-            {
-                Id = 0,
-                Code = code,
-                Name = code.ToCode(),
-                Description = string.Empty,
-                Version = "1.0.0",
-                IsEnabled = true,
-                CreatedAtUtc = DateTime.UtcNow
-            },
-            requirement: null,
-            parameterDefinitionsAvailable: false).Category
-            ?? "General";
-    }
-
-    private static string? ResolveRegisteredVersion(ITradingStrategy? plugin, Strategy? entity)
-    {
-        if (!string.IsNullOrWhiteSpace(entity?.Version))
-        {
-            return entity.Version;
-        }
-
-        return plugin switch
-        {
-            MomoAdaptiveMultiTimeframeTrendBreakoutStrategy =>
-                MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
-            MomoVolatilityRangeReversionStrategy =>
-                MomoVolatilityRangeReversionStrategy.Version,
-            PriceStructureBreakoutRetestStrategy =>
-                PriceStructureBreakoutRetestStrategy.Version,
-            _ => null
-        };
+        return "General";
     }
 }

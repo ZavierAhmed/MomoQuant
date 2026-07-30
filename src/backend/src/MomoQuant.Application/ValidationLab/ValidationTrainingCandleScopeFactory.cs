@@ -1,7 +1,9 @@
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.MarketData;
+using MomoQuant.Application.Strategies.MomoAdaptive;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
+using MomoQuant.Domain.Strategies;
 using MomoQuant.Domain.ValidationLab;
 
 namespace MomoQuant.Application.ValidationLab;
@@ -29,6 +31,7 @@ public interface IValidationTrainingCandleScopeFactory
 /// <summary>
 /// Builds an immutable training candle scope from DB candles strictly before ValidationStartUtc.
 /// Loads exact warm-up (latest N closed bars before evaluation start) plus evaluation bars.
+/// When Adaptive requires HTF, binds mapped HTF into the scope at construction (Milestone 23.1B1A).
 /// Uses the inner (unscoped) candle repository to avoid recursive boundary checks during bootstrap.
 /// </summary>
 public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCandleScopeFactory
@@ -134,6 +137,26 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
                     $"requirementsVersion={request.RequirementsVersion}.");
             }
 
+            var exchangeId = warmup.Concat(evaluation).Select(c => (long?)c.ExchangeId).FirstOrDefault(id => id.HasValue && id.Value > 0);
+            var mappedHtf = TryResolveAdaptiveMappedHtf(request.StrategyCode, timeframe);
+            IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>? htfPartition = null;
+            string? htfFingerprint = null;
+
+            if (mappedHtf.HasValue)
+            {
+                htfPartition = await LoadAuthorizedHtfPartitionAsync(
+                    request,
+                    mappedHtf.Value,
+                    evalStart,
+                    loadEndExclusive,
+                    boundary,
+                    exchangeId,
+                    requiredWarmup,
+                    cancellationToken);
+                htfFingerprint = ValidationTrainingCandleScope.ComputeContentFingerprint(
+                    htfPartition[mappedHtf.Value]);
+            }
+
             var combined = warmup.Concat(evaluation).ToList();
             var partition = ValidationTrainingCandleScope.BuildPartition(
                 request.ValidationExperimentId,
@@ -150,14 +173,128 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
                 request.RequirementsVersion,
                 warmup,
                 evaluation,
-                combined);
+                combined,
+                strategyCode: request.StrategyCode,
+                strategyVersion: request.StrategyVersion,
+                exchangeId: exchangeId,
+                mappedHigherTimeframe: mappedHtf is { } htf
+                    ? TimeframeParser.ToApiString(htf)
+                    : null,
+                higherTimeframeContentFingerprint: htfFingerprint);
 
             return new ValidationTrainingCandleScope(
                 partition,
                 warmup,
                 evaluation,
                 scopeExecutionId: request.BoundScopeExecutionId,
-                boundAuditExecutionId: request.BoundAuditExecutionId);
+                boundAuditExecutionId: request.BoundAuditExecutionId,
+                higherTimeframePartition: htfPartition,
+                strategyCode: request.StrategyCode,
+                strategyVersion: request.StrategyVersion,
+                exchangeId: exchangeId,
+                mappedHigherTimeframe: mappedHtf);
+        }
+    }
+
+    private async Task<IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>> LoadAuthorizedHtfPartitionAsync(
+        ValidationTrainingCandleScopeRequest request,
+        Timeframe mappedHtf,
+        DateTime evalStart,
+        DateTime loadEndExclusive,
+        DateTime boundary,
+        long? expectedExchangeId,
+        int requiredWarmup,
+        CancellationToken cancellationToken)
+    {
+        var htfWarmup = Math.Max(requiredWarmup, 200);
+        var raw = await _candles.GetCandlesChronologicalUnscopedAsync(
+            request.SymbolId,
+            mappedHtf,
+            fromUtc: evalStart,
+            toUtc: loadEndExclusive,
+            warmUpCount: htfWarmup,
+            cancellationToken);
+
+        var authorized = raw
+            .Where(c =>
+            {
+                var open = DateTime.SpecifyKind(c.OpenTimeUtc, DateTimeKind.Utc);
+                var close = DateTime.SpecifyKind(c.CloseTimeUtc, DateTimeKind.Utc);
+                if (c.SymbolId != request.SymbolId)
+                {
+                    return false;
+                }
+
+                if (expectedExchangeId.HasValue && c.ExchangeId != expectedExchangeId.Value)
+                {
+                    return false;
+                }
+
+                if (c.Timeframe != mappedHtf || !c.IsClosed)
+                {
+                    return false;
+                }
+
+                if (close > loadEndExclusive || close > boundary || open >= loadEndExclusive)
+                {
+                    return false;
+                }
+
+                return true;
+            })
+            .OrderBy(c => c.OpenTimeUtc)
+            .ToList();
+
+        if (authorized.Count == 0)
+        {
+            var denial =
+                $"Adaptive validation HTF '{TimeframeParser.ToApiString(mappedHtf)}' is missing from authorized unscoped load. " +
+                "Coverage/import/repos must not repair validation HTF after scope construction.";
+            throw new ValidationCandlePartitionViolationException(
+                request.ValidationExperimentId,
+                request.BoundScopeExecutionId ?? Guid.Empty,
+                boundary,
+                evalStart,
+                loadEndExclusive,
+                htfWarmup,
+                evalStart,
+                loadEndExclusive,
+                ValidationCandlePartitionDenialCodes.MissingPartitionHtf,
+                denial,
+                "ValidationTrainingCandleScopeFactory");
+        }
+
+        return new Dictionary<Timeframe, IReadOnlyList<Candle>>
+        {
+            [mappedHtf] = authorized
+        };
+    }
+
+    private static Timeframe? TryResolveAdaptiveMappedHtf(string? strategyCode, Timeframe executionTimeframe)
+    {
+        if (string.IsNullOrWhiteSpace(strategyCode))
+        {
+            return null;
+        }
+
+        try
+        {
+            var code = StrategyCodeExtensions.FromCode(strategyCode);
+            if (code != StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout)
+            {
+                return null;
+            }
+
+            if (executionTimeframe is not (Timeframe.M5 or Timeframe.M15 or Timeframe.H1 or Timeframe.H4))
+            {
+                return null;
+            }
+
+            return MomoAdaptiveMtfTrendBreakoutEvaluator.ResolveHigherTimeframe(executionTimeframe);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
         }
     }
 
