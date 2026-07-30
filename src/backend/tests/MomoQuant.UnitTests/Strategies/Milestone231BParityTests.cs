@@ -768,7 +768,7 @@ public sealed class Milestone231BParityTests
     [Fact]
     public async Task CrossPath_Psbr_DirectLabBacktest_IdenticalAtSameT()
     {
-        const string expectedFingerprint = "A0C702ACD7D2AE10";
+        const string expectedFingerprint = ParityEvidenceContracts.PsbrPositiveFingerprint;
         var candles = Milestone231BParityFixtures.BuildPsbrLongScenario();
         var evalIndex = candles.Count - 1;
         var evaluationTimeUtc = candles[evalIndex].CloseTimeUtc;
@@ -791,6 +791,8 @@ public sealed class Milestone231BParityTests
             ["stopBufferPercent"] = "0.05",
             ["__seenFingerprints"] = "[]"
         };
+        var psbrEvidence = ParityEvidenceContracts.CreatePsbrPositiveEvidence(candles);
+        Assert.Equal(expectedFingerprint, psbrEvidence.RawDataContract.Properties["setupFingerprint"].StringValue);
         var plugin = new PriceStructureBreakoutRetestStrategy();
         var productionHtf = StrategyHigherTimeframeSupport.ResolveGeneralHigherTimeframe(Timeframe.M5);
         var regime = DeterministicMarketRegimeClassifier.Classify(null, candles[evalIndex]);
@@ -901,8 +903,10 @@ public sealed class Milestone231BParityTests
                 ExpectedParameters = parameters,
                 ExpectedIndicatorSnapshot = null,
                 Fingerprint = ParityEvidenceContracts.PositiveFingerprint(expectedFingerprint),
-                RequiredRawDataJsonProperties = ParityEvidenceContracts.PsbrPositiveRawData,
-                RequiredStructureJsonProperties = ParityEvidenceContracts.PsbrPositiveStructure
+                RawDataContract = psbrEvidence.RawDataContract,
+                OutcomeContract = psbrEvidence.OutcomeContract,
+                RequiredRawDataJsonProperties = ["setupFingerprint", "structure", "version", "strengthBreakdown"],
+                RequiredStructureJsonProperties = Array.Empty<string>()
             });
     }
 

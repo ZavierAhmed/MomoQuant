@@ -497,6 +497,8 @@ public sealed class Milestone231B1ATests
             ["stopBufferPercent"] = "0.05",
             ["__seenFingerprints"] = "[]"
         };
+        var rawDataContract = ParityAssertionHelper.RawDataJsonContract.Create(
+            ParityAssertionHelper.RawDataJsonRootState.Null);
         var plugin = new PriceStructureBreakoutRetestStrategy();
         var productionHtf = StrategyHigherTimeframeSupport.ResolveGeneralHigherTimeframe(Timeframe.M5);
         var regime = DeterministicMarketRegimeClassifier.Classify(null, candles[evalIndex]);
@@ -606,7 +608,8 @@ public sealed class Milestone231B1ATests
                 ExpectedParameters = parameters,
                 ExpectedIndicatorSnapshot = null,
                 Fingerprint = ParityEvidenceContracts.RejectionFingerprintAbsent,
-                RequiredRawDataJsonProperties = ParityEvidenceContracts.PsbrRejectionRawData
+                RawDataContract = rawDataContract,
+                RequiredRawDataJsonProperties = Array.Empty<string>()
             });
     }
 

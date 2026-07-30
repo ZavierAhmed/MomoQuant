@@ -39,9 +39,139 @@ internal static class ParityEvidenceContracts
 
     public const string RangePositiveFingerprint = "43E14ED345E566C3";
 
+    public const string PsbrPositiveFingerprint = "A0C702ACD7D2AE10";
+
     public sealed record RangePositiveEvidence(
         ParityAssertionHelper.RawDataJsonContract RawDataContract,
         ParityAssertionHelper.PositiveOutcomeContract OutcomeContract);
+
+    public sealed record PsbrPositiveEvidence(
+        ParityAssertionHelper.RawDataJsonContract RawDataContract,
+        ParityAssertionHelper.PositiveOutcomeContract OutcomeContract);
+
+    /// <summary>
+    /// Independent PSBR v1.1 reference calculation for the fixed bullish parity fixture.
+    /// This deliberately mirrors the documented swing, breakout, retest, confirmation, and
+    /// strength formulas without invoking the strategy or evaluator under test.
+    /// </summary>
+    public static PsbrPositiveEvidence CreatePsbrPositiveEvidence(IReadOnlyList<Candle> candles)
+    {
+        const int swingLeftBars = 2;
+        const int swingRightBars = 2;
+        const int minSwingDistanceBars = 3;
+        const decimal retestTolerancePercent = 0.15m;
+        const decimal stopBufferPercent = 0.05m;
+        const decimal fixedRewardRisk = 2.0m;
+        const string version = "1.1.0";
+
+        ArgumentOutOfRangeException.ThrowIfLessThan(candles.Count, 21);
+        var confirmationIndex = candles.Count - 1;
+        var swingIndex = 6;
+        var swing = candles[swingIndex];
+        var level = swing.High;
+
+        for (var index = swingIndex - swingLeftBars; index <= swingIndex + swingRightBars; index++)
+        {
+            if (index != swingIndex)
+            {
+                Assert.True(swing.High > candles[index].High, "PSBR fixture must retain its independently confirmed swing high.");
+            }
+        }
+
+        var minimumBreakoutIndex = swingIndex + swingRightBars + minSwingDistanceBars;
+        var breakoutIndex = Enumerable.Range(minimumBreakoutIndex, confirmationIndex - minimumBreakoutIndex)
+            .First(index => candles[index].Close > level);
+        var retestTolerance = level * retestTolerancePercent / 100m;
+        var retestIndex = Enumerable.Range(breakoutIndex + 1, confirmationIndex - breakoutIndex)
+            .First(index =>
+            {
+                var candle = candles[index];
+                return candle.Close >= level - (level * 0.30m / 100m)
+                       && candle.Low <= level + retestTolerance
+                       && candle.Low >= level - retestTolerance;
+            });
+        var confirmation = candles[confirmationIndex];
+        Assert.True(confirmationIndex > retestIndex);
+        Assert.True(confirmation.Close > level && confirmation.Close > confirmation.Open,
+            "PSBR fixture must retain its independently confirmed bullish reaction close.");
+
+        var entry = confirmation.Close;
+        var retestLow = candles.Skip(retestIndex).Take(confirmationIndex - retestIndex + 1).Min(candle => candle.Low);
+        var stop = retestLow * (1m - stopBufferPercent / 100m);
+        var risk = entry - stop;
+        var takeProfit = entry + (risk * fixedRewardRisk);
+
+        var breakout = candles[breakoutIndex];
+        var breakoutBeyondPercent = Math.Max(0m, (breakout.Close - level) / level * 100m);
+        var breakoutBodyRatio = Math.Abs(breakout.Close - breakout.Open) / Math.Max(breakout.High - breakout.Low, 0.0000001m);
+        var breakoutDistance = Math.Clamp(Math.Round(
+            Math.Clamp(breakoutBeyondPercent / 0.35m, 0m, 1m) * 13.75m
+            + Math.Clamp(breakoutBodyRatio, 0m, 1m) * 11.25m, 2), 0m, 25m);
+
+        var retest = candles[retestIndex];
+        var retestDistancePercent = Math.Abs(retest.Close - level) / level * 100m;
+        var retestPenetrationPercent = Math.Max(0m, (level - retest.Low) / level * 100m);
+        var retestBars = retestIndex - breakoutIndex;
+        var retestQuality = Math.Clamp(Math.Round(
+            (1m - Math.Clamp(retestDistancePercent / 0.40m, 0m, 1m)) * 10m
+            + (1m - Math.Clamp(retestPenetrationPercent / 0.50m, 0m, 1m)) * 10m
+            + (1m - Math.Clamp(retestBars / 20m, 0m, 1m)) * 5m, 2), 0m, 25m);
+
+        var confirmationRange = Math.Max(confirmation.High - confirmation.Low, 0.0000001m);
+        var confirmationBodyRatio = Math.Abs(confirmation.Close - confirmation.Open) / confirmationRange;
+        var confirmationCloseLocation = (confirmation.Close - confirmation.Low) / confirmationRange;
+        var confirmationQuality = Math.Clamp(Math.Round(
+            6m
+            + Math.Clamp(confirmationBodyRatio, 0m, 1m) * 6m
+            + Math.Clamp(confirmationCloseLocation, 0m, 1m) * 4m, 2), 0m, 25m);
+
+        var actualRewardRisk = (takeProfit - entry) / risk;
+        var stopPercent = risk / entry * 100m;
+        var rewardRiskValidity = Math.Clamp(Math.Round(
+            (actualRewardRisk >= fixedRewardRisk ? 13.75m : Math.Clamp(actualRewardRisk / fixedRewardRisk, 0m, 1m) * 13.75m)
+            + (stopPercent is >= 0.08m and <= 1.8m ? 7.50m : 0m)
+            + (actualRewardRisk >= fixedRewardRisk ? 3.75m : 1.25m), 2), 0m, 25m);
+        var strength = Math.Clamp(Math.Round(
+            breakoutDistance + retestQuality + confirmationQuality + rewardRiskValidity, 2), 0m, 100m);
+
+        var structure = JsonSerializer.Serialize(new
+        {
+            setupType = "BreakoutRetest",
+            direction = "Long",
+            brokenOrSweptLevel = level,
+            swingTimeUtc = swing.OpenTimeUtc,
+            breakoutOrSweepTimeUtc = candles[breakoutIndex].OpenTimeUtc,
+            retestOrReclaimTimeUtc = candles[retestIndex].OpenTimeUtc,
+            confirmationTimeUtc = confirmation.OpenTimeUtc,
+            swingIndex,
+            breakoutIndex,
+            retestIndex,
+            confirmationIndex
+        });
+        var strengthBreakdown = JsonSerializer.Serialize(new
+        {
+            total = strength,
+            breakoutDistance,
+            retestQuality,
+            confirmationQuality,
+            rewardRiskValidity
+        });
+
+        return new PsbrPositiveEvidence(
+            ParityAssertionHelper.RawDataJsonContract.Create(
+                ParityAssertionHelper.RawDataJsonRootState.PresentJsonObject,
+                ("setupFingerprint", ParityAssertionHelper.JsonPropertyExpectation.String(PsbrPositiveFingerprint)),
+                ("structure", ParityAssertionHelper.JsonPropertyExpectation.Json(structure)),
+                ("version", ParityAssertionHelper.JsonPropertyExpectation.String(version)),
+                ("strengthBreakdown", ParityAssertionHelper.JsonPropertyExpectation.Json(strengthBreakdown))),
+            new ParityAssertionHelper.PositiveOutcomeContract(
+                TradeDirection.Long,
+                entry,
+                stop,
+                takeProfit,
+                strength,
+                "Bullish breakout retest confirmed."));
+    }
 
     /// <summary>Independent Range reference calculation over the fixed parity fixture, before strategy execution.</summary>
     public static RangePositiveEvidence CreateRangePositiveEvidence(IReadOnlyList<Candle> candles)
@@ -252,15 +382,6 @@ internal static class ParityEvidenceContracts
 
     public static readonly IReadOnlyList<string> RangeRejectionRawData =
         ["strategyCode", "version", "reason", "symbolId", "timeframe", "marketRegime", "evaluatedAtUtc"];
-
-    public static readonly IReadOnlyList<string> PsbrPositiveRawData =
-        ["setupFingerprint", "structure", "version", "strengthBreakdown"];
-
-    public static readonly IReadOnlyList<string> PsbrPositiveStructure =
-        ["strength", "strengthBreakdown"];
-
-    public static readonly IReadOnlyList<string> PsbrRejectionRawData =
-        Array.Empty<string>();
 
     /// <summary>
     /// Production Adaptive/PSBR/Range NoTrade paths do not emit setupFingerprint.
