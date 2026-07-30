@@ -652,7 +652,14 @@ public sealed class ValidationCanonicalTrainingCandleScopeRequest
                 nameof(Trial));
         }
 
-        if (Trial.AuditAttemptNumber > 0 && Trial.AuditAttemptNumber != AuditExecution.AttemptNumber)
+        if (Trial.AuditAttemptNumber <= 0)
+        {
+            throw new ArgumentException(
+                "Trial AuditAttemptNumber must be positive when binding canonical training scope.",
+                nameof(Trial));
+        }
+
+        if (Trial.AuditAttemptNumber != AuditExecution.AttemptNumber)
         {
             throw new ArgumentException(
                 $"Trial audit attempt {Trial.AuditAttemptNumber} does not match audit attempt {AuditExecution.AttemptNumber}.",

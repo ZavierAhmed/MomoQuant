@@ -1081,7 +1081,12 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             CandidateStatus = StrategyResearchCandidateStatus.Detected,
             StrategyReason = reason,
             SetupFingerprint = fingerprint,
-            ParametersJson = JsonSerializer.Serialize(parameters),
+            // Runtime duplicate suppression is an evaluator-local concern.  It is deliberately
+            // excluded from persisted candidate evidence so persisted parameters remain the exact
+            // canonical strategy parameter contract rather than mutable runner state.
+            ParametersJson = JsonSerializer.Serialize(parameters
+                .Where(pair => !string.Equals(pair.Key, "__seenFingerprints", StringComparison.Ordinal))
+                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)),
             StructureJson = structureJson,
             RawOutcomeStatus = RawOutcomeStatus.Pending,
             CreatedAtUtc = DateTime.UtcNow

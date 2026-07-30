@@ -19,13 +19,19 @@ public sealed class Milestone231B1C2BacktestCaptureTests
         var htf = new List<Candle> { BuildCandle(100, timeframe: Timeframe.H1) };
         var snapshot = new IndicatorSnapshot
         {
+            Id = 99,
             CandleId = 12,
             SymbolId = 7,
             Timeframe = Timeframe.M5,
-            Ema20 = 1.1m,
-            Ema50 = 1.2m,
-            Ema200 = 1.3m,
-            Atr14 = 0.4m
+            CalculatedAtUtc = EvalTime.AddSeconds(-1),
+            Ema20 = 1.1m, Ema50 = 1.2m, Ema200 = 1.3m, Vwap = 1.4m,
+            Rsi14 = 1.5m, Atr14 = 1.6m, VolumeSma20 = 1.7m, SwingHigh = 1.8m,
+            SwingLow = 1.9m, MarketStructure = MarketStructure.HigherHighsHigherLows,
+            BollingerMiddle20 = 2.0m, BollingerUpper20 = 2.1m, BollingerLower20 = 2.2m,
+            BollingerBandwidth20 = 2.3m, DonchianHigh20 = 2.4m, DonchianLow20 = 2.5m,
+            MacdLine = 2.6m, MacdSignal = 2.7m, MacdHistogram = 2.8m, Supertrend = 2.9m,
+            SupertrendDirection = 1, SupportLevel = 3.0m, ResistanceLevel = 3.1m,
+            CreatedAtUtc = EvalTime.AddSeconds(-2)
         };
         var parameters = new Dictionary<string, string>
         {
@@ -48,6 +54,9 @@ public sealed class Milestone231B1C2BacktestCaptureTests
             CurrentCandleIndex = 99
         };
 
+        var expectedLtf = candles.Select(StrategyEvaluationCandleSnapshot.Capture).ToArray();
+        var expectedHtf = htf.Select(StrategyEvaluationCandleSnapshot.Capture).ToArray();
+        var expectedIndicator = StrategyEvaluationIndicatorSnapshot.Capture(snapshot);
         var recording = new StrategyEvaluationCaptureRecording();
         recording.Capture(context, new MomoAdaptiveMultiTimeframeTrendBreakoutStrategy());
 
@@ -62,14 +71,37 @@ public sealed class Milestone231B1C2BacktestCaptureTests
         Assert.Equal(EvalTime, record.EvaluatedAtUtc);
         Assert.Equal(99, record.CurrentCandleIndex);
         Assert.NotEqual(candles.Count - 1, record.CurrentCandleIndex);
-        Assert.Equal(new long[] { 10, 11, 12 }, record.Candles.Select(c => c.Id).ToArray());
-        Assert.Equal(new long[] { 100 }, record.HigherTimeframeCandles.Select(c => c.Id).ToArray());
-        Assert.Same(snapshot, record.IndicatorSnapshot);
+        Assert.Equal(expectedLtf, record.Candles);
+        Assert.Equal(expectedHtf, record.HigherTimeframeCandles);
+        Assert.Equal(expectedIndicator, record.IndicatorSnapshot);
         Assert.Equal(2, record.StrategyParameters.Count);
         Assert.Equal("1", record.StrategyParameters["alpha"]);
 
+        foreach (var candle in candles.Concat(htf))
+        {
+            candle.Id += 1_000; candle.ExchangeId += 1_000; candle.SymbolId += 1_000;
+            candle.Timeframe = Timeframe.H4; candle.OpenTimeUtc = candle.OpenTimeUtc.AddDays(1);
+            candle.CloseTimeUtc = candle.CloseTimeUtc.AddDays(1); candle.Open += 1m; candle.High += 1m;
+            candle.Low += 1m; candle.Close += 1m; candle.Volume += 1m; candle.QuoteVolume += 1m;
+            candle.TradeCount += 1; candle.IsClosed = !candle.IsClosed; candle.CreatedAtUtc = candle.CreatedAtUtc.AddDays(1);
+        }
+        snapshot.Id += 1; snapshot.SymbolId += 1; snapshot.Timeframe = Timeframe.H4; snapshot.CandleId += 1;
+        snapshot.CalculatedAtUtc = snapshot.CalculatedAtUtc.AddDays(1); snapshot.Ema20 = null; snapshot.Ema50 = null;
+        snapshot.Ema200 = null; snapshot.Vwap = null; snapshot.Rsi14 = null; snapshot.Atr14 = null;
+        snapshot.VolumeSma20 = null; snapshot.SwingHigh = null; snapshot.SwingLow = null; snapshot.MarketStructure = MarketStructure.Bearish;
+        snapshot.BollingerMiddle20 = null; snapshot.BollingerUpper20 = null; snapshot.BollingerLower20 = null;
+        snapshot.BollingerBandwidth20 = null; snapshot.DonchianHigh20 = null; snapshot.DonchianLow20 = null;
+        snapshot.MacdLine = null; snapshot.MacdSignal = null; snapshot.MacdHistogram = null; snapshot.Supertrend = null;
+        snapshot.SupertrendDirection = null; snapshot.SupportLevel = null; snapshot.ResistanceLevel = null;
+        snapshot.CreatedAtUtc = snapshot.CreatedAtUtc.AddDays(1);
         parameters["alpha"] = "mutated";
+        parameters["added"] = "mutated";
+
+        Assert.Equal(expectedLtf, record.Candles);
+        Assert.Equal(expectedHtf, record.HigherTimeframeCandles);
+        Assert.Equal(expectedIndicator, record.IndicatorSnapshot);
         Assert.Equal("1", record.StrategyParameters["alpha"]);
+        Assert.False(record.StrategyParameters.ContainsKey("added"));
     }
 
     [Fact]
@@ -139,6 +171,8 @@ public sealed class Milestone231B1C2BacktestCaptureTests
             Low = 99m,
             Close = 100.5m,
             Volume = 10m,
+            QuoteVolume = 11m,
+            TradeCount = 12,
             IsClosed = true,
             CreatedAtUtc = EvalTime
         };

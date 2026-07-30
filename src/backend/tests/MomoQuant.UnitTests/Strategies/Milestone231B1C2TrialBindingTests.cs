@@ -146,6 +146,22 @@ public sealed class Milestone231B1C2TrialBindingTests
         Assert.Equal(0, reader.CallCount);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task NonPositiveAuditAttemptNumberWhenAuthoritative_ZeroReaderCalls(int attemptNumber)
+    {
+        var reader = NewReaderWithHtf();
+        var factory = CreateCanonicalFactory(reader);
+        var audit = BuildAuditExecution();
+        var trial = BuildTrial(audit);
+        trial.AuditAttemptNumber = attemptNumber;
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            factory.CreateCanonicalAsync(BuildCanonicalScopeRequest(auditExecution: audit, trial: trial)));
+        Assert.Equal(0, reader.CallCount);
+    }
+
     [Fact]
     public async Task NonTrialExecutionType_ZeroReaderCalls()
     {

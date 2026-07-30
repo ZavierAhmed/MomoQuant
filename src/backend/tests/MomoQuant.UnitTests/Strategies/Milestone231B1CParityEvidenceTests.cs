@@ -1218,7 +1218,7 @@ public sealed class Milestone231B1CParityEvidenceTests
             CandidateStatus = StrategyResearchCandidateStatus.Detected,
             StrategyReason = "ENTRY",
             SetupFingerprint = "fp-1",
-            ParametersJson = "{\"__seenFingerprints\":\"[]\"}",
+            ParametersJson = "{}",
             StructureJson = "{\"strength\":0.75,\"strengthBreakdown\":{\"total\":0.75}}"
         };
 

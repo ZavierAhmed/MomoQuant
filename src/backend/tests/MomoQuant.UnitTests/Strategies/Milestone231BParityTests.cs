@@ -510,6 +510,7 @@ public sealed class Milestone231BParityTests
     [Fact]
     public async Task CrossPath_Adaptive_DirectLabBacktest_IdenticalAtSameT()
     {
+        const string expectedFingerprint = "8DC2EABFE2BA0A5E";
         var (fullLtf, fullHtf) = AdaptiveDefaultFixtures.BuildValidLong(Start);
         // Align with BacktestEngine's 600-candle visible window so absolute indices in RawDataJson match.
         var ltf = fullLtf.Count <= 600 ? fullLtf : fullLtf.TakeLast(600).ToList();
@@ -533,7 +534,6 @@ public sealed class Milestone231BParityTests
         var direct = plugin.Evaluate(context);
         Assert.Equal(SignalType.Entry, direct.SignalType);
         Assert.NotNull(direct.EntryPrice);
-        var directFp = StrategyLabRunner.ExtractFingerprint(direct.RawDataJson ?? "{}");
         var classifiedRegime = context.MarketRegime;
 
         var from = ltf[evalIndex].OpenTimeUtc;
@@ -607,6 +607,7 @@ public sealed class Milestone231BParityTests
                 ExpectedStrategyCode = StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout,
                 ExpectedStrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
                 ExpectedStrategyLabRunId = labRun.Id,
+                ExpectedCandidateStatus = StrategyResearchCandidateStatus.Closed,
                 ExpectedRegime = classifiedRegime,
                 ExpectedHigherTimeframe = Timeframe.H1,
                 ExpectedTimeframe = Timeframe.M5,
@@ -620,7 +621,7 @@ public sealed class Milestone231BParityTests
                 ExpectedHtfCandleIds = visibleHtf.Select(c => c.Id).ToArray(),
                 ExpectedParameters = parameters,
                 ExpectedIndicatorSnapshot = context.IndicatorSnapshot,
-                Fingerprint = ParityEvidenceContracts.PositiveFingerprint(directFp!),
+                Fingerprint = ParityEvidenceContracts.PositiveFingerprint(expectedFingerprint),
                 RequiredRawDataJsonProperties = ParityEvidenceContracts.AdaptivePositiveRawData,
                 RequiredStructureJsonProperties = ParityEvidenceContracts.AdaptivePositiveStructure
             });
@@ -629,6 +630,7 @@ public sealed class Milestone231BParityTests
     [Fact]
     public async Task CrossPath_Range_DirectLabBacktest_IdenticalAtSameT()
     {
+        const string expectedFingerprint = "43E14ED345E566C3";
         // BacktestEngine windows to 600 recent candles — use the same visible window on all three paths.
         var full = MomoVolatilityRangeReversionFormulaTests.BuildValidLong();
         var candles = full.Count <= 600 ? full : full.TakeLast(600).ToList();
@@ -662,8 +664,6 @@ public sealed class Milestone231BParityTests
         var direct = plugin.Evaluate(directContext);
         Assert.Equal(SignalType.Entry, direct.SignalType);
         Assert.NotNull(direct.EntryPrice);
-        var directFp = StrategyLabRunner.ExtractFingerprint(direct.RawDataJson ?? "{}");
-        Assert.False(string.IsNullOrWhiteSpace(directFp));
 
         var from = candles[evalIndex].OpenTimeUtc;
         var to = from.AddMinutes(5);
@@ -737,6 +737,7 @@ public sealed class Milestone231BParityTests
                 ExpectedStrategyCode = StrategyCode.MomoVolatilityRangeReversion,
                 ExpectedStrategyVersion = MomoVolatilityRangeReversionStrategy.Version,
                 ExpectedStrategyLabRunId = run.Id,
+                ExpectedCandidateStatus = StrategyResearchCandidateStatus.Closed,
                 ExpectedRegime = regime,
                 ExpectedHigherTimeframe = productionHtf,
                 ExpectedTimeframe = Timeframe.M5,
@@ -750,7 +751,7 @@ public sealed class Milestone231BParityTests
                 ExpectedHtfCandleIds = Array.Empty<long>(),
                 ExpectedParameters = parameters,
                 ExpectedIndicatorSnapshot = snapshots[candles[evalIndex].Id],
-                Fingerprint = ParityEvidenceContracts.PositiveFingerprint(directFp!),
+                Fingerprint = ParityEvidenceContracts.PositiveFingerprint(expectedFingerprint),
                 RequiredRawDataJsonProperties = ParityEvidenceContracts.RangePositiveRawData,
                 RequiredStructureJsonProperties = ParityEvidenceContracts.RangePositiveStructure
             });
@@ -759,6 +760,7 @@ public sealed class Milestone231BParityTests
     [Fact]
     public async Task CrossPath_Psbr_DirectLabBacktest_IdenticalAtSameT()
     {
+        const string expectedFingerprint = "A0C702ACD7D2AE10";
         var candles = Milestone231BParityFixtures.BuildPsbrLongScenario();
         var evalIndex = candles.Count - 1;
         var evaluationTimeUtc = candles[evalIndex].CloseTimeUtc;
@@ -802,8 +804,6 @@ public sealed class Milestone231BParityTests
         var direct = plugin.Evaluate(directContext);
         Assert.Equal(SignalType.Entry, direct.SignalType);
         Assert.NotNull(direct.EntryPrice);
-        var directFp = StrategyLabRunner.ExtractFingerprint(direct.RawDataJson ?? "{}");
-        Assert.True(StrategyLabRunner.IsCanonicalSetupFingerprint(directFp));
         Assert.True(Milestone231BParityFixtures.HasStrengthBreakdown(direct.RawDataJson ?? "{}"));
 
         var from = candles[evalIndex].OpenTimeUtc;
@@ -878,6 +878,7 @@ public sealed class Milestone231BParityTests
                 ExpectedStrategyCode = StrategyCode.PriceStructureBreakoutRetest,
                 ExpectedStrategyVersion = PriceStructureBreakoutRetestEvaluator.StrategyVersion,
                 ExpectedStrategyLabRunId = run.Id,
+                ExpectedCandidateStatus = StrategyResearchCandidateStatus.Closed,
                 ExpectedRegime = regime,
                 ExpectedHigherTimeframe = productionHtf,
                 ExpectedTimeframe = Timeframe.M5,
@@ -891,7 +892,7 @@ public sealed class Milestone231BParityTests
                 ExpectedHtfCandleIds = Array.Empty<long>(),
                 ExpectedParameters = parameters,
                 ExpectedIndicatorSnapshot = null,
-                Fingerprint = ParityEvidenceContracts.PositiveFingerprint(directFp!),
+                Fingerprint = ParityEvidenceContracts.PositiveFingerprint(expectedFingerprint),
                 RequiredRawDataJsonProperties = ParityEvidenceContracts.PsbrPositiveRawData,
                 RequiredStructureJsonProperties = ParityEvidenceContracts.PsbrPositiveStructure
             });

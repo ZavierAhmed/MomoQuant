@@ -45,7 +45,7 @@ internal static class ParityAssertionHelper
         public required FingerprintContract Fingerprint { get; init; }
         public required IReadOnlyList<string> RequiredRawDataJsonProperties { get; init; }
         public required IReadOnlyList<string> RequiredStructureJsonProperties { get; init; }
-        public StrategyResearchCandidateStatus? ExpectedCandidateStatus { get; init; }
+        public StrategyResearchCandidateStatus ExpectedCandidateStatus { get; init; } = StrategyResearchCandidateStatus.Detected;
     }
 
     public sealed class RejectionThreePathEvidence
@@ -54,6 +54,8 @@ internal static class ParityAssertionHelper
         public required IReadOnlyList<StrategyEvaluationCaptureRecord> BacktestCaptures { get; init; }
         public required IReadOnlyList<StrategyResearchCandidate> LabCandidates { get; init; }
         public required string LabResultSummaryJson { get; init; }
+        /// <summary>The actual persisted row that owns the rejection funnel for production-path cases.</summary>
+        public StrategyLabRun? PersistedLabRun { get; init; }
         public required long ExpectedStrategyLabRunId { get; init; }
         public required StrategyCode ExpectedStrategyCode { get; init; }
         public required string ExpectedLabRejectionCode { get; init; }
@@ -196,8 +198,17 @@ internal static class ParityAssertionHelper
 
     private static void AssertRejectionFunnelLinkage(RejectionThreePathEvidence evidence, int capturedLabEvaluationCount)
     {
-        Assert.False(string.IsNullOrWhiteSpace(evidence.LabResultSummaryJson));
-        using var doc = JsonDocument.Parse(evidence.LabResultSummaryJson);
+        var resultSummaryJson = evidence.LabResultSummaryJson;
+        if (evidence.PersistedLabRun is { } persistedRun)
+        {
+            Assert.Equal(evidence.ExpectedStrategyLabRunId, persistedRun.Id);
+            Assert.Equal(evidence.ExpectedStrategyCode.ToCode(), persistedRun.StrategyCode);
+            Assert.False(string.IsNullOrWhiteSpace(persistedRun.ResultSummaryJson));
+            resultSummaryJson = persistedRun.ResultSummaryJson;
+        }
+
+        Assert.False(string.IsNullOrWhiteSpace(resultSummaryJson));
+        using var doc = JsonDocument.Parse(resultSummaryJson);
         Assert.True(
             doc.RootElement.TryGetProperty("rejectionFunnel", out var rejectionFunnel),
             "Lab result summary must contain rejectionFunnel.");
@@ -296,6 +307,18 @@ internal static class ParityAssertionHelper
         }
     }
 
+    private static void AssertCandlesEqual(
+        IReadOnlyList<Candle> left,
+        IReadOnlyList<StrategyEvaluationCandleSnapshot> right,
+        string label)
+    {
+        Assert.Equal(left.Count, right.Count);
+        for (var i = 0; i < left.Count; i++)
+        {
+            AssertCandleContentEqual(left[i], right[i], $"{label}[{i}]");
+        }
+    }
+
     private static void AssertCandleContentEqual(Candle left, Candle right, string label)
     {
         Assert.Equal(left.Id, right.Id);
@@ -309,7 +332,33 @@ internal static class ParityAssertionHelper
         Assert.Equal(left.Low, right.Low);
         Assert.Equal(left.Close, right.Close);
         Assert.Equal(left.Volume, right.Volume);
+        Assert.Equal(left.QuoteVolume, right.QuoteVolume);
+        Assert.Equal(left.TradeCount, right.TradeCount);
         Assert.Equal(left.IsClosed, right.IsClosed);
+        Assert.Equal(left.CreatedAtUtc, right.CreatedAtUtc);
+        _ = label;
+    }
+
+    private static void AssertCandleContentEqual(
+        Candle left,
+        StrategyEvaluationCandleSnapshot right,
+        string label)
+    {
+        Assert.Equal(left.Id, right.Id);
+        Assert.Equal(left.ExchangeId, right.ExchangeId);
+        Assert.Equal(left.SymbolId, right.SymbolId);
+        Assert.Equal(left.Timeframe, right.Timeframe);
+        Assert.Equal(left.OpenTimeUtc, right.OpenTimeUtc);
+        Assert.Equal(left.CloseTimeUtc, right.CloseTimeUtc);
+        Assert.Equal(left.Open, right.Open);
+        Assert.Equal(left.High, right.High);
+        Assert.Equal(left.Low, right.Low);
+        Assert.Equal(left.Close, right.Close);
+        Assert.Equal(left.Volume, right.Volume);
+        Assert.Equal(left.QuoteVolume, right.QuoteVolume);
+        Assert.Equal(left.TradeCount, right.TradeCount);
+        Assert.Equal(left.IsClosed, right.IsClosed);
+        Assert.Equal(left.CreatedAtUtc, right.CreatedAtUtc);
         _ = label;
     }
 
@@ -430,10 +479,7 @@ internal static class ParityAssertionHelper
         Assert.Equal(labEval.Result.SuggestedTakeProfit, labCandidate.Target1);
         Assert.Null(labCandidate.Target2);
         Assert.Equal(labEval.Result.Reason, labCandidate.StrategyReason);
-        if (evidence.ExpectedCandidateStatus is { } expectedStatus)
-        {
-            Assert.Equal(expectedStatus, labCandidate.CandidateStatus);
-        }
+        Assert.Equal(evidence.ExpectedCandidateStatus, labCandidate.CandidateStatus);
 
         var risk = labCandidate.Direction == TradeDirection.Long
             ? labCandidate.ProposedEntryPrice - labCandidate.StopLoss
@@ -480,12 +526,13 @@ internal static class ParityAssertionHelper
             };
         }
 
+        Assert.False(
+            parsed.ContainsKey("__seenFingerprints"),
+            "Persisted candidate parameters must explicitly exclude evaluator-local __seenFingerprints state.");
         var expected = contextParameters
             .Where(kvp => !string.Equals(kvp.Key, "__seenFingerprints", StringComparison.Ordinal))
-            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-        var actual = parsed
-            .Where(kvp => !string.Equals(kvp.Key, "__seenFingerprints", StringComparison.Ordinal))
-            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.Ordinal);
+        var actual = parsed;
 
         AssertParametersEqual(expected, actual);
     }
@@ -693,13 +740,94 @@ internal static class ParityAssertionHelper
         }
 
         Assert.NotNull(actual);
-        Assert.Equal(expected.CandleId, actual.CandleId);
-        Assert.Equal(expected.SymbolId, actual.SymbolId);
-        Assert.Equal(expected.Timeframe, actual.Timeframe);
-        Assert.Equal(expected.Ema20, actual.Ema20);
-        Assert.Equal(expected.Ema50, actual.Ema50);
-        Assert.Equal(expected.Ema200, actual.Ema200);
-        Assert.Equal(expected.Atr14, actual.Atr14);
+        AssertIndicatorSnapshotFields(expected, actual.Id, actual.SymbolId, actual.Timeframe, actual.CandleId,
+            actual.CalculatedAtUtc, actual.Ema20, actual.Ema50, actual.Ema200, actual.Vwap, actual.Rsi14,
+            actual.Atr14, actual.VolumeSma20, actual.SwingHigh, actual.SwingLow, actual.MarketStructure,
+            actual.BollingerMiddle20, actual.BollingerUpper20, actual.BollingerLower20, actual.BollingerBandwidth20,
+            actual.DonchianHigh20, actual.DonchianLow20, actual.MacdLine, actual.MacdSignal, actual.MacdHistogram,
+            actual.Supertrend, actual.SupertrendDirection, actual.SupportLevel, actual.ResistanceLevel, actual.CreatedAtUtc);
+    }
+
+    private static void AssertIndicatorSnapshotIdentity(
+        IndicatorSnapshot? expected,
+        StrategyEvaluationIndicatorSnapshot? actual)
+    {
+        if (expected is null)
+        {
+            Assert.Null(actual);
+            return;
+        }
+
+        Assert.NotNull(actual);
+        AssertIndicatorSnapshotFields(expected, actual.Id, actual.SymbolId, actual.Timeframe, actual.CandleId,
+            actual.CalculatedAtUtc, actual.Ema20, actual.Ema50, actual.Ema200, actual.Vwap, actual.Rsi14,
+            actual.Atr14, actual.VolumeSma20, actual.SwingHigh, actual.SwingLow, actual.MarketStructure,
+            actual.BollingerMiddle20, actual.BollingerUpper20, actual.BollingerLower20, actual.BollingerBandwidth20,
+            actual.DonchianHigh20, actual.DonchianLow20, actual.MacdLine, actual.MacdSignal, actual.MacdHistogram,
+            actual.Supertrend, actual.SupertrendDirection, actual.SupportLevel, actual.ResistanceLevel, actual.CreatedAtUtc);
+    }
+
+    private static void AssertIndicatorSnapshotFields(
+        IndicatorSnapshot expected,
+        long actualId,
+        long actualSymbolId,
+        Timeframe actualTimeframe,
+        long actualCandleId,
+        DateTime actualCalculatedAtUtc,
+        decimal? actualEma20,
+        decimal? actualEma50,
+        decimal? actualEma200,
+        decimal? actualVwap,
+        decimal? actualRsi14,
+        decimal? actualAtr14,
+        decimal? actualVolumeSma20,
+        decimal? actualSwingHigh,
+        decimal? actualSwingLow,
+        MarketStructure actualMarketStructure,
+        decimal? actualBollingerMiddle20,
+        decimal? actualBollingerUpper20,
+        decimal? actualBollingerLower20,
+        decimal? actualBollingerBandwidth20,
+        decimal? actualDonchianHigh20,
+        decimal? actualDonchianLow20,
+        decimal? actualMacdLine,
+        decimal? actualMacdSignal,
+        decimal? actualMacdHistogram,
+        decimal? actualSupertrend,
+        int? actualSupertrendDirection,
+        decimal? actualSupportLevel,
+        decimal? actualResistanceLevel,
+        DateTime actualCreatedAtUtc)
+    {
+        Assert.Equal(expected.Id, actualId);
+        Assert.Equal(expected.SymbolId, actualSymbolId);
+        Assert.Equal(expected.Timeframe, actualTimeframe);
+        Assert.Equal(expected.CandleId, actualCandleId);
+        Assert.Equal(expected.CalculatedAtUtc, actualCalculatedAtUtc);
+        Assert.Equal(expected.Ema20, actualEma20);
+        Assert.Equal(expected.Ema50, actualEma50);
+        Assert.Equal(expected.Ema200, actualEma200);
+        Assert.Equal(expected.Vwap, actualVwap);
+        Assert.Equal(expected.Rsi14, actualRsi14);
+        Assert.Equal(expected.Atr14, actualAtr14);
+        Assert.Equal(expected.VolumeSma20, actualVolumeSma20);
+        Assert.Equal(expected.SwingHigh, actualSwingHigh);
+        Assert.Equal(expected.SwingLow, actualSwingLow);
+        Assert.Equal(expected.MarketStructure, actualMarketStructure);
+        Assert.Equal(expected.BollingerMiddle20, actualBollingerMiddle20);
+        Assert.Equal(expected.BollingerUpper20, actualBollingerUpper20);
+        Assert.Equal(expected.BollingerLower20, actualBollingerLower20);
+        Assert.Equal(expected.BollingerBandwidth20, actualBollingerBandwidth20);
+        Assert.Equal(expected.DonchianHigh20, actualDonchianHigh20);
+        Assert.Equal(expected.DonchianLow20, actualDonchianLow20);
+        Assert.Equal(expected.MacdLine, actualMacdLine);
+        Assert.Equal(expected.MacdSignal, actualMacdSignal);
+        Assert.Equal(expected.MacdHistogram, actualMacdHistogram);
+        Assert.Equal(expected.Supertrend, actualSupertrend);
+        Assert.Equal(expected.SupertrendDirection, actualSupertrendDirection);
+        Assert.Equal(expected.SupportLevel, actualSupportLevel);
+        Assert.Equal(expected.ResistanceLevel, actualResistanceLevel);
+        Assert.Equal(expected.CreatedAtUtc, actualCreatedAtUtc);
     }
 
     private static string RequireFingerprint(string? rawDataJson, string sourceLabel)
