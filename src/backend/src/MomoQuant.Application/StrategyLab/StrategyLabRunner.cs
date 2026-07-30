@@ -1698,13 +1698,13 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
     }
 
     private static IReadOnlyDictionary<string, string> ResolveDefaultParameters(ITradingStrategy plugin) =>
-        plugin switch
+        plugin.Code switch
         {
-            MomoAdaptiveMultiTimeframeTrendBreakoutStrategy =>
+            StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout =>
                 MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract(),
-            MomoVolatilityRangeReversionStrategy =>
+            StrategyCode.MomoVolatilityRangeReversion =>
                 MomoVolatilityRangeReversionParameters.GetDefaultParameterContract(),
-            PriceStructureBreakoutRetestStrategy =>
+            StrategyCode.PriceStructureBreakoutRetest =>
                 new Dictionary<string, string>
                 {
                     ["swingLeftBars"] = "2",

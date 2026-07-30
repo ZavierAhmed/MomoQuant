@@ -1,6 +1,8 @@
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Common;
+using MomoQuant.Application.MarketData;
 using MomoQuant.Application.Strategies.Dtos;
+using MomoQuant.Application.Strategies.MomoAdaptive;
 using MomoQuant.Domain.Enums;
 
 namespace MomoQuant.Application.Strategies;
@@ -26,6 +28,18 @@ public sealed class StrategyExecutionRequirements
     public IReadOnlyList<string> RequiredIndicators { get; init; } = [];
     public IReadOnlyList<string> PreferredTimeframes { get; init; } = [];
     public string? PreferredExecutionTimeframe { get; init; }
+
+    /// <summary>When true, canonical validation training must bind an HTF partition at scope construction.</summary>
+    public bool RequiresHigherTimeframePartition { get; init; }
+
+    /// <summary>API timeframe string (e.g. "1h") for the required HTF partition when Adaptive needs one.</summary>
+    public string? RequiredHigherTimeframeApi { get; init; }
+
+    public IReadOnlyList<string> RequiredDataTimeframes { get; init; } = [];
+    public IReadOnlyList<string> HigherTimeframeFilters { get; init; } = [];
+
+    /// <summary>Adaptive HTF mapping contract version when <see cref="RequiresHigherTimeframePartition"/> is true for Adaptive.</summary>
+    public string? HigherTimeframeMappingContractVersion { get; init; }
 }
 
 public sealed class ResolveStrategyExecutionRequirementsRequest
@@ -132,8 +146,41 @@ public sealed class StrategyExecutionRequirementsResolver : IStrategyExecutionRe
     public static StrategyExecutionRequirements FromDto(
         StrategyDataRequirementDto dto,
         Domain.Strategies.Strategy? strategyEntity = null,
-        string? strategyVersion = null) =>
-        new()
+        string? strategyVersion = null)
+    {
+        var requiresHigherTimeframePartition = false;
+        string? requiredHigherTimeframeApi = null;
+        string? higherTimeframeMappingContractVersion = null;
+
+        StrategyCode strategyEnum;
+        try
+        {
+            strategyEnum = StrategyCodeExtensions.FromCode(dto.StrategyCode);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            strategyEnum = default;
+        }
+
+        if (strategyEnum == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout)
+        {
+            requiresHigherTimeframePartition = true;
+            var execTfApi = !string.IsNullOrWhiteSpace(dto.PreferredExecutionTimeframe)
+                ? dto.PreferredExecutionTimeframe
+                : dto.PreferredTimeframes.FirstOrDefault();
+
+            if (!string.IsNullOrWhiteSpace(execTfApi)
+                && TimeframeParser.TryParse(execTfApi, out var execTf)
+                && execTf is Timeframe.M5 or Timeframe.M15 or Timeframe.H1 or Timeframe.H4)
+            {
+                var mappedHtf = MomoAdaptiveMtfTrendBreakoutEvaluator.ResolveHigherTimeframe(execTf);
+                requiredHigherTimeframeApi = TimeframeParser.ToApiString(mappedHtf);
+                higherTimeframeMappingContractVersion =
+                    StrategyHigherTimeframeSupport.AdaptiveHtfMappingContractVersion;
+            }
+        }
+
+        return new()
         {
             StrategyId = dto.StrategyId,
             StrategyCode = dto.StrategyCode,
@@ -143,6 +190,12 @@ public sealed class StrategyExecutionRequirementsResolver : IStrategyExecutionRe
             RequirementsVersion = StrategyExecutionRequirements.Version,
             RequiredIndicators = dto.RequiredIndicators,
             PreferredTimeframes = dto.PreferredTimeframes,
-            PreferredExecutionTimeframe = dto.PreferredExecutionTimeframe
+            PreferredExecutionTimeframe = dto.PreferredExecutionTimeframe,
+            RequiresHigherTimeframePartition = requiresHigherTimeframePartition,
+            RequiredHigherTimeframeApi = requiredHigherTimeframeApi,
+            RequiredDataTimeframes = dto.RequiredDataTimeframes,
+            HigherTimeframeFilters = dto.HigherTimeframeFilters,
+            HigherTimeframeMappingContractVersion = higherTimeframeMappingContractVersion
         };
+    }
 }

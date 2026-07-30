@@ -153,7 +153,7 @@ public sealed class Milestone230E1BRunnerParityTests
 
             experimentId = 9001;
             var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationLtfWarmupBootstrapRequest
             {
                 ValidationExperimentId = experimentId.Value,
                 SymbolId = symbol.Id,
@@ -167,7 +167,7 @@ public sealed class Milestone230E1BRunnerParityTests
                 StrategyCode = StrategyCodes.DonchianBreakout
             };
 
-            var trainingScope = await scopeFactory.CreateAsync(scopeRequest);
+            var trainingScope = await scopeFactory.CreateLtfWarmupBootstrapAsync(scopeRequest);
             var validationSource = new ValidationTrainingStrategyLabCandleDataSource(trainingScope, "E1B.Parity");
 
             var run = new StrategyLabRun
@@ -385,7 +385,7 @@ public sealed class Milestone230E1BRunnerParityTests
             await runner.ExecuteAsync(runA.Id, normalContext);
 
             var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationLtfWarmupBootstrapRequest
             {
                 ValidationExperimentId = experimentId.Value,
                 SymbolId = symbol.Id,
@@ -399,7 +399,7 @@ public sealed class Milestone230E1BRunnerParityTests
                 StrategyCode = StrategyCodes.DonchianBreakout
             };
 
-            var trainingScope = await scopeFactory.CreateAsync(scopeRequest);
+            var trainingScope = await scopeFactory.CreateLtfWarmupBootstrapAsync(scopeRequest);
             var validationSource = new ValidationTrainingStrategyLabCandleDataSource(trainingScope, "E1B.Validation");
             var validationContext = StrategyLabExecutionContext.ForValidationTraining(
                 validationExperimentId: experimentId.Value,
@@ -650,7 +650,7 @@ public sealed class Milestone230E1BRunnerParityTests
             await runner.ExecuteAsync(runA.Id, normalContext);
 
             var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationLtfWarmupBootstrapRequest
             {
                 ValidationExperimentId = experimentId.Value,
                 SymbolId = symbol.Id,
@@ -664,7 +664,7 @@ public sealed class Milestone230E1BRunnerParityTests
                 StrategyCode = StrategyCodes.DonchianBreakout
             };
 
-            var trainingScope = await scopeFactory.CreateAsync(scopeRequest);
+            var trainingScope = await scopeFactory.CreateLtfWarmupBootstrapAsync(scopeRequest);
             var validationSource = new ValidationTrainingStrategyLabCandleDataSource(trainingScope, "E1B.Gap.Validation");
             var validationContext = StrategyLabExecutionContext.ForValidationTraining(
                 validationExperimentId: experimentId.Value,
@@ -756,7 +756,7 @@ public sealed class Milestone230E1BRunnerParityTests
 
             experimentId = 9004;
             var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationLtfWarmupBootstrapRequest
             {
                 ValidationExperimentId = experimentId.Value,
                 SymbolId = symbol.Id,
@@ -770,7 +770,7 @@ public sealed class Milestone230E1BRunnerParityTests
                 StrategyCode = StrategyCodes.DonchianBreakout
             };
 
-            var trainingScope = await scopeFactory.CreateAsync(scopeRequest);
+            var trainingScope = await scopeFactory.CreateLtfWarmupBootstrapAsync(scopeRequest);
             var validationSource = new ValidationTrainingStrategyLabCandleDataSource(trainingScope, "E1B.Audit");
 
             var run = new StrategyLabRun
@@ -946,7 +946,7 @@ public sealed class Milestone230E1BRunnerParityTests
 
             experimentId = 9005;
             var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationLtfWarmupBootstrapRequest
             {
                 ValidationExperimentId = experimentId.Value,
                 SymbolId = symbol.Id,
@@ -962,7 +962,7 @@ public sealed class Milestone230E1BRunnerParityTests
 
             var sw = Stopwatch.StartNew();
 
-            var trainingScope = await scopeFactory.CreateAsync(scopeRequest);
+            var trainingScope = await scopeFactory.CreateLtfWarmupBootstrapAsync(scopeRequest);
             var validationSource = new ValidationTrainingStrategyLabCandleDataSource(trainingScope, "E1B.10K");
             var validationContext = StrategyLabExecutionContext.ForValidationTraining(
                 validationExperimentId: experimentId.Value,
@@ -1089,7 +1089,7 @@ public sealed class Milestone230E1BRunnerParityTests
 
             experimentId = 9006;
             var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationLtfWarmupBootstrapRequest
             {
                 ValidationExperimentId = experimentId.Value,
                 SymbolId = symbol.Id,
@@ -1103,7 +1103,7 @@ public sealed class Milestone230E1BRunnerParityTests
                 StrategyCode = StrategyCodes.DonchianBreakout
             };
 
-            var trainingScope = await scopeFactory.CreateAsync(scopeRequest);
+            var trainingScope = await scopeFactory.CreateLtfWarmupBootstrapAsync(scopeRequest);
             var validationSource = new ValidationTrainingStrategyLabCandleDataSource(trainingScope, "E1B.End");
 
             var run = new StrategyLabRun
@@ -1218,7 +1218,7 @@ public sealed class Milestone230E1BRunnerParityTests
 
             experimentId = 9007;
             var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationLtfWarmupBootstrapRequest
             {
                 ValidationExperimentId = experimentId.Value,
                 SymbolId = symbol.Id,
@@ -1232,7 +1232,7 @@ public sealed class Milestone230E1BRunnerParityTests
                 StrategyCode = StrategyCodes.DonchianBreakout
             };
 
-            var trainingScope = await scopeFactory.CreateAsync(scopeRequest);
+            var trainingScope = await scopeFactory.CreateLtfWarmupBootstrapAsync(scopeRequest);
             var validationSource = new ValidationTrainingStrategyLabCandleDataSource(trainingScope, "E1B.Boundary");
 
             var run = new StrategyLabRun
@@ -1276,7 +1276,7 @@ public sealed class Milestone230E1BRunnerParityTests
         var sp = scope.ServiceProvider;
         var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
 
-        var invalidRequest = new ValidationTrainingCandleScopeRequest
+        var invalidRequest = new ValidationLtfWarmupBootstrapRequest
         {
             ValidationExperimentId = 9999,
             SymbolId = 1,
@@ -1292,7 +1292,7 @@ public sealed class Milestone230E1BRunnerParityTests
 
         await Assert.ThrowsAsync<ArgumentException>(async () =>
         {
-            await scopeFactory.CreateAsync(invalidRequest);
+            await scopeFactory.CreateLtfWarmupBootstrapAsync(invalidRequest);
         });
     }
 

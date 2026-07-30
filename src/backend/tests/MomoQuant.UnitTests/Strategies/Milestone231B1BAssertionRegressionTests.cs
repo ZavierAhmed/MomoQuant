@@ -10,7 +10,8 @@ public sealed class Milestone231B1BAssertionRegressionTests
         "Milestone231BParityTests.cs",
         "Milestone231B1ATests.cs",
         "Milestone231B1CParityEvidenceTests.cs",
-        "ParityAssertionHelper.cs"
+        "ParityAssertionHelper.cs",
+        "RecordingTradingStrategyDecorator.cs"
     ];
 
     private static readonly Regex[] ProhibitedPatterns =

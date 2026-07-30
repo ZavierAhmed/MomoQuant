@@ -164,25 +164,15 @@ public sealed partial class ValidationLabService
             try
             {
                 // Bootstrap once: LTF-only warmup fingerprint (no HTF, no bound audit — Milestone 23.1B1C).
-                var warmupScopeRequest = new ValidationTrainingCandleScopeRequest
-                {
-                    ValidationExperimentId = scopeRequest.ValidationExperimentId,
-                    SymbolId = scopeRequest.SymbolId,
-                    SymbolName = scopeRequest.SymbolName,
-                    Timeframe = scopeRequest.Timeframe,
-                    TrainingEvaluationStartUtc = scopeRequest.TrainingEvaluationStartUtc,
-                    TrainingEvaluationEndExclusiveUtc = scopeRequest.TrainingEvaluationEndExclusiveUtc,
-                    ValidationBoundaryUtc = scopeRequest.ValidationBoundaryUtc,
-                    RequiredWarmupCandleCount = scopeRequest.RequiredWarmupCandleCount,
-                    RequirementsVersion = scopeRequest.RequirementsVersion,
-                    StrategyId = scopeRequest.StrategyId,
-                    StrategyCode = scopeRequest.StrategyCode,
-                    StrategyVersion = scopeRequest.StrategyVersion,
-                    ExchangeId = scopeRequest.ExchangeId,
-                    LtfOnlyWarmupBootstrap = true
-                };
+                var warmupScopeRequest = ValidationLtfWarmupBootstrapRequest.FromExperiment(
+                    experiment,
+                    requirements,
+                    trainingEndExclusive);
 
-                var bootstrapResult = await _trainingScopeExecution.ExecuteWithScopeAsync(experiment, warmupScopeRequest, async bootstrapScope =>
+                var bootstrapResult = await _trainingScopeExecution.ExecuteWithLtfWarmupBootstrapAsync(
+                    experiment,
+                    warmupScopeRequest,
+                    async bootstrapScope =>
                 {
                     experiment.WarmupSnapshotJson = JsonSerializer.Serialize(new
                     {
@@ -462,33 +452,18 @@ public sealed partial class ValidationLabService
                         break;
                     }
 
-                    var trialScopeRequest = new ValidationTrainingCandleScopeRequest
+                    var trialScopeRequest = new ValidationCanonicalTrainingCandleScopeRequest
                     {
-                        ValidationExperimentId = scopeRequest.ValidationExperimentId,
-                        SymbolId = scopeRequest.SymbolId,
-                        SymbolName = scopeRequest.SymbolName,
-                        Timeframe = scopeRequest.Timeframe,
-                        TrainingEvaluationStartUtc = scopeRequest.TrainingEvaluationStartUtc,
-                        TrainingEvaluationEndExclusiveUtc = scopeRequest.TrainingEvaluationEndExclusiveUtc,
-                        ValidationBoundaryUtc = scopeRequest.ValidationBoundaryUtc,
-                        RequiredWarmupCandleCount = scopeRequest.RequiredWarmupCandleCount,
-                        RequirementsVersion = scopeRequest.RequirementsVersion,
-                        StrategyId = scopeRequest.StrategyId,
-                        StrategyCode = scopeRequest.StrategyCode,
-                        StrategyVersion = scopeRequest.StrategyVersion,
-                        ExchangeId = scopeRequest.ExchangeId,
-                        BoundScopeExecutionId = auditExecution.ScopeExecutionId,
-                        BoundAuditExecutionId = auditExecution.AuditExecutionId,
-                        BoundExecutionToken = auditExecution.ExecutionToken,
-                        BoundAttemptNumber = auditExecution.AttemptNumber,
-                        CanonicalExperiment = experiment,
-                        CanonicalRequirements = requirements
+                        Experiment = experiment,
+                        Requirements = requirements,
+                        AuditExecution = auditExecution,
+                        TrainingEvaluationEndExclusiveUtc = scopeRequest.TrainingEvaluationEndExclusiveUtc
                     };
 
                     try
                     {
                         var optimizerFp = _parameterFingerprint.ComputeFingerprint(draft.Parameters);
-                        var scopeResult = await _trainingScopeExecution.ExecuteWithScopeAsync(
+                        var scopeResult = await _trainingScopeExecution.ExecuteWithCanonicalScopeAsync(
                             experiment,
                             trialScopeRequest,
                             async trainingScope =>

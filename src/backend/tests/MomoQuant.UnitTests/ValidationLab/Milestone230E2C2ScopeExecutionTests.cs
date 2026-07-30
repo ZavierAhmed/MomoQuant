@@ -1,8 +1,10 @@
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Common;
 using MomoQuant.Application.Research;
+using MomoQuant.Application.Strategies;
 using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.ValidationLab;
+using MomoQuant.Domain.Constants;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.ValidationLab;
@@ -103,9 +105,9 @@ public sealed class Milestone230E2C2ScopeExecutionTests
             ValidationStartUtc = factory.Scope.ValidationBoundaryUtc
         };
 
-        var result = await execution.ExecuteWithScopeAsync(
+        var result = await execution.ExecuteWithLtfWarmupBootstrapAsync(
             experiment,
-            ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
+            ValidationLtfWarmupBootstrapRequest.FromExperimentLegacy(
                 experiment,
                 trainingEvaluationEndExclusiveUtc: factory.Scope.SegmentEndExclusiveUtc),
             async scope =>
@@ -142,9 +144,9 @@ public sealed class Milestone230E2C2ScopeExecutionTests
             ValidationStartUtc = factory.Scope.ValidationBoundaryUtc
         };
 
-        var result = await execution.ExecuteWithScopeAsync(
+        var result = await execution.ExecuteWithLtfWarmupBootstrapAsync(
             experiment,
-            ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
+            ValidationLtfWarmupBootstrapRequest.FromExperimentLegacy(
                 experiment,
                 trainingEvaluationEndExclusiveUtc: factory.Scope.SegmentEndExclusiveUtc),
             async _ => await ThrowFromNamedOuterBodyHelper());
@@ -298,35 +300,52 @@ public sealed class Milestone230E2C2ScopeExecutionTests
         var experiment = new ValidationExperiment
         {
             Id = 42,
+            SymbolId = 1,
+            Symbol = "BTCUSDT",
+            Timeframe = "15m",
+            ExchangeId = 1,
+            StrategyCode = StrategyCodes.PriceStructureBreakoutRetest,
+            StrategyVersion = "1.0.0",
             TrainingStartUtc = factory.Scope.SegmentStartUtc,
             TrainingEndUtc = factory.Scope.ValidationBoundaryUtc.AddHours(-1),
             ValidationStartUtc = factory.Scope.ValidationBoundaryUtc
         };
 
-        var request = new ValidationTrainingCandleScopeRequest
+        var audit = new ValidationAuditExecution
         {
+            AuditExecutionId = auditExecutionId,
+            ScopeExecutionId = scopeExecutionId,
             ValidationExperimentId = 42,
-            SymbolId = 1,
-            SymbolName = "BTCUSDT",
-            Timeframe = "15m",
-            TrainingEvaluationStartUtc = factory.Scope.SegmentStartUtc,
-            TrainingEvaluationEndExclusiveUtc = factory.Scope.SegmentEndExclusiveUtc,
-            ValidationBoundaryUtc = factory.Scope.ValidationBoundaryUtc,
-            RequiredWarmupCandleCount = 0,
-            RequirementsVersion = "test",
-            StrategyId = 1,
-            StrategyCode = "PSBR",
-            StrategyVersion = "1.0.0",
-            ExchangeId = 1,
-            BoundScopeExecutionId = scopeExecutionId,
-            BoundAuditExecutionId = auditExecutionId,
-            BoundExecutionToken = "token-e2c2",
-            BoundAttemptNumber = 1
+            ValidationTrialId = 1,
+            TrialNumber = 1,
+            ExecutionToken = "token-e2c2",
+            AttemptNumber = 1,
+            Status = ValidationAuditExecutionStatus.Created,
+            StartedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
         };
 
-        var result = await scopeExecution.ExecuteWithScopeAsync(
+        var requirements = new StrategyExecutionRequirements
+        {
+            StrategyId = 1,
+            StrategyCode = StrategyCodes.PriceStructureBreakoutRetest,
+            StrategyVersion = "1.0.0",
+            RequiredWarmupCandleCount = 0,
+            RequirementsVersion = StrategyExecutionRequirements.Version,
+            RequiresHigherTimeframePartition = false
+        };
+
+        var canonicalRequest = new ValidationCanonicalTrainingCandleScopeRequest
+        {
+            Experiment = experiment,
+            Requirements = requirements,
+            AuditExecution = audit,
+            TrainingEvaluationEndExclusiveUtc = factory.Scope.SegmentEndExclusiveUtc
+        };
+
+        var result = await scopeExecution.ExecuteWithCanonicalScopeAsync(
             experiment,
-            request,
+            canonicalRequest,
             scope =>
             {
                 scope.ActiveTrialId = 1;
@@ -374,12 +393,22 @@ public sealed class Milestone230E2C2ScopeExecutionTests
     {
         public ValidationTrainingCandleScope Scope { get; } = CreateScope();
 
+        public Task<IValidationTrainingCandleScope> CreateLtfWarmupBootstrapAsync(
+            ValidationLtfWarmupBootstrapRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IValidationTrainingCandleScope>(Scope);
+
+        public Task<IValidationTrainingCandleScope> CreateCanonicalAsync(
+            ValidationCanonicalTrainingCandleScopeRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IValidationTrainingCandleScope>(Scope);
+
+#pragma warning disable CS0618
         public Task<IValidationTrainingCandleScope> CreateAsync(
             ValidationTrainingCandleScopeRequest request,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<IValidationTrainingCandleScope>(Scope);
 
-#pragma warning disable CS0618
         public Task<IValidationTrainingCandleScope> CreateForExperimentAsync(
             ValidationExperiment experiment,
             CancellationToken cancellationToken = default) =>
@@ -514,12 +543,22 @@ public sealed class Milestone230E2C2ScopeExecutionTests
 
         public IValidationTrainingCandleScope Scope { get; }
 
+        public Task<IValidationTrainingCandleScope> CreateLtfWarmupBootstrapAsync(
+            ValidationLtfWarmupBootstrapRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Scope);
+
+        public Task<IValidationTrainingCandleScope> CreateCanonicalAsync(
+            ValidationCanonicalTrainingCandleScopeRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Scope);
+
+#pragma warning disable CS0618
         public Task<IValidationTrainingCandleScope> CreateAsync(
             ValidationTrainingCandleScopeRequest request,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Scope);
 
-#pragma warning disable CS0618
         public Task<IValidationTrainingCandleScope> CreateForExperimentAsync(
             ValidationExperiment experiment,
             CancellationToken cancellationToken = default) =>

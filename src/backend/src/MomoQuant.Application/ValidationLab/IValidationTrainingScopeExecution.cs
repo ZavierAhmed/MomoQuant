@@ -10,12 +10,23 @@ namespace MomoQuant.Application.ValidationLab;
 /// </summary>
 public interface IValidationTrainingScopeExecution
 {
+    Task<ValidationTrainingScopeExecutionResult> ExecuteWithLtfWarmupBootstrapAsync(
+        ValidationExperiment experiment,
+        ValidationLtfWarmupBootstrapRequest scopeRequest,
+        Func<IValidationTrainingCandleScope, Task> body,
+        CancellationToken cancellationToken = default);
+
+    Task<ValidationTrainingScopeExecutionResult> ExecuteWithCanonicalScopeAsync(
+        ValidationExperiment experiment,
+        ValidationCanonicalTrainingCandleScopeRequest scopeRequest,
+        Func<IValidationTrainingCandleScope, Task> body,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
-    /// Creates the training candle scope from a validated request, enters ambient context,
-    /// runs <paramref name="body"/>, and performs one authoritative access flush.
-    /// When <see cref="ValidationTrainingCandleScopeRequest.BoundAuditExecutionId"/> is set,
-    /// verifies scope identity and enters <see cref="ValidationAuditExecutionAmbient"/>.
+    /// Quarantined — use <see cref="ExecuteWithLtfWarmupBootstrapAsync"/> or
+    /// <see cref="ExecuteWithCanonicalScopeAsync"/>.
     /// </summary>
+    [Obsolete("Use ExecuteWithLtfWarmupBootstrapAsync or ExecuteWithCanonicalScopeAsync.")]
     Task<ValidationTrainingScopeExecutionResult> ExecuteWithScopeAsync(
         ValidationExperiment experiment,
         ValidationTrainingCandleScopeRequest scopeRequest,
@@ -50,7 +61,7 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
         _executionContextAccessor = executionContextAccessor ?? new ResearchExecutionContextAccessor();
     }
 
-    public async Task<ValidationTrainingScopeExecutionResult> ExecuteWithScopeAsync(
+    public Task<ValidationTrainingScopeExecutionResult> ExecuteWithScopeAsync(
         ValidationExperiment experiment,
         ValidationTrainingCandleScopeRequest scopeRequest,
         Func<IValidationTrainingCandleScope, Task> body,
@@ -58,6 +69,55 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
     {
         ArgumentNullException.ThrowIfNull(experiment);
         ArgumentNullException.ThrowIfNull(scopeRequest);
+        ArgumentNullException.ThrowIfNull(body);
+        throw new InvalidOperationException(
+            "ExecuteWithScopeAsync is quarantined. Use ExecuteWithLtfWarmupBootstrapAsync or ExecuteWithCanonicalScopeAsync.");
+    }
+
+    public Task<ValidationTrainingScopeExecutionResult> ExecuteWithLtfWarmupBootstrapAsync(
+        ValidationExperiment experiment,
+        ValidationLtfWarmupBootstrapRequest scopeRequest,
+        Func<IValidationTrainingCandleScope, Task> body,
+        CancellationToken cancellationToken = default) =>
+        ExecuteWithScopeCoreAsync(
+            experiment,
+            () => _scopeFactory.CreateLtfWarmupBootstrapAsync(scopeRequest, cancellationToken),
+            boundAuditExecutionId: null,
+            boundScopeExecutionId: null,
+            boundExecutionToken: null,
+            boundAttemptNumber: null,
+            body,
+            cancellationToken);
+
+    public Task<ValidationTrainingScopeExecutionResult> ExecuteWithCanonicalScopeAsync(
+        ValidationExperiment experiment,
+        ValidationCanonicalTrainingCandleScopeRequest scopeRequest,
+        Func<IValidationTrainingCandleScope, Task> body,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(scopeRequest);
+        return ExecuteWithScopeCoreAsync(
+            experiment,
+            () => _scopeFactory.CreateCanonicalAsync(scopeRequest, cancellationToken),
+            boundAuditExecutionId: scopeRequest.AuditExecution.AuditExecutionId,
+            boundScopeExecutionId: scopeRequest.AuditExecution.ScopeExecutionId,
+            boundExecutionToken: scopeRequest.AuditExecution.ExecutionToken,
+            boundAttemptNumber: scopeRequest.AuditExecution.AttemptNumber,
+            body,
+            cancellationToken);
+    }
+
+    private async Task<ValidationTrainingScopeExecutionResult> ExecuteWithScopeCoreAsync(
+        ValidationExperiment experiment,
+        Func<Task<IValidationTrainingCandleScope>> createScope,
+        Guid? boundAuditExecutionId,
+        Guid? boundScopeExecutionId,
+        string? boundExecutionToken,
+        int? boundAttemptNumber,
+        Func<IValidationTrainingCandleScope, Task> body,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(experiment);
         ArgumentNullException.ThrowIfNull(body);
 
         var boundary = experiment.ValidationStartUtc is null
@@ -86,36 +146,36 @@ public sealed class ValidationTrainingScopeExecution : IValidationTrainingScopeE
         try
         {
             execAmbient = _executionContextAccessor.Enter(bootstrapContext);
-            scope = await _scopeFactory.CreateAsync(scopeRequest, cancellationToken);
+            scope = await createScope();
             scope.CorrelationId = bootstrapContext.CorrelationId;
 
-            if (scopeRequest.BoundAuditExecutionId is Guid boundAuditId)
+            if (boundAuditExecutionId is Guid boundAuditId)
             {
-                if (scopeRequest.BoundScopeExecutionId is not Guid boundScope
+                if (boundScopeExecutionId is not Guid boundScope
                     || scope.ScopeExecutionId != boundScope)
                 {
                     throw new ValidationAuditExecutionIdentityMismatchException(
                         "Created training scope ScopeExecutionId does not match the bound durable audit identity.",
                         expectedAuditExecutionId: boundAuditId,
                         actualAuditExecutionId: boundAuditId,
-                        expectedScopeExecutionId: scopeRequest.BoundScopeExecutionId,
+                        expectedScopeExecutionId: boundScopeExecutionId,
                         actualScopeExecutionId: scope.ScopeExecutionId,
-                        expectedExecutionToken: scopeRequest.BoundExecutionToken,
-                        actualExecutionToken: scopeRequest.BoundExecutionToken);
+                        expectedExecutionToken: boundExecutionToken,
+                        actualExecutionToken: boundExecutionToken);
                 }
             }
 
             ambient = ValidationTrainingCandleScopeAmbient.Enter(scope);
-            if (scopeRequest.BoundAuditExecutionId is Guid auditId
-                && scopeRequest.BoundScopeExecutionId is Guid scopeId
-                && !string.IsNullOrWhiteSpace(scopeRequest.BoundExecutionToken))
+            if (boundAuditExecutionId is Guid auditId
+                && boundScopeExecutionId is Guid scopeId
+                && !string.IsNullOrWhiteSpace(boundExecutionToken))
             {
                 auditAmbient = ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
                 {
                     AuditExecutionId = auditId,
                     ScopeExecutionId = scopeId,
-                    ExecutionToken = scopeRequest.BoundExecutionToken!,
-                    AttemptNumber = scopeRequest.BoundAttemptNumber ?? 0,
+                    ExecutionToken = boundExecutionToken,
+                    AttemptNumber = boundAttemptNumber ?? 0,
                     ValidationExperimentId = experiment.Id
                 });
             }

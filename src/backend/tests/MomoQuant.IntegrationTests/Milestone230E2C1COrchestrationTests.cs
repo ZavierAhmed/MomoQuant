@@ -252,11 +252,13 @@ public sealed class Milestone230E2C1COrchestrationTests
             "auditExecution.Status == ValidationAuditExecutionStatus.Completed",
             StringComparison.Ordinal);
         var trialScopeIdx = source.IndexOf(
-            "BoundAuditExecutionId = auditExecution.AuditExecutionId",
+            "AuditExecution = auditExecution",
             StringComparison.Ordinal);
         Assert.True(verifiedIdx >= 0 && verifiedIdx < trialScopeIdx);
         Assert.True(failClosedIdx >= 0 && failClosedIdx < trialScopeIdx);
         Assert.True(completedGuardIdx >= 0 && completedGuardIdx < trialScopeIdx);
+        Assert.Contains("ExecuteWithCanonicalScopeAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ValidationCanonicalTrainingCandleScopeRequest", source, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "trial.AuditCompletionStatus = ValidationAuditCompletionStatus.Complete",
             source[(source.IndexOf("existing.Status == ValidationAuditExecutionStatus.Completed", StringComparison.Ordinal)..Math.Min(source.Length, source.IndexOf("existing.Status == ValidationAuditExecutionStatus.Completed", StringComparison.Ordinal) + 1200))],

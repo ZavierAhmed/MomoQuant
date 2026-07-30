@@ -58,13 +58,13 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                 Assert.NotNull(experiment);
 
                 ValidationTrainingScopeExecutionResult? trialCapture = null;
-                var scopeResult = await execution.ExecuteWithScopeAsync(
+                var ltfScopeRequest = ValidationLtfWarmupBootstrapRequest.FromExperimentLegacy(
+                    experiment!,
+                    trainingEvaluationEndExclusiveUtc: DateTime.SpecifyKind(
+                        experiment!.TrainingEndUtc!.Value, DateTimeKind.Utc).AddMinutes(60));
+                var scopeResult = await execution.ExecuteWithLtfWarmupBootstrapAsync(
                         experiment!,
-                        ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
-                            experiment!,
-                            trainingEvaluationEndExclusiveUtc: DateTime.SpecifyKind(
-                                experiment!.TrainingEndUtc!.Value, DateTimeKind.Utc).AddMinutes(60),
-                            ltfOnlyWarmupBootstrap: true),
+                        ltfScopeRequest,
                         async trainingScope =>
                         {
                             trialCapture = await execution.ExecuteTrialAsync(
@@ -119,13 +119,12 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                 }
 
                 var failureHandler = sp.GetRequiredService<IValidationTrainingFailureHandler>();
-                var handlerScopeRequest = ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
+                var handlerScopeRequest = ValidationLtfWarmupBootstrapRequest.FromExperimentLegacy(
                     experiment!,
                     trainingEvaluationEndExclusiveUtc: DateTime.SpecifyKind(
-                        experiment!.TrainingEndUtc!.Value, DateTimeKind.Utc).AddMinutes(60),
-                    ltfOnlyWarmupBootstrap: true);
+                        experiment!.TrainingEndUtc!.Value, DateTimeKind.Utc).AddMinutes(60));
                 await using var scopeForHandler = await sp.GetRequiredService<IValidationTrainingCandleScopeFactory>()
-                    .CreateAsync(handlerScopeRequest, CancellationToken.None);
+                    .CreateLtfWarmupBootstrapAsync(handlerScopeRequest, CancellationToken.None);
                 // Re-enter adversarial access so handler flushes denial evidence if needed.
                 try
                 {
@@ -220,12 +219,12 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
             Assert.NotNull(experiment);
 
             DateTime? allowedOpen = null;
-            var allowedResult = await execution.ExecuteWithScopeAsync(
+            var allowedLtfRequest = ValidationLtfWarmupBootstrapRequest.FromExperimentLegacy(
                 experiment!,
-                ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
-                    experiment!,
-                    trainingEvaluationEndExclusiveUtc: trainingEnd.AddMinutes(60),
-                    ltfOnlyWarmupBootstrap: true),
+                trainingEvaluationEndExclusiveUtc: trainingEnd.AddMinutes(60));
+            var allowedResult = await execution.ExecuteWithLtfWarmupBootstrapAsync(
+                experiment!,
+                allowedLtfRequest,
                 async trainingScope =>
                 {
                     var trialResult = await execution.ExecuteTrialAsync(

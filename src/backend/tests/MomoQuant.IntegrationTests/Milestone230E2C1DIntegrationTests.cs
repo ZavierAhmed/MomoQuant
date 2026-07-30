@@ -3,6 +3,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Strategies;
+using MomoQuant.Application.Strategies.MomoAdaptive;
+using MomoQuant.Application.Strategies.PriceStructure;
 using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.ValidationLab;
 using MomoQuant.Domain.Enums;
@@ -141,29 +143,23 @@ public sealed class Milestone230E2C1DIntegrationTests : IClassFixture<E2C1Instru
 
             _dbCommandCounter.Reset();
 
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationCanonicalTrainingCandleScopeRequest
             {
-                ValidationExperimentId = experiment.Id,
-                SymbolId = symbol.Id,
-                SymbolName = symbolName,
-                Timeframe = "15m",
-                TrainingEvaluationStartUtc = evalStart,
-                TrainingEvaluationEndExclusiveUtc = evalEnd,
-                ValidationBoundaryUtc = boundary,
-                RequiredWarmupCandleCount = RequiredWarmup,
-                RequirementsVersion = StrategyExecutionRequirements.Version,
-                StrategyId = 1,
-                StrategyCode = experiment.StrategyCode,
-                StrategyVersion = experiment.StrategyVersion,
-                ExchangeId = testExchange.Id,
-                BoundScopeExecutionId = execution.ScopeExecutionId,
-                BoundAuditExecutionId = execution.AuditExecutionId,
-                BoundExecutionToken = execution.ExecutionToken,
-                BoundAttemptNumber = execution.AttemptNumber
+                Experiment = experiment,
+                Requirements = new StrategyExecutionRequirements
+                {
+                    StrategyId = 1,
+                    StrategyCode = experiment.StrategyCode,
+                    StrategyVersion = experiment.StrategyVersion ?? PriceStructureBreakoutRetestEvaluator.StrategyVersion,
+                    RequiredWarmupCandleCount = RequiredWarmup,
+                    RequiresHigherTimeframePartition = false
+                },
+                AuditExecution = execution,
+                TrainingEvaluationEndExclusiveUtc = evalEnd
             };
 
             var sw = Stopwatch.StartNew();
-            await using var trainingScope = await scopeFactory.CreateAsync(scopeRequest);
+            await using var trainingScope = await scopeFactory.CreateCanonicalAsync(scopeRequest);
 
             using (ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
             {

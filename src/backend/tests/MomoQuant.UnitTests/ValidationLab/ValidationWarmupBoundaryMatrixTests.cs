@@ -24,9 +24,9 @@ public sealed class ValidationWarmupBoundaryMatrixTests
         var eval = BuildEvalCandles(count: 20);
         var reader = new FakeUnscopedReader(warmup: [], evaluation: eval);
         var factory = new ValidationTrainingCandleScopeFactory(reader);
-        var request = BaseRequest(requiredWarmup: 0);
+        var request = BuildLtfRequest(requiredWarmup: 0);
 
-        var scope = await factory.CreateAsync(request);
+        var scope = await factory.CreateLtfWarmupBootstrapAsync(request);
         Assert.Equal(ValidationWarmupStatus.NotRequired, scope.Partition.WarmupStatus);
         Assert.Equal(0, scope.Partition.RequiredWarmupCandleCount);
         Assert.Equal(0, scope.Partition.AvailableWarmupCandleCount);
@@ -40,7 +40,7 @@ public sealed class ValidationWarmupBoundaryMatrixTests
         var eval = BuildEvalCandles(count: 30);
         var reader = new FakeUnscopedReader(warmup, eval);
         var factory = new ValidationTrainingCandleScopeFactory(reader);
-        var scope = await factory.CreateAsync(BaseRequest(requiredWarmup: 100));
+        var scope = await factory.CreateLtfWarmupBootstrapAsync(BuildLtfRequest(requiredWarmup: 100));
 
         Assert.Equal(ValidationWarmupStatus.Complete, scope.Partition.WarmupStatus);
         Assert.Equal(100, scope.Partition.AvailableWarmupCandleCount);
@@ -56,7 +56,7 @@ public sealed class ValidationWarmupBoundaryMatrixTests
         var factory = new ValidationTrainingCandleScopeFactory(reader);
 
         var ex = await Assert.ThrowsAsync<ValidationTrainingInsufficientWarmupException>(() =>
-            factory.CreateAsync(BaseRequest(requiredWarmup: 100)));
+            factory.CreateLtfWarmupBootstrapAsync(BuildLtfRequest(requiredWarmup: 100)));
 
         Assert.Equal(100, ex.RequiredWarmupCandleCount);
         Assert.Equal(99, ex.AvailableWarmupCandleCount);
@@ -73,7 +73,7 @@ public sealed class ValidationWarmupBoundaryMatrixTests
         eval = eval.Concat([CandleAt(Boundary, 999m, SymbolId)]).ToList();
         var reader = new FakeUnscopedReader(warmup, eval);
         var factory = new ValidationTrainingCandleScopeFactory(reader);
-        var scope = await factory.CreateAsync(BaseRequest(requiredWarmup: 5));
+        var scope = await factory.CreateLtfWarmupBootstrapAsync(BuildLtfRequest(requiredWarmup: 5));
 
         Assert.All(
             scope.GetEvaluationRange(
@@ -102,7 +102,7 @@ public sealed class ValidationWarmupBoundaryMatrixTests
             .ToList();
         var reader = new FakeUnscopedReader(warmup, eval);
         var factory = new ValidationTrainingCandleScopeFactory(reader);
-        var request = new ValidationTrainingCandleScopeRequest
+        var request = new ValidationLtfWarmupBootstrapRequest
         {
             ValidationExperimentId = 1,
             SymbolId = SymbolId,
@@ -113,11 +113,10 @@ public sealed class ValidationWarmupBoundaryMatrixTests
             ValidationBoundaryUtc = Boundary,
             RequiredWarmupCandleCount = 3,
             RequirementsVersion = StrategyExecutionRequirements.Version,
-            ExchangeId = 1,
-            LtfOnlyWarmupBootstrap = true
+            ExchangeId = 1
         };
 
-        var scope = await factory.CreateAsync(request);
+        var scope = await factory.CreateLtfWarmupBootstrapAsync(request);
         Assert.Equal(10, scope.Partition.EvaluationCandleCount);
 
         var range = scope.GetEvaluationRange(
@@ -137,12 +136,12 @@ public sealed class ValidationWarmupBoundaryMatrixTests
         var reader = new FakeUnscopedReader(warmup, eval);
         var factory = new ValidationTrainingCandleScopeFactory(reader);
         // Request asks for SymbolId=11 but reader returns 99 — factory filters by request.SymbolId.
-        var scope = await factory.CreateAsync(BaseRequest(requiredWarmup: 0));
+        var scope = await factory.CreateLtfWarmupBootstrapAsync(BuildLtfRequest(requiredWarmup: 0));
         Assert.Equal(0, scope.Partition.EvaluationCandleCount);
 
         // Warmup required with wrong-symbol store → insufficient.
         var ex = await Assert.ThrowsAsync<ValidationTrainingInsufficientWarmupException>(() =>
-            factory.CreateAsync(BaseRequest(requiredWarmup: 5)));
+            factory.CreateLtfWarmupBootstrapAsync(BuildLtfRequest(requiredWarmup: 5)));
         Assert.Equal(0, ex.AvailableWarmupCandleCount);
 
         // Dataset symbol mismatch when partition has a symbol and run differs.
@@ -217,7 +216,7 @@ public sealed class ValidationWarmupBoundaryMatrixTests
         Assert.Equal(StrategyExecutionRequirements.Version, result.Data.RequirementsVersion);
     }
 
-    private static ValidationTrainingCandleScopeRequest BaseRequest(int requiredWarmup) => new()
+    private static ValidationLtfWarmupBootstrapRequest BuildLtfRequest(int requiredWarmup) => new()
     {
         ValidationExperimentId = 1,
         SymbolId = SymbolId,
@@ -228,8 +227,7 @@ public sealed class ValidationWarmupBoundaryMatrixTests
         ValidationBoundaryUtc = Boundary,
         RequiredWarmupCandleCount = requiredWarmup,
         RequirementsVersion = StrategyExecutionRequirements.Version,
-        ExchangeId = 1,
-        LtfOnlyWarmupBootstrap = true
+        ExchangeId = 1
     };
 
     private static List<Candle> BuildWarmupCandles(int count, long symbolId = SymbolId) =>

@@ -1,3 +1,4 @@
+using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Strategies;
 using MomoQuant.Application.Strategies.Implementations;
 using MomoQuant.Application.Strategies.MomoAdaptive;
@@ -6,6 +7,7 @@ using MomoQuant.Domain.Constants;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.Strategies;
+using MomoQuant.Domain.ValidationLab;
 
 namespace MomoQuant.UnitTests.Strategies;
 
@@ -105,29 +107,19 @@ public sealed class Milestone231B1BTests
     public async Task OmittedStrategyIdentity_FailsBeforeHtfCandleAccess()
     {
         var reader = new TrackingPoisonedHtfReader(BuildEval(), []);
-        var factory = new ValidationTrainingCandleScopeFactory(reader);
-        var request = new ValidationTrainingCandleScopeRequest
+        var factory = CreateCanonicalFactory(reader);
+        var request = CanonicalAdaptiveScopeRequest(requirements: new StrategyExecutionRequirements
         {
-            ValidationExperimentId = 2311,
-            SymbolId = SymbolId,
-            SymbolName = "BTCUSDT",
-            Timeframe = "5m",
-            TrainingEvaluationStartUtc = EvalStart,
-            TrainingEvaluationEndExclusiveUtc = Boundary,
-            ValidationBoundaryUtc = Boundary,
-            RequiredWarmupCandleCount = 0,
-            RequirementsVersion = StrategyExecutionRequirements.Version,
             StrategyId = 11,
-            StrategyCode = null,
+            StrategyCode = null!,
             StrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
-            ExchangeId = ExchangeId,
-            BoundScopeExecutionId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
-            BoundAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
-            BoundExecutionToken = "token-b1b",
-            BoundAttemptNumber = 1
-        };
+            RequiredWarmupCandleCount = 0,
+            RequiresHigherTimeframePartition = true,
+            RequiredHigherTimeframeApi = "1h",
+            HigherTimeframeMappingContractVersion = StrategyHigherTimeframeSupport.AdaptiveHtfMappingContractVersion
+        });
 
-        await Assert.ThrowsAsync<ArgumentException>(() => factory.CreateAsync(request));
+        await Assert.ThrowsAsync<ArgumentException>(() => factory.CreateCanonicalAsync(request));
         Assert.Equal(0, reader.HtfLoadCount);
     }
 
@@ -164,9 +156,9 @@ public sealed class Milestone231B1BTests
     {
         var htf = Htf(1, SymbolId, ExchangeId, EvalStart, EvalStart.AddHours(1));
         var reader = new TrackingPoisonedHtfReader(BuildEval(), [htf]);
-        var factory = new ValidationTrainingCandleScopeFactory(reader);
+        var factory = CreateCanonicalFactory(reader);
 
-        await factory.CreateAsync(CanonicalAdaptiveRequest());
+        await factory.CreateCanonicalAsync(CanonicalAdaptiveScopeRequest());
 
         Assert.Equal(1, reader.HtfLoadCount);
         Assert.Equal(Timeframe.H1, reader.LastHtfTimeframe);
@@ -238,10 +230,10 @@ public sealed class Milestone231B1BTests
         var poison = Htf(2, 99, ExchangeId, EvalStart.AddHours(1), EvalStart.AddHours(2));
         var reader = new TrackingPoisonedHtfReader(BuildEval(), [valid, poison]);
         Assert.Equal(2, reader.LastReturnedHtfCount);
-        var factory = new ValidationTrainingCandleScopeFactory(reader);
+        var factory = CreateCanonicalFactory(reader);
 
         await Assert.ThrowsAsync<ValidationCandlePartitionViolationException>(() =>
-            factory.CreateAsync(CanonicalAdaptiveRequest()));
+            factory.CreateCanonicalAsync(CanonicalAdaptiveScopeRequest()));
 
         var denied = Assert.Single(factory.LastBootstrapAccessEvidence, r => r.WasDenied);
         Assert.Equal(2, denied.ReturnedCandleCount);
@@ -253,9 +245,9 @@ public sealed class Milestone231B1BTests
     {
         var htf = Htf(1, SymbolId, ExchangeId, EvalStart, EvalStart.AddHours(1));
         var reader = new TrackingPoisonedHtfReader(BuildEval(), [htf]);
-        var factory = new ValidationTrainingCandleScopeFactory(reader);
+        var factory = CreateCanonicalFactory(reader);
 
-        await factory.CreateAsync(CanonicalAdaptiveRequest());
+        await factory.CreateCanonicalAsync(CanonicalAdaptiveScopeRequest());
 
         Assert.Equal(1, reader.EvalLoadCount);
         Assert.Equal(1, reader.HtfLoadCount);
@@ -282,10 +274,10 @@ public sealed class Milestone231B1BTests
     {
         var reader = new TrackingPoisonedHtfReader(BuildEval(), poisonedHtf);
         Assert.Equal(poisonedHtf.Count, reader.LastReturnedHtfCount);
-        var factory = new ValidationTrainingCandleScopeFactory(reader);
+        var factory = CreateCanonicalFactory(reader);
 
         var ex = await Assert.ThrowsAsync<ValidationCandlePartitionViolationException>(() =>
-            factory.CreateAsync(CanonicalAdaptiveRequest()));
+            factory.CreateCanonicalAsync(CanonicalAdaptiveScopeRequest()));
 
         Assert.Equal(expectedCode, ex.DenialCode);
         Assert.Contains(factory.LastBootstrapAccessEvidence, r => r.WasDenied && r.DenialCode == expectedCode);
@@ -297,10 +289,10 @@ public sealed class Milestone231B1BTests
         var valid = Htf(1, SymbolId, ExchangeId, EvalStart, EvalStart.AddHours(1));
         var poison = Htf(2, 99, ExchangeId, EvalStart.AddHours(1), EvalStart.AddHours(2));
         var reader = new PoisonedHtfReader(BuildEval(), [valid, poison]);
-        var factory = new ValidationTrainingCandleScopeFactory(reader);
+        var factory = CreateCanonicalFactory(reader);
 
         var ex = await Assert.ThrowsAsync<ValidationCandlePartitionViolationException>(() =>
-            factory.CreateAsync(CanonicalAdaptiveRequest()));
+            factory.CreateCanonicalAsync(CanonicalAdaptiveScopeRequest()));
 
         Assert.Equal(ValidationCandlePartitionDenialCodes.HtfWrongSymbol, ex.DenialCode);
         var denied = Assert.Single(factory.LastBootstrapAccessEvidence, r => r.WasDenied);
@@ -314,10 +306,10 @@ public sealed class Milestone231B1BTests
         var second = Htf(1, SymbolId, ExchangeId, EvalStart.AddHours(1), EvalStart.AddHours(2));
         var first = Htf(2, SymbolId, ExchangeId, EvalStart, EvalStart.AddHours(1));
         var reader = new PoisonedHtfReader(BuildEval(), [second, first]);
-        var factory = new ValidationTrainingCandleScopeFactory(reader);
+        var factory = CreateCanonicalFactory(reader);
 
         var ex = await Assert.ThrowsAsync<ValidationCandlePartitionViolationException>(() =>
-            factory.CreateAsync(CanonicalAdaptiveRequest()));
+            factory.CreateCanonicalAsync(CanonicalAdaptiveScopeRequest()));
 
         Assert.Equal(ValidationCandlePartitionDenialCodes.HtfUnordered, ex.DenialCode);
         Assert.Contains(factory.LastBootstrapAccessEvidence, r => r.WasDenied);
@@ -327,10 +319,10 @@ public sealed class Milestone231B1BTests
     public async Task EmptyMappedHtf_FailsClosed()
     {
         var reader = new PoisonedHtfReader(BuildEval(), []);
-        var factory = new ValidationTrainingCandleScopeFactory(reader);
+        var factory = CreateCanonicalFactory(reader);
 
         var ex = await Assert.ThrowsAsync<ValidationCandlePartitionViolationException>(() =>
-            factory.CreateAsync(CanonicalAdaptiveRequest()));
+            factory.CreateCanonicalAsync(CanonicalAdaptiveScopeRequest()));
 
         Assert.Equal(ValidationCandlePartitionDenialCodes.MissingPartitionHtf, ex.DenialCode);
         Assert.Contains(factory.LastBootstrapAccessEvidence, r =>
@@ -342,22 +334,22 @@ public sealed class Milestone231B1BTests
     {
         var htf = Htf(1, SymbolId, ExchangeId, EvalStart, EvalStart.AddHours(1));
         var reader = new PoisonedHtfReader(BuildEval(), [htf]);
-        var factory = new ValidationTrainingCandleScopeFactory(reader);
-        var request = CanonicalAdaptiveRequest();
-        var scope = await factory.CreateAsync(request);
+        var factory = CreateCanonicalFactory(reader);
+        var request = CanonicalAdaptiveScopeRequest();
+        var scope = await factory.CreateCanonicalAsync(request);
 
         var bootstrap = Assert.Single(scope.AccessLog, r =>
             r.AccessPurpose == ValidationCandleAccessPurpose.FactoryBootstrapHtfLoad && !r.WasDenied);
         Assert.Equal(EvalStart, bootstrap.RequestedStartUtc);
         Assert.Equal(Boundary, bootstrap.RequestedEndUtc);
-        Assert.Equal(Math.Max(200, request.RequiredWarmupCandleCount), bootstrap.RequestedCandleCount);
+        Assert.Equal(Math.Max(200, request.Requirements.RequiredWarmupCandleCount), bootstrap.RequestedCandleCount);
         Assert.Equal(SymbolId, bootstrap.RequestSymbolId);
         Assert.Equal(ExchangeId, bootstrap.RequestExchangeId);
         Assert.Equal("1h", bootstrap.RequestTimeframeApi);
         Assert.Equal(StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout, bootstrap.RequestStrategyCode);
         Assert.Equal(MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version, bootstrap.RequestStrategyVersion);
-        Assert.Equal(request.BoundAuditExecutionId, bootstrap.AuditExecutionId);
-        Assert.Equal(request.BoundScopeExecutionId, bootstrap.ScopeExecutionId);
+        Assert.Equal(request.AuditExecution.AuditExecutionId, bootstrap.AuditExecutionId);
+        Assert.Equal(request.AuditExecution.ScopeExecutionId, bootstrap.ScopeExecutionId);
         Assert.StartsWith("BootstrapHTF:", bootstrap.DatasetPartition, StringComparison.Ordinal);
     }
 
@@ -365,10 +357,10 @@ public sealed class Milestone231B1BTests
     public async Task DeniedBootstrap_RecordedBeforeThrow()
     {
         var reader = new PoisonedHtfReader(BuildEval(), []);
-        var factory = new ValidationTrainingCandleScopeFactory(reader);
+        var factory = CreateCanonicalFactory(reader);
 
         await Assert.ThrowsAsync<ValidationCandlePartitionViolationException>(() =>
-            factory.CreateAsync(CanonicalAdaptiveRequest()));
+            factory.CreateCanonicalAsync(CanonicalAdaptiveScopeRequest()));
 
         var denied = Assert.Single(factory.LastBootstrapAccessEvidence);
         Assert.True(denied.WasDenied);
@@ -376,12 +368,72 @@ public sealed class Milestone231B1BTests
         Assert.Equal(ValidationCandleAccessPurpose.FactoryBootstrapHtfLoad, denied.AccessPurpose);
     }
 
+    private static ValidationTrainingCandleScopeFactory CreateCanonicalFactory(IUnscopedCandleReader reader) =>
+        new(reader, new NoOpValidationCandleAccessRecorder());
+
+    private sealed class NoOpValidationCandleAccessRecorder : IValidationCandleAccessRecorder
+    {
+        public Task<ValidationAccessBatchPersistResult> FlushAsync(
+            IValidationTrainingCandleScope scope,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ValidationAccessBatchPersistResult
+            {
+                RequestedEventIds = [],
+                CommitStatus = ValidationAccessBatchCommitStatus.CommitSucceeded,
+                VerificationStatus = ValidationAccessBatchVerificationStatus.FullyPayloadConfirmed,
+                CompletedAtUtc = DateTime.UtcNow
+            });
+    }
+    private static ValidationCanonicalTrainingCandleScopeRequest CanonicalAdaptiveScopeRequest(
+        StrategyExecutionRequirements? requirements = null) =>
+        new()
+        {
+            Experiment = BuildExperiment(),
+            Requirements = requirements ?? BuildAdaptiveRequirements(),
+            AuditExecution = new ValidationAuditExecution
+            {
+                AuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+                ValidationExperimentId = 2311,
+                ScopeExecutionId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                ExecutionToken = "token-b1b",
+                AttemptNumber = 1
+            },
+            TrainingEvaluationEndExclusiveUtc = Boundary
+        };
+
+    private static StrategyExecutionRequirements BuildAdaptiveRequirements(long strategyId = 11, int warmup = 0) =>
+        new()
+        {
+            StrategyId = strategyId,
+            StrategyCode = StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
+            StrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
+            RequiredWarmupCandleCount = warmup,
+            RequiresHigherTimeframePartition = true,
+            RequiredHigherTimeframeApi = "1h",
+            HigherTimeframeMappingContractVersion = StrategyHigherTimeframeSupport.AdaptiveHtfMappingContractVersion
+        };
+
+    private static ValidationExperiment BuildExperiment() => new()
+    {
+        Id = 2311,
+        SymbolId = SymbolId,
+        Symbol = "BTCUSDT",
+        Timeframe = "5m",
+        ExchangeId = ExchangeId,
+        StrategyCode = StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
+        StrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
+        TrainingStartUtc = EvalStart,
+        ValidationStartUtc = Boundary
+    };
+
+#pragma warning disable CS0618
     private static ValidationTrainingCandleScopeRequest CanonicalAdaptiveRequest() =>
         Copy(CanonicalRequest(),
             strategyCode: StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
             strategyVersion: MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
             strategyId: 11,
             requiredWarmup: 0);
+#pragma warning restore CS0618
 
     private static ValidationTrainingCandleScopeRequest Copy(
         ValidationTrainingCandleScopeRequest source,
@@ -533,5 +585,27 @@ public sealed class Milestone231B1BTests
             : base(eval, htf)
         {
         }
+    }
+
+    private sealed class NoOpAuditRepository : IValidationCandleAccessAuditRepository
+    {
+        public Task AddRangeAsync(IReadOnlyList<ValidationCandleAccessAudit> audits, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<ValidationAccessBatchPersistResult> AddRangeIdempotentByAccessEventIdAsync(
+            IReadOnlyList<ValidationCandleAccessAudit> audits,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ValidationAccessBatchPersistResult
+            {
+                RequestedEventIds = audits.Select(a => a.AccessEventId).ToList(),
+                CommitStatus = ValidationAccessBatchCommitStatus.CommitSucceeded,
+                VerificationStatus = ValidationAccessBatchVerificationStatus.FullyPayloadConfirmed,
+                CompletedAtUtc = DateTime.UtcNow
+            });
+
+        public Task<IReadOnlyList<ValidationCandleAccessAudit>> GetByExperimentIdAsync(
+            long experimentId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<ValidationCandleAccessAudit>>([]);
     }
 }

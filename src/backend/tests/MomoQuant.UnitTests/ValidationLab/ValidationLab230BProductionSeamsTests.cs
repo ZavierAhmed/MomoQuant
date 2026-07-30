@@ -239,12 +239,22 @@ public class ValidationLab230BProductionSeamsTests
     {
         public ValidationTrainingCandleScope Scope { get; } = CreateScope();
 
+        public Task<IValidationTrainingCandleScope> CreateLtfWarmupBootstrapAsync(
+            ValidationLtfWarmupBootstrapRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IValidationTrainingCandleScope>(Scope);
+
+        public Task<IValidationTrainingCandleScope> CreateCanonicalAsync(
+            ValidationCanonicalTrainingCandleScopeRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IValidationTrainingCandleScope>(Scope);
+
+#pragma warning disable CS0618
         public Task<IValidationTrainingCandleScope> CreateAsync(
             ValidationTrainingCandleScopeRequest request,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<IValidationTrainingCandleScope>(Scope);
 
-#pragma warning disable CS0618
         public Task<IValidationTrainingCandleScope> CreateForExperimentAsync(
             ValidationExperiment experiment,
             CancellationToken cancellationToken = default) =>

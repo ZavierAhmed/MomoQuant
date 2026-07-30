@@ -92,31 +92,27 @@ public sealed class Milestone231B1BFactoryRestartTests : IClassFixture<MomoQuant
             var execution = E2C1AuditFixtures.NewExecution(experiment, trial);
             await executions.CreateAndAssignTrialAuthoritativeAsync(execution, trial);
 
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationCanonicalTrainingCandleScopeRequest
             {
-                ValidationExperimentId = experiment.Id,
-                SymbolId = symbol.Id,
-                SymbolName = symbolName,
-                Timeframe = "5m",
-                TrainingEvaluationStartUtc = evalStart,
-                TrainingEvaluationEndExclusiveUtc = evalEnd,
-                ValidationBoundaryUtc = boundary,
-                RequiredWarmupCandleCount = 0,
-                RequirementsVersion = StrategyExecutionRequirements.Version,
-                StrategyId = 1,
-                StrategyCode = StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
-                StrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
-                ExchangeId = testExchange.Id,
-                BoundScopeExecutionId = execution.ScopeExecutionId,
-                BoundAuditExecutionId = execution.AuditExecutionId,
-                BoundExecutionToken = execution.ExecutionToken,
-                BoundAttemptNumber = execution.AttemptNumber
+                Experiment = experiment,
+                Requirements = new StrategyExecutionRequirements
+                {
+                    StrategyId = 1,
+                    StrategyCode = StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
+                    StrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
+                    RequiredWarmupCandleCount = 0,
+                    RequiresHigherTimeframePartition = true,
+                    RequiredHigherTimeframeApi = "1h",
+                    HigherTimeframeMappingContractVersion = StrategyHigherTimeframeSupport.AdaptiveHtfMappingContractVersion
+                },
+                AuditExecution = execution,
+                TrainingEvaluationEndExclusiveUtc = evalEnd
             };
 
             Guid deniedEventId;
             var factory = (ValidationTrainingCandleScopeFactory)scopeFactory;
             var ex = await Assert.ThrowsAsync<ValidationCandlePartitionViolationException>(() =>
-                scopeFactory.CreateAsync(scopeRequest));
+                scopeFactory.CreateCanonicalAsync(scopeRequest));
             Assert.Equal(ValidationCandlePartitionDenialCodes.MissingPartitionHtf, ex.DenialCode);
 
             var denied = Assert.Single(factory.LastBootstrapAccessEvidence, r => r.WasDenied);
@@ -243,29 +239,25 @@ public sealed class Milestone231B1BFactoryRestartTests : IClassFixture<MomoQuant
             var execution = E2C1AuditFixtures.NewExecution(experiment, trial);
             await executions.CreateAndAssignTrialAuthoritativeAsync(execution, trial);
 
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationCanonicalTrainingCandleScopeRequest
             {
-                ValidationExperimentId = experiment.Id,
-                SymbolId = symbol.Id,
-                SymbolName = symbolName,
-                Timeframe = "5m",
-                TrainingEvaluationStartUtc = evalStart,
-                TrainingEvaluationEndExclusiveUtc = evalEnd,
-                ValidationBoundaryUtc = boundary,
-                RequiredWarmupCandleCount = 0,
-                RequirementsVersion = StrategyExecutionRequirements.Version,
-                StrategyId = 1,
-                StrategyCode = StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
-                StrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
-                ExchangeId = testExchange.Id,
-                BoundScopeExecutionId = execution.ScopeExecutionId,
-                BoundAuditExecutionId = execution.AuditExecutionId,
-                BoundExecutionToken = execution.ExecutionToken,
-                BoundAttemptNumber = execution.AttemptNumber
+                Experiment = experiment,
+                Requirements = new StrategyExecutionRequirements
+                {
+                    StrategyId = 1,
+                    StrategyCode = StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
+                    StrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
+                    RequiredWarmupCandleCount = 0,
+                    RequiresHigherTimeframePartition = true,
+                    RequiredHigherTimeframeApi = "1h",
+                    HigherTimeframeMappingContractVersion = StrategyHigherTimeframeSupport.AdaptiveHtfMappingContractVersion
+                },
+                AuditExecution = execution,
+                TrainingEvaluationEndExclusiveUtc = evalEnd
             };
 
             Guid bootstrapEventId;
-            await using (var trainingScope = await scopeFactory.CreateAsync(scopeRequest))
+            await using (var trainingScope = await scopeFactory.CreateCanonicalAsync(scopeRequest))
             {
                 var bootstrap = Assert.Single(trainingScope.AccessLog, r =>
                     r.AccessPurpose == ValidationCandleAccessPurpose.FactoryBootstrapHtfLoad && !r.WasDenied);

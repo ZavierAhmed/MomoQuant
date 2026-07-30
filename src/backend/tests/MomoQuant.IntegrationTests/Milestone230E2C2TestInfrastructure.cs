@@ -1226,6 +1226,48 @@ internal sealed class E2C2ScopeExecutionDecorator : IValidationTrainingScopeExec
         _controls = controls;
     }
 
+    public Task<ValidationTrainingScopeExecutionResult> ExecuteWithLtfWarmupBootstrapAsync(
+        ValidationExperiment experiment,
+        ValidationLtfWarmupBootstrapRequest scopeRequest,
+        Func<IValidationTrainingCandleScope, Task> body,
+        CancellationToken cancellationToken = default) =>
+        _inner.ExecuteWithLtfWarmupBootstrapAsync(experiment, scopeRequest, body, cancellationToken);
+
+    public Task<ValidationTrainingScopeExecutionResult> ExecuteWithCanonicalScopeAsync(
+        ValidationExperiment experiment,
+        ValidationCanonicalTrainingCandleScopeRequest scopeRequest,
+        Func<IValidationTrainingCandleScope, Task> body,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_controls.FailScopeDisposal)
+        {
+            return _inner.ExecuteWithCanonicalScopeAsync(experiment, scopeRequest, body, cancellationToken);
+        }
+
+        return ExecuteWithCanonicalScopeAndSimulatedDisposalFailureAsync(
+            experiment, scopeRequest, body, cancellationToken);
+    }
+
+    private async Task<ValidationTrainingScopeExecutionResult> ExecuteWithCanonicalScopeAndSimulatedDisposalFailureAsync(
+        ValidationExperiment experiment,
+        ValidationCanonicalTrainingCandleScopeRequest scopeRequest,
+        Func<IValidationTrainingCandleScope, Task> body,
+        CancellationToken cancellationToken)
+    {
+        var result = await _inner.ExecuteWithCanonicalScopeAsync(experiment, scopeRequest, body, cancellationToken);
+        return new ValidationTrainingScopeExecutionResult
+        {
+            BodyException = result.BodyException,
+            FlushException = result.FlushException,
+            DisposalException = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(
+                new InvalidOperationException("E2C2 simulated outer scope disposal failure.")),
+            BodyPhase = result.BodyPhase,
+            FlushPhase = result.FlushPhase,
+            FlushAttempted = result.FlushAttempted
+        };
+    }
+
+#pragma warning disable CS0618
     public async Task<ValidationTrainingScopeExecutionResult> ExecuteWithScopeAsync(
         ValidationExperiment experiment,
         ValidationTrainingCandleScopeRequest scopeRequest,
@@ -1249,6 +1291,7 @@ internal sealed class E2C2ScopeExecutionDecorator : IValidationTrainingScopeExec
             FlushAttempted = result.FlushAttempted
         };
     }
+#pragma warning restore CS0618
 
     public Task<ValidationTrainingScopeExecutionResult> ExecuteTrialAsync(
         IValidationTrainingCandleScope scope,

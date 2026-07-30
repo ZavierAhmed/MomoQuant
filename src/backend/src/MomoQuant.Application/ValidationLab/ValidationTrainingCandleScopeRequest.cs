@@ -99,14 +99,18 @@ public sealed class ValidationTrainingCandleScopeRequest
     public int? BoundAttemptNumber { get; init; }
 
     /// <summary>
-    /// LTF-only warmup fingerprint bootstrap — no HTF load and no bound audit identity (Milestone 23.1B1C).
+    /// Obsolete — use <see cref="ValidationLtfWarmupBootstrapRequest"/> and
+    /// <see cref="IValidationTrainingCandleScopeFactory.CreateLtfWarmupBootstrapAsync"/>.
     /// </summary>
+    [Obsolete("Use ValidationLtfWarmupBootstrapRequest and CreateLtfWarmupBootstrapAsync.")]
     public bool LtfOnlyWarmupBootstrap { get; init; }
 
-    /// <summary>Authoritative experiment for canonical identity binding before candle access.</summary>
+    /// <summary>Obsolete — use <see cref="ValidationCanonicalTrainingCandleScopeRequest.Experiment"/>.</summary>
+    [Obsolete("Use ValidationCanonicalTrainingCandleScopeRequest.Experiment.")]
     public ValidationExperiment? CanonicalExperiment { get; init; }
 
-    /// <summary>Resolved requirements for canonical identity binding before candle access.</summary>
+    /// <summary>Obsolete — use <see cref="ValidationCanonicalTrainingCandleScopeRequest.Requirements"/>.</summary>
+    [Obsolete("Use ValidationCanonicalTrainingCandleScopeRequest.Requirements.")]
     public StrategyExecutionRequirements? CanonicalRequirements { get; init; }
 
     public static ValidationTrainingCandleScopeRequest FromExperiment(
@@ -142,16 +146,16 @@ public sealed class ValidationTrainingCandleScopeRequest
     }
 
     /// <summary>
-    /// Quarantined legacy helper — must not be used without a bound durable audit execution.
-    /// Prefer <see cref="FromExperiment"/> after resolving <see cref="StrategyExecutionRequirements"/>.
+    /// Quarantined legacy helper — use <see cref="ValidationLtfWarmupBootstrapRequest.FromExperimentLegacy"/>.
     /// </summary>
-    [Obsolete("Quarantined — use FromExperiment with bound audit execution. Legacy path must not be used without bound audit.")]
+    [Obsolete("Use ValidationLtfWarmupBootstrapRequest.FromExperimentLegacy.")]
     public static ValidationTrainingCandleScopeRequest FromExperimentLegacy(
         ValidationExperiment experiment,
         DateTime trainingEvaluationEndExclusiveUtc,
         int? requiredWarmupOverride = null,
         bool ltfOnlyWarmupBootstrap = false)
     {
+        _ = ltfOnlyWarmupBootstrap;
         ArgumentNullException.ThrowIfNull(experiment);
         if (experiment.TrainingStartUtc is null || experiment.ValidationStartUtc is null)
         {
@@ -173,8 +177,7 @@ public sealed class ValidationTrainingCandleScopeRequest
             RequirementsVersion = StrategyExecutionRequirements.Version,
             StrategyCode = experiment.StrategyCode,
             StrategyVersion = experiment.StrategyVersion,
-            ExchangeId = experiment.ExchangeId,
-            LtfOnlyWarmupBootstrap = ltfOnlyWarmupBootstrap
+            ExchangeId = experiment.ExchangeId
         };
     }
 
@@ -330,15 +333,9 @@ public sealed class ValidationTrainingCandleScopeRequest
     {
         if (LtfOnlyWarmupBootstrap)
         {
-            if (BoundAuditExecutionId is not null
-                || BoundScopeExecutionId is not null
-                || !string.IsNullOrWhiteSpace(BoundExecutionToken)
-                || BoundAttemptNumber is > 0)
-            {
-                throw new ArgumentException(
-                    "LTF-only warmup bootstrap must not bind durable audit execution identity.",
-                    nameof(LtfOnlyWarmupBootstrap));
-            }
+            throw new ArgumentException(
+                "LtfOnlyWarmupBootstrap is obsolete. Use ValidationLtfWarmupBootstrapRequest and CreateLtfWarmupBootstrapAsync.",
+                nameof(LtfOnlyWarmupBootstrap));
         }
 
         if (ValidationExperimentId <= 0)
@@ -367,6 +364,329 @@ public sealed class ValidationTrainingCandleScopeRequest
             throw new ArgumentException("RequiredWarmupCandleCount cannot be negative.", nameof(RequiredWarmupCandleCount));
         if (string.IsNullOrWhiteSpace(RequirementsVersion))
             throw new ArgumentException("RequirementsVersion is required.", nameof(RequirementsVersion));
+    }
+}
+
+/// <summary>LTF-only warmup bootstrap request — no HTF, no bound audit identity (Milestone 23.1B1C1).</summary>
+public sealed class ValidationLtfWarmupBootstrapRequest
+{
+    public required long ValidationExperimentId { get; init; }
+    public required long SymbolId { get; init; }
+    public required string SymbolName { get; init; }
+    public required string Timeframe { get; init; }
+    public required DateTime TrainingEvaluationStartUtc { get; init; }
+    public required DateTime TrainingEvaluationEndExclusiveUtc { get; init; }
+    public required DateTime ValidationBoundaryUtc { get; init; }
+    public required int RequiredWarmupCandleCount { get; init; }
+    public required string RequirementsVersion { get; init; }
+    public long? ExchangeId { get; init; }
+    public long? StrategyId { get; init; }
+    public string? StrategyCode { get; init; }
+    public string? StrategyVersion { get; init; }
+
+    public static ValidationLtfWarmupBootstrapRequest FromExperiment(
+        ValidationExperiment experiment,
+        StrategyExecutionRequirements requirements,
+        DateTime trainingEvaluationEndExclusiveUtc)
+    {
+        ArgumentNullException.ThrowIfNull(experiment);
+        ArgumentNullException.ThrowIfNull(requirements);
+
+        if (experiment.TrainingStartUtc is null || experiment.ValidationStartUtc is null)
+        {
+            throw new InvalidOperationException(
+                "Training candle scope requires TrainingStartUtc and ValidationStartUtc.");
+        }
+
+        return new ValidationLtfWarmupBootstrapRequest
+        {
+            ValidationExperimentId = experiment.Id,
+            SymbolId = experiment.SymbolId,
+            SymbolName = experiment.Symbol,
+            Timeframe = experiment.Timeframe,
+            TrainingEvaluationStartUtc = DateTime.SpecifyKind(experiment.TrainingStartUtc.Value, DateTimeKind.Utc),
+            TrainingEvaluationEndExclusiveUtc = DateTime.SpecifyKind(trainingEvaluationEndExclusiveUtc, DateTimeKind.Utc),
+            ValidationBoundaryUtc = DateTime.SpecifyKind(experiment.ValidationStartUtc.Value, DateTimeKind.Utc),
+            RequiredWarmupCandleCount = requirements.RequiredWarmupCandleCount,
+            RequirementsVersion = requirements.RequirementsVersion,
+            StrategyId = requirements.StrategyId,
+            StrategyCode = requirements.StrategyCode,
+            StrategyVersion = requirements.StrategyVersion ?? experiment.StrategyVersion,
+            ExchangeId = experiment.ExchangeId > 0 ? experiment.ExchangeId : null
+        };
+    }
+
+    public static ValidationLtfWarmupBootstrapRequest FromExperimentLegacy(
+        ValidationExperiment experiment,
+        DateTime trainingEvaluationEndExclusiveUtc,
+        int? requiredWarmupOverride = null)
+    {
+        ArgumentNullException.ThrowIfNull(experiment);
+        if (experiment.TrainingStartUtc is null || experiment.ValidationStartUtc is null)
+        {
+            throw new InvalidOperationException(
+                "Training candle scope requires TrainingStartUtc and ValidationStartUtc.");
+        }
+
+        var warmup = requiredWarmupOverride ?? Math.Max(0, experiment.RequiredWarmupCandles);
+        return new ValidationLtfWarmupBootstrapRequest
+        {
+            ValidationExperimentId = experiment.Id,
+            SymbolId = experiment.SymbolId,
+            SymbolName = experiment.Symbol,
+            Timeframe = experiment.Timeframe,
+            TrainingEvaluationStartUtc = DateTime.SpecifyKind(experiment.TrainingStartUtc.Value, DateTimeKind.Utc),
+            TrainingEvaluationEndExclusiveUtc = DateTime.SpecifyKind(trainingEvaluationEndExclusiveUtc, DateTimeKind.Utc),
+            ValidationBoundaryUtc = DateTime.SpecifyKind(experiment.ValidationStartUtc.Value, DateTimeKind.Utc),
+            RequiredWarmupCandleCount = warmup,
+            RequirementsVersion = StrategyExecutionRequirements.Version,
+            StrategyCode = experiment.StrategyCode,
+            StrategyVersion = experiment.StrategyVersion,
+            ExchangeId = experiment.ExchangeId > 0 ? experiment.ExchangeId : null
+        };
+    }
+
+    public void Validate()
+    {
+        if (ValidationExperimentId <= 0)
+            throw new ArgumentException("ValidationExperimentId must be positive.", nameof(ValidationExperimentId));
+        if (SymbolId <= 0)
+            throw new ArgumentException("SymbolId must be positive.", nameof(SymbolId));
+        if (string.IsNullOrWhiteSpace(SymbolName))
+            throw new ArgumentException("SymbolName is required.", nameof(SymbolName));
+        if (string.IsNullOrWhiteSpace(Timeframe))
+            throw new ArgumentException("Timeframe is required.", nameof(Timeframe));
+        if (TrainingEvaluationStartUtc.Kind != DateTimeKind.Utc)
+            throw new ArgumentException("TrainingEvaluationStartUtc must be UTC.", nameof(TrainingEvaluationStartUtc));
+        if (TrainingEvaluationEndExclusiveUtc.Kind != DateTimeKind.Utc)
+            throw new ArgumentException("TrainingEvaluationEndExclusiveUtc must be UTC.", nameof(TrainingEvaluationEndExclusiveUtc));
+        if (ValidationBoundaryUtc.Kind != DateTimeKind.Utc)
+            throw new ArgumentException("ValidationBoundaryUtc must be UTC.", nameof(ValidationBoundaryUtc));
+        if (TrainingEvaluationEndExclusiveUtc <= TrainingEvaluationStartUtc)
+            throw new ArgumentException(
+                "TrainingEvaluationEndExclusiveUtc must be after TrainingEvaluationStartUtc.",
+                nameof(TrainingEvaluationEndExclusiveUtc));
+        if (TrainingEvaluationStartUtc >= ValidationBoundaryUtc)
+            throw new ArgumentException(
+                "TrainingEvaluationStartUtc must be before ValidationBoundaryUtc.",
+                nameof(TrainingEvaluationStartUtc));
+        if (RequiredWarmupCandleCount < 0)
+            throw new ArgumentException("RequiredWarmupCandleCount cannot be negative.", nameof(RequiredWarmupCandleCount));
+        if (string.IsNullOrWhiteSpace(RequirementsVersion))
+            throw new ArgumentException("RequirementsVersion is required.", nameof(RequirementsVersion));
+    }
+}
+
+/// <summary>Canonical validation training scope request with authoritative bindings (Milestone 23.1B1C1).</summary>
+public sealed class ValidationCanonicalTrainingCandleScopeRequest
+{
+    public required ValidationExperiment Experiment { get; init; }
+    public required StrategyExecutionRequirements Requirements { get; init; }
+    public required ValidationAuditExecution AuditExecution { get; init; }
+    public required DateTime TrainingEvaluationEndExclusiveUtc { get; init; }
+
+    /// <summary>
+    /// Validates ALL consistency before any candle access: experiment, requirements, audit, strategy, and HTF contract.
+    /// </summary>
+    public void ValidateAuthoritativeBindings()
+    {
+        ArgumentNullException.ThrowIfNull(Experiment);
+        ArgumentNullException.ThrowIfNull(Requirements);
+        ArgumentNullException.ThrowIfNull(AuditExecution);
+
+        if (TrainingEvaluationEndExclusiveUtc.Kind != DateTimeKind.Utc)
+        {
+            throw new ArgumentException(
+                "TrainingEvaluationEndExclusiveUtc must be UTC.",
+                nameof(TrainingEvaluationEndExclusiveUtc));
+        }
+
+        if (Experiment.TrainingStartUtc is null || Experiment.ValidationStartUtc is null)
+        {
+            throw new InvalidOperationException(
+                "Canonical validation training requires TrainingStartUtc and ValidationStartUtc on the experiment.");
+        }
+
+        var trainingStart = DateTime.SpecifyKind(Experiment.TrainingStartUtc.Value, DateTimeKind.Utc);
+        var boundary = DateTime.SpecifyKind(Experiment.ValidationStartUtc.Value, DateTimeKind.Utc);
+
+        if (TrainingEvaluationEndExclusiveUtc <= trainingStart)
+        {
+            throw new ArgumentException(
+                "TrainingEvaluationEndExclusiveUtc must be after experiment TrainingStartUtc.",
+                nameof(TrainingEvaluationEndExclusiveUtc));
+        }
+
+        if (trainingStart >= boundary)
+        {
+            throw new ArgumentException(
+                "Experiment TrainingStartUtc must be before ValidationStartUtc.",
+                nameof(Experiment));
+        }
+
+        if (AuditExecution.ValidationExperimentId != Experiment.Id)
+        {
+            throw new ArgumentException(
+                $"Audit execution experiment {AuditExecution.ValidationExperimentId} does not match experiment {Experiment.Id}.",
+                nameof(AuditExecution));
+        }
+
+        if (Experiment.SymbolId <= 0)
+        {
+            throw new ArgumentException("Experiment SymbolId must be positive.", nameof(Experiment));
+        }
+
+        if (string.IsNullOrWhiteSpace(Experiment.Symbol))
+        {
+            throw new ArgumentException("Experiment Symbol is required.", nameof(Experiment));
+        }
+
+        if (string.IsNullOrWhiteSpace(Experiment.Timeframe))
+        {
+            throw new ArgumentException("Experiment Timeframe is required.", nameof(Experiment));
+        }
+
+        if (Experiment.ExchangeId <= 0)
+        {
+            throw new ArgumentException("Experiment ExchangeId must be positive.", nameof(Experiment));
+        }
+
+        if (Requirements.StrategyId <= 0)
+        {
+            throw new ArgumentException("Requirements StrategyId must be positive.", nameof(Requirements));
+        }
+
+        if (string.IsNullOrWhiteSpace(Requirements.StrategyCode))
+        {
+            throw new ArgumentException("Requirements StrategyCode is required.", nameof(Requirements));
+        }
+
+        if (string.IsNullOrWhiteSpace(Requirements.StrategyVersion))
+        {
+            throw new ArgumentException("Requirements StrategyVersion is required.", nameof(Requirements));
+        }
+
+        if (string.IsNullOrWhiteSpace(Requirements.RequirementsVersion))
+        {
+            throw new ArgumentException("Requirements RequirementsVersion is required.", nameof(Requirements));
+        }
+
+        if (!string.Equals(Experiment.StrategyCode, Requirements.StrategyCode, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"Requirements StrategyCode '{Requirements.StrategyCode}' does not match experiment '{Experiment.StrategyCode}'.",
+                nameof(Requirements));
+        }
+
+        if (!string.Equals(Experiment.StrategyVersion, Requirements.StrategyVersion, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"Requirements StrategyVersion '{Requirements.StrategyVersion}' does not match experiment '{Experiment.StrategyVersion}'.",
+                nameof(Requirements));
+        }
+
+        if (AuditExecution.AuditExecutionId == Guid.Empty)
+        {
+            throw new ArgumentException("AuditExecution AuditExecutionId is required.", nameof(AuditExecution));
+        }
+
+        if (AuditExecution.ScopeExecutionId == Guid.Empty)
+        {
+            throw new ArgumentException("AuditExecution ScopeExecutionId is required.", nameof(AuditExecution));
+        }
+
+        if (string.IsNullOrWhiteSpace(AuditExecution.ExecutionToken))
+        {
+            throw new ArgumentException("AuditExecution ExecutionToken is required.", nameof(AuditExecution));
+        }
+
+        if (AuditExecution.AttemptNumber <= 0)
+        {
+            throw new ArgumentException("AuditExecution AttemptNumber must be positive.", nameof(AuditExecution));
+        }
+
+        StrategyCode strategyEnum;
+        try
+        {
+            strategyEnum = StrategyCodeExtensions.FromCode(Requirements.StrategyCode);
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            throw new ArgumentException(
+                $"Unknown or unsupported strategy code '{Requirements.StrategyCode}'.",
+                nameof(Requirements),
+                ex);
+        }
+
+        if (!CanonicalStrategyPortfolio.IsCanonicalActive(strategyEnum))
+        {
+            throw new ArgumentException(
+                $"Strategy code '{Requirements.StrategyCode}' is not in the canonical active portfolio.",
+                nameof(Requirements));
+        }
+
+        if (!CanonicalStrategyVersionPolicy.IsSupportedProductionVersion(strategyEnum, Requirements.StrategyVersion))
+        {
+            throw new ArgumentException(
+                $"Strategy version '{Requirements.StrategyVersion}' is not a supported production version for '{Requirements.StrategyCode}'.",
+                nameof(Requirements));
+        }
+
+        if (strategyEnum == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout)
+        {
+            if (!Requirements.RequiresHigherTimeframePartition)
+            {
+                throw new ArgumentException(
+                    "Adaptive validation requires RequiresHigherTimeframePartition on requirements.",
+                    nameof(Requirements));
+            }
+
+            if (string.IsNullOrWhiteSpace(Requirements.RequiredHigherTimeframeApi))
+            {
+                throw new InvalidOperationException(
+                    $"Adaptive validation requires a mapped HTF for execution timeframe '{Experiment.Timeframe}'.");
+            }
+
+            if (!TimeframeParser.TryParse(Experiment.Timeframe, out var execTf))
+            {
+                throw new InvalidOperationException(
+                    $"Canonical Adaptive validation requires a parseable execution timeframe '{Experiment.Timeframe}'.");
+            }
+
+            if (!TimeframeParser.TryParse(Requirements.RequiredHigherTimeframeApi, out var requiredHtf))
+            {
+                throw new InvalidOperationException(
+                    $"Requirements RequiredHigherTimeframeApi '{Requirements.RequiredHigherTimeframeApi}' is not parseable.");
+            }
+
+            var resolvedHtf = MomoAdaptiveMtfTrendBreakoutEvaluator.ResolveHigherTimeframe(execTf);
+            if (resolvedHtf != requiredHtf)
+            {
+                throw new InvalidOperationException(
+                    $"Requirements HTF '{Requirements.RequiredHigherTimeframeApi}' does not match Adaptive mapping " +
+                    $"'{TimeframeParser.ToApiString(resolvedHtf)}' for execution timeframe '{Experiment.Timeframe}'.");
+            }
+
+            if (!string.Equals(
+                    Requirements.HigherTimeframeMappingContractVersion,
+                    StrategyHigherTimeframeSupport.AdaptiveHtfMappingContractVersion,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Adaptive validation requires HigherTimeframeMappingContractVersion " +
+                    $"'{StrategyHigherTimeframeSupport.AdaptiveHtfMappingContractVersion}'.");
+            }
+        }
+        else if (strategyEnum is StrategyCode.PriceStructureBreakoutRetest
+                 or StrategyCode.MomoVolatilityRangeReversion)
+        {
+            if (Requirements.RequiresHigherTimeframePartition)
+            {
+                throw new ArgumentException(
+                    $"Strategy '{Requirements.StrategyCode}' must not require an HTF partition.",
+                    nameof(Requirements));
+            }
+        }
     }
 }
 

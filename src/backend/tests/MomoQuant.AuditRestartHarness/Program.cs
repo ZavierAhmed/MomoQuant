@@ -3,8 +3,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.MarketData;
 using MomoQuant.Application.Strategies;
 using MomoQuant.Application.Strategies.Implementations;
+using MomoQuant.Application.Strategies.MomoAdaptive;
 using MomoQuant.Application.Strategies.PriceStructure;
 using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.ValidationLab;
@@ -131,28 +133,15 @@ public static class Program
                 evalCandles);
 
             var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationCanonicalTrainingCandleScopeRequest
             {
-                ValidationExperimentId = fixture.Experiment.Id,
-                SymbolId = symbol.Id,
-                SymbolName = symbol.SymbolName,
-                Timeframe = fixture.Experiment.Timeframe,
-                TrainingEvaluationStartUtc = evalStart,
-                TrainingEvaluationEndExclusiveUtc = evalEnd,
-                ValidationBoundaryUtc = boundary,
-                RequiredWarmupCandleCount = requiredWarmup,
-                RequirementsVersion = StrategyExecutionRequirements.Version,
-                StrategyId = 1,
-                StrategyCode = fixture.Experiment.StrategyCode,
-                StrategyVersion = fixture.Experiment.StrategyVersion,
-                ExchangeId = symbol.ExchangeId,
-                BoundScopeExecutionId = execution.ScopeExecutionId,
-                BoundAuditExecutionId = execution.AuditExecutionId,
-                BoundExecutionToken = execution.ExecutionToken,
-                BoundAttemptNumber = execution.AttemptNumber
+                Experiment = fixture.Experiment,
+                Requirements = BuildHarnessRequirements(fixture.Experiment, requiredWarmup),
+                AuditExecution = execution,
+                TrainingEvaluationEndExclusiveUtc = evalEnd
             };
 
-            await using var trainingScope = await scopeFactory.CreateAsync(scopeRequest);
+            await using var trainingScope = await scopeFactory.CreateCanonicalAsync(scopeRequest);
 
             using (ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
             {
@@ -408,28 +397,15 @@ public static class Program
                 evalCandles: 10);
 
             var scopeFactory = sp.GetRequiredService<IValidationTrainingCandleScopeFactory>();
-            var scopeRequest = new ValidationTrainingCandleScopeRequest
+            var scopeRequest = new ValidationCanonicalTrainingCandleScopeRequest
             {
-                ValidationExperimentId = experiment.Id,
-                SymbolId = symbol.Id,
-                SymbolName = symbol.SymbolName,
-                Timeframe = experiment.Timeframe,
-                TrainingEvaluationStartUtc = evalStartUtc,
-                TrainingEvaluationEndExclusiveUtc = evalEndUtc,
-                ValidationBoundaryUtc = boundaryUtc,
-                RequiredWarmupCandleCount = replacementWarmup,
-                RequirementsVersion = StrategyExecutionRequirements.Version,
-                StrategyId = 1,
-                StrategyCode = experiment.StrategyCode,
-                StrategyVersion = experiment.StrategyVersion,
-                ExchangeId = symbol.ExchangeId,
-                BoundScopeExecutionId = replacement.ScopeExecutionId,
-                BoundAuditExecutionId = replacement.AuditExecutionId,
-                BoundExecutionToken = replacement.ExecutionToken,
-                BoundAttemptNumber = replacement.AttemptNumber
+                Experiment = experiment,
+                Requirements = BuildHarnessRequirements(experiment, replacementWarmup),
+                AuditExecution = replacement,
+                TrainingEvaluationEndExclusiveUtc = evalEndUtc
             };
 
-            await using var replacementScope = await scopeFactory.CreateAsync(scopeRequest);
+            await using var replacementScope = await scopeFactory.CreateCanonicalAsync(scopeRequest);
             using (ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
             {
                 AuditExecutionId = replacement.AuditExecutionId,
@@ -700,6 +676,36 @@ public static class Program
 
         db.Candles.AddRange(candles);
         await db.SaveChangesAsync();
+    }
+
+    private static StrategyExecutionRequirements BuildHarnessRequirements(
+        ValidationExperiment experiment,
+        int requiredWarmup)
+    {
+        var isAdaptive = StrategyCodeExtensions.FromCode(experiment.StrategyCode)
+            == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout;
+        var parsed = TimeframeParser.TryParse(experiment.Timeframe, out var execTf);
+        var requiresHtf = isAdaptive && parsed;
+
+        string? requiredHtfApi = null;
+        string? mappingVersion = null;
+        if (requiresHtf)
+        {
+            requiredHtfApi = TimeframeParser.ToApiString(
+                MomoAdaptiveMtfTrendBreakoutEvaluator.ResolveHigherTimeframe(execTf));
+            mappingVersion = StrategyHigherTimeframeSupport.AdaptiveHtfMappingContractVersion;
+        }
+
+        return new StrategyExecutionRequirements
+        {
+            StrategyId = 1,
+            StrategyCode = experiment.StrategyCode,
+            StrategyVersion = experiment.StrategyVersion,
+            RequiredWarmupCandleCount = requiredWarmup,
+            RequiresHigherTimeframePartition = requiresHtf,
+            RequiredHigherTimeframeApi = requiredHtfApi,
+            HigherTimeframeMappingContractVersion = mappingVersion
+        };
     }
 
     private static Guid CreateScopeId(Guid fixtureId)
