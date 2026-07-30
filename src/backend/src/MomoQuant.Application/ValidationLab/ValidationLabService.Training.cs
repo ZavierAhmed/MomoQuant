@@ -163,8 +163,26 @@ public sealed partial class ValidationLabService
             ServiceResult<ValidationExperimentDto>? result = null;
             try
             {
-                // Bootstrap once: create a temporary scope for warmup fingerprint only (no trial audit).
-                var bootstrapResult = await _trainingScopeExecution.ExecuteWithScopeAsync(experiment, scopeRequest, async bootstrapScope =>
+                // Bootstrap once: LTF-only warmup fingerprint (no HTF, no bound audit — Milestone 23.1B1C).
+                var warmupScopeRequest = new ValidationTrainingCandleScopeRequest
+                {
+                    ValidationExperimentId = scopeRequest.ValidationExperimentId,
+                    SymbolId = scopeRequest.SymbolId,
+                    SymbolName = scopeRequest.SymbolName,
+                    Timeframe = scopeRequest.Timeframe,
+                    TrainingEvaluationStartUtc = scopeRequest.TrainingEvaluationStartUtc,
+                    TrainingEvaluationEndExclusiveUtc = scopeRequest.TrainingEvaluationEndExclusiveUtc,
+                    ValidationBoundaryUtc = scopeRequest.ValidationBoundaryUtc,
+                    RequiredWarmupCandleCount = scopeRequest.RequiredWarmupCandleCount,
+                    RequirementsVersion = scopeRequest.RequirementsVersion,
+                    StrategyId = scopeRequest.StrategyId,
+                    StrategyCode = scopeRequest.StrategyCode,
+                    StrategyVersion = scopeRequest.StrategyVersion,
+                    ExchangeId = scopeRequest.ExchangeId,
+                    LtfOnlyWarmupBootstrap = true
+                };
+
+                var bootstrapResult = await _trainingScopeExecution.ExecuteWithScopeAsync(experiment, warmupScopeRequest, async bootstrapScope =>
                 {
                     experiment.WarmupSnapshotJson = JsonSerializer.Serialize(new
                     {
@@ -462,7 +480,9 @@ public sealed partial class ValidationLabService
                         BoundScopeExecutionId = auditExecution.ScopeExecutionId,
                         BoundAuditExecutionId = auditExecution.AuditExecutionId,
                         BoundExecutionToken = auditExecution.ExecutionToken,
-                        BoundAttemptNumber = auditExecution.AttemptNumber
+                        BoundAttemptNumber = auditExecution.AttemptNumber,
+                        CanonicalExperiment = experiment,
+                        CanonicalRequirements = requirements
                     };
 
                     try

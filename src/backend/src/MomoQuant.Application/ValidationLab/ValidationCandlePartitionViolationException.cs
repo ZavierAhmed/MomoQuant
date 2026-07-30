@@ -35,6 +35,9 @@ public static class ValidationCandlePartitionDenialCodes
     public const string HtfWrongTimeframe = "HtfWrongTimeframe";
     public const string HtfUnordered = "HtfUnordered";
     public const string HtfDuplicate = "HtfDuplicate";
+    public const string HtfInvalidTimestamp = "HtfInvalidTimestamp";
+    public const string HtfInvalidCandleRange = "HtfInvalidCandleRange";
+    public const string HtfOverlapping = "HtfOverlapping";
 }
 
 /// <summary>

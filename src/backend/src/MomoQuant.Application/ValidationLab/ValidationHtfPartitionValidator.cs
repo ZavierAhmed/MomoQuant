@@ -5,7 +5,7 @@ using MomoQuant.Domain.MarketData;
 namespace MomoQuant.Application.ValidationLab;
 
 /// <summary>
-/// Fail-closed HTF partition validation for factory bootstrap loads (Milestone 23.1B1B).
+/// Fail-closed HTF partition validation for factory bootstrap loads (Milestone 23.1B1B/23.1B1C).
 /// Validates raw repository results in returned order — no sort, no silent filter.
 /// </summary>
 internal static class ValidationHtfPartitionValidator
@@ -37,12 +37,35 @@ internal static class ValidationHtfPartitionValidator
         DateTime? previousOpen = null;
         DateTime? previousClose = null;
         var seenOpens = new HashSet<DateTime>();
+        var seenCloses = new HashSet<DateTime>();
 
         for (var i = 0; i < raw.Count; i++)
         {
             var c = raw[i];
+
+            if (c.OpenTimeUtc == default || c.CloseTimeUtc == default)
+            {
+                return Fail(
+                    ValidationCandlePartitionDenialCodes.HtfInvalidTimestamp,
+                    $"Higher-timeframe candle at index {i} has default OpenTimeUtc/CloseTimeUtc.");
+            }
+
+            if (c.OpenTimeUtc.Kind == DateTimeKind.Local || c.CloseTimeUtc.Kind == DateTimeKind.Local)
+            {
+                return Fail(
+                    ValidationCandlePartitionDenialCodes.HtfInvalidTimestamp,
+                    $"Higher-timeframe candle at index {i} has non-UTC OpenTimeUtc/CloseTimeUtc (kinds={c.OpenTimeUtc.Kind}/{c.CloseTimeUtc.Kind}).");
+            }
+
             var open = DateTime.SpecifyKind(c.OpenTimeUtc, DateTimeKind.Utc);
             var close = DateTime.SpecifyKind(c.CloseTimeUtc, DateTimeKind.Utc);
+
+            if (close <= open)
+            {
+                return Fail(
+                    ValidationCandlePartitionDenialCodes.HtfInvalidCandleRange,
+                    $"Higher-timeframe candle at index {i} has CloseTimeUtc={close:O} <= OpenTimeUtc={open:O}.");
+            }
 
             if (c.SymbolId != expectedSymbolId)
             {
@@ -79,6 +102,13 @@ internal static class ValidationHtfPartitionValidator
                     $"Higher-timeframe candles contain duplicate OpenTimeUtc {open:O} at index {i}.");
             }
 
+            if (!seenCloses.Add(close))
+            {
+                return Fail(
+                    ValidationCandlePartitionDenialCodes.HtfDuplicate,
+                    $"Higher-timeframe candles contain duplicate CloseTimeUtc {close:O} at index {i}.");
+            }
+
             if (previousOpen.HasValue && open <= previousOpen.Value)
             {
                 return Fail(
@@ -93,6 +123,13 @@ internal static class ValidationHtfPartitionValidator
                     $"Higher-timeframe candles are not ascending by CloseTimeUtc at index {i} (got {close:O} after {previousClose.Value:O}).");
             }
 
+            if (previousClose.HasValue && open < previousClose.Value)
+            {
+                return Fail(
+                    ValidationCandlePartitionDenialCodes.HtfOverlapping,
+                    $"Higher-timeframe candles overlap at index {i} (OpenTimeUtc={open:O} before prior CloseTimeUtc={previousClose.Value:O}).");
+            }
+
             if (close > loadEndExclusive || close > boundary)
             {
                 return Fail(
@@ -100,11 +137,11 @@ internal static class ValidationHtfPartitionValidator
                     $"Higher-timeframe candle at index {i} CloseTimeUtc={close:O} extends beyond load end/boundary ({loadEndExclusive:O}).");
             }
 
-            if (open >= loadEndExclusive)
+            if (open >= loadEndExclusive || open >= boundary)
             {
                 return Fail(
                     ValidationCandlePartitionDenialCodes.HtfCloseBeyondBoundary,
-                    $"Higher-timeframe candle at index {i} OpenTimeUtc={open:O} is at or after load end exclusive ({loadEndExclusive:O}).");
+                    $"Higher-timeframe candle at index {i} OpenTimeUtc={open:O} is at or after authorized boundary ({boundary:O}).");
             }
 
             previousOpen = open;

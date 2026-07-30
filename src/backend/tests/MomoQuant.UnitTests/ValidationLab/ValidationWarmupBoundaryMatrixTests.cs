@@ -113,7 +113,8 @@ public sealed class ValidationWarmupBoundaryMatrixTests
             ValidationBoundaryUtc = Boundary,
             RequiredWarmupCandleCount = 3,
             RequirementsVersion = StrategyExecutionRequirements.Version,
-            ExchangeId = 1
+            ExchangeId = 1,
+            LtfOnlyWarmupBootstrap = true
         };
 
         var scope = await factory.CreateAsync(request);
@@ -227,7 +228,8 @@ public sealed class ValidationWarmupBoundaryMatrixTests
         ValidationBoundaryUtc = Boundary,
         RequiredWarmupCandleCount = requiredWarmup,
         RequirementsVersion = StrategyExecutionRequirements.Version,
-        ExchangeId = 1
+        ExchangeId = 1,
+        LtfOnlyWarmupBootstrap = true
     };
 
     private static List<Candle> BuildWarmupCandles(int count, long symbolId = SymbolId) =>

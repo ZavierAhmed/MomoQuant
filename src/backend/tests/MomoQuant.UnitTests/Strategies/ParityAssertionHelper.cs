@@ -9,116 +9,149 @@ using MomoQuant.Domain.StrategyLab;
 
 namespace MomoQuant.UnitTests.Strategies;
 
-/// <summary>Non-vacuous cross-path parity assertions (Milestone 23.1B1B).</summary>
+/// <summary>Mandatory cross-path parity evidence assertions (Milestone 23.1B1C).</summary>
 internal static class ParityAssertionHelper
 {
-    public sealed class ParityPaths
+    public sealed class PositiveParityEvidence
     {
-        public required StrategySignalResult Direct { get; init; }
-        public required StrategyResearchCandidate Lab { get; init; }
-        public required StrategyEvaluationResult Backtest { get; init; }
-        public StrategyEvaluationCaptureRecord? Capture { get; init; }
-        public MarketRegime? ExpectedRegime { get; init; }
-        public Timeframe ExpectedHigherTimeframe { get; init; }
-        public long ExpectedExchangeId { get; init; } = 1;
-        public long ExpectedSymbolId { get; init; } = 1;
-        public string ExpectedSymbol { get; init; } = "BTCUSDT";
-        public Timeframe ExpectedTimeframe { get; init; } = Timeframe.M5;
+        public required StrategyEvaluationCaptureRecord Capture { get; init; }
+        public required MarketRegime ExpectedRegime { get; init; }
+        public required long ExpectedExchangeId { get; init; }
+        public required long ExpectedSymbolId { get; init; }
+        public required string ExpectedSymbol { get; init; }
+        public required Timeframe ExpectedTimeframe { get; init; }
+        public required Timeframe ExpectedHigherTimeframe { get; init; }
+        public required DateTime ExpectedEvaluationTimestamp { get; init; }
+        public required int ExpectedCurrentCandleIndex { get; init; }
+        public required long[] ExpectedExecutionCandleIds { get; init; }
+        public required long[] ExpectedHtfCandleIds { get; init; }
     }
 
-    public sealed class RejectionPaths
+    public sealed class RejectionParityEvidence
     {
-        public required StrategySignalResult Direct { get; init; }
-        public required StrategyEvaluationResult Backtest { get; init; }
-        public string? LabResultSummaryJson { get; init; }
-        public string? ExpectedLabRejectionCode { get; init; }
+        public required StrategyEvaluationCaptureRecord Capture { get; init; }
+        public required MarketRegime ExpectedRegime { get; init; }
+        public required string ExpectedLabRejectionCode { get; init; }
+        public required string LabResultSummaryJson { get; init; }
+        public required DateTime ExpectedEvaluationTimestamp { get; init; }
+        public required int ExpectedCurrentCandleIndex { get; init; }
+        public required long[] ExpectedExecutionCandleIds { get; init; }
+        public required long[] ExpectedHtfCandleIds { get; init; }
     }
 
-    public static void AssertPositiveEntryParity(ParityPaths paths)
+    public static void AssertPositiveEntryParity(
+        StrategySignalResult direct,
+        StrategyResearchCandidate lab,
+        StrategyEvaluationResult backtest,
+        PositiveParityEvidence evidence)
     {
-        Assert.Equal(SignalType.Entry, paths.Direct.SignalType);
-        Assert.NotNull(paths.Direct.EntryPrice);
-        Assert.Equal(SignalType.Entry, paths.Backtest.SignalType);
-        Assert.NotNull(paths.Backtest.EntryPrice);
+        ArgumentNullException.ThrowIfNull(direct);
+        ArgumentNullException.ThrowIfNull(lab);
+        ArgumentNullException.ThrowIfNull(backtest);
+        ArgumentNullException.ThrowIfNull(evidence);
 
-        Assert.Equal(paths.Direct.Direction, paths.Lab.Direction);
-        Assert.Equal(paths.Direct.EntryPrice, paths.Lab.ProposedEntryPrice);
-        Assert.Equal(paths.Direct.SuggestedStopLoss, paths.Lab.StopLoss);
-        Assert.Equal(paths.Direct.SuggestedTakeProfit, paths.Lab.Target1);
+        Assert.Equal(SignalType.Entry, direct.SignalType);
+        Assert.NotNull(direct.EntryPrice);
+        Assert.Equal(SignalType.Entry, backtest.SignalType);
+        Assert.NotNull(backtest.EntryPrice);
 
-        Assert.Equal(paths.Direct.Reason, paths.Backtest.Reason);
-        Assert.Equal(paths.Direct.Direction, paths.Backtest.Direction);
-        Assert.Equal(paths.Direct.EntryPrice, paths.Backtest.EntryPrice);
-        Assert.Equal(paths.Direct.SuggestedStopLoss, paths.Backtest.SuggestedStopLoss);
-        Assert.Equal(paths.Direct.SuggestedTakeProfit, paths.Backtest.SuggestedTakeProfit);
-        Assert.Equal(paths.Direct.Strength, paths.Backtest.Strength);
-        Assert.Equal(paths.Direct.RawDataJson, paths.Backtest.RawDataJson);
+        Assert.Equal(direct.Direction, lab.Direction);
+        Assert.Equal(direct.EntryPrice, lab.ProposedEntryPrice);
+        Assert.Equal(direct.SuggestedStopLoss, lab.StopLoss);
+        Assert.Equal(direct.SuggestedTakeProfit, lab.Target1);
 
-        var directFp = StrategyLabRunner.ExtractFingerprint(paths.Direct.RawDataJson ?? "{}");
+        Assert.Equal(direct.Reason, backtest.Reason);
+        Assert.Equal(direct.Direction, backtest.Direction);
+        Assert.Equal(direct.EntryPrice, backtest.EntryPrice);
+        Assert.Equal(direct.SuggestedStopLoss, backtest.SuggestedStopLoss);
+        Assert.Equal(direct.SuggestedTakeProfit, backtest.SuggestedTakeProfit);
+        Assert.Equal(direct.Strength, backtest.Strength);
+        Assert.Equal(direct.RawDataJson, backtest.RawDataJson);
+
+        var directFp = StrategyLabRunner.ExtractFingerprint(direct.RawDataJson ?? "{}");
         Assert.False(string.IsNullOrWhiteSpace(directFp));
-        Assert.Equal(directFp, paths.Lab.SetupFingerprint);
-        Assert.Equal(directFp, Milestone231BParityFixtures.ExtractFingerprint(paths.Backtest.RawDataJson));
+        Assert.Equal(directFp, lab.SetupFingerprint);
+        Assert.Equal(directFp, Milestone231BParityFixtures.ExtractFingerprint(backtest.RawDataJson));
 
-        AssertStrength(paths.Direct.Strength, paths.Lab.StructureJson, paths.Backtest.RawDataJson);
+        AssertStrength(direct.Strength, lab.StructureJson, backtest.RawDataJson);
         Assert.Equal(
-            Milestone231BParityFixtures.ExtractStrengthBreakdown(paths.Direct.RawDataJson),
-            Milestone231BParityFixtures.ExtractStrengthBreakdown(paths.Lab.StructureJson));
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(direct.RawDataJson),
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(lab.StructureJson));
         Assert.Equal(
-            Milestone231BParityFixtures.ExtractStrengthBreakdown(paths.Direct.RawDataJson),
-            Milestone231BParityFixtures.ExtractStrengthBreakdown(paths.Backtest.RawDataJson));
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(direct.RawDataJson),
+            Milestone231BParityFixtures.ExtractStrengthBreakdown(backtest.RawDataJson));
 
-        if (paths.ExpectedRegime is { } regime)
-        {
-            Assert.Equal(regime.ToString(), paths.Backtest.Regime);
-        }
+        Assert.Equal(evidence.ExpectedRegime.ToString(), backtest.Regime);
+        Assert.Equal(evidence.ExpectedEvaluationTimestamp, evidence.Capture.EvaluatedAtUtc);
+        Assert.Equal(evidence.ExpectedTimeframe, evidence.Capture.ExecutionTimeframe);
+        Assert.Equal(evidence.ExpectedHigherTimeframe, evidence.Capture.HigherTimeframe);
+        Assert.Equal(evidence.ExpectedExecutionCandleIds, evidence.Capture.Candles.Select(c => c.Id).ToArray());
+        Assert.Equal(evidence.ExpectedHtfCandleIds, evidence.Capture.HigherTimeframeCandles.Select(c => c.Id).ToArray());
 
-        if (paths.Capture is not null)
-        {
-            Assert.Equal(paths.ExpectedExchangeId, paths.Capture.Candles.FirstOrDefault()?.ExchangeId ?? paths.ExpectedExchangeId);
-            Assert.Equal(paths.ExpectedSymbolId, paths.Capture.Candles.FirstOrDefault()?.SymbolId ?? paths.ExpectedSymbolId);
-            Assert.Equal(paths.ExpectedTimeframe, paths.Capture.ExecutionTimeframe);
-            Assert.Equal(paths.ExpectedHigherTimeframe, paths.Capture.HigherTimeframe);
-        }
+        Assert.NotEmpty(evidence.Capture.Candles);
+        Assert.Equal(evidence.ExpectedExchangeId, evidence.Capture.Candles[0].ExchangeId);
+        Assert.Equal(evidence.ExpectedSymbolId, evidence.Capture.Candles[0].SymbolId);
+        Assert.Equal(evidence.ExpectedCurrentCandleIndex, evidence.Capture.Candles.Count - 1);
     }
 
-    public static void AssertRejectionParity(RejectionPaths paths)
+    public static void AssertRejectionParity(
+        StrategySignalResult direct,
+        StrategyEvaluationResult backtest,
+        RejectionParityEvidence evidence)
     {
-        Assert.NotEqual(SignalType.Entry, paths.Direct.SignalType);
-        Assert.NotEqual(SignalType.Entry, paths.Backtest.SignalType);
-        Assert.Equal(paths.Direct.SignalType, paths.Backtest.SignalType);
-        Assert.Equal(paths.Direct.Reason, paths.Backtest.Reason);
-        Assert.Equal(paths.Direct.Direction, paths.Backtest.Direction);
-        Assert.Equal(paths.Direct.Strength, paths.Backtest.Strength);
+        ArgumentNullException.ThrowIfNull(direct);
+        ArgumentNullException.ThrowIfNull(backtest);
+        ArgumentNullException.ThrowIfNull(evidence);
 
-        var directFp = StrategyLabRunner.ExtractFingerprint(paths.Direct.RawDataJson ?? "{}") ?? string.Empty;
-        var backtestFp = Milestone231BParityFixtures.ExtractFingerprint(paths.Backtest.RawDataJson) ?? string.Empty;
+        Assert.NotEqual(SignalType.Entry, direct.SignalType);
+        Assert.NotEqual(SignalType.Entry, backtest.SignalType);
+        Assert.Equal(direct.SignalType, backtest.SignalType);
+        Assert.Equal(direct.Reason, backtest.Reason);
+        Assert.Equal(direct.Direction, backtest.Direction);
+        Assert.Equal(direct.Strength, backtest.Strength);
+        Assert.Equal(evidence.ExpectedRegime.ToString(), backtest.Regime);
+
+        var directFp = StrategyLabRunner.ExtractFingerprint(direct.RawDataJson ?? "{}") ?? string.Empty;
+        var backtestFp = Milestone231BParityFixtures.ExtractFingerprint(backtest.RawDataJson) ?? string.Empty;
         Assert.Equal(directFp, backtestFp);
 
-        if (!string.IsNullOrWhiteSpace(paths.ExpectedLabRejectionCode)
-            && !string.IsNullOrWhiteSpace(paths.LabResultSummaryJson))
-        {
-            using var doc = JsonDocument.Parse(paths.LabResultSummaryJson);
-            var funnel = doc.RootElement.GetProperty("rejectionFunnel").GetProperty("counts");
-            Assert.True(
-                funnel.TryGetProperty(paths.ExpectedLabRejectionCode, out _),
-                $"Expected lab rejection funnel code '{paths.ExpectedLabRejectionCode}'.");
-        }
+        Assert.False(string.IsNullOrWhiteSpace(evidence.ExpectedLabRejectionCode));
+        Assert.False(string.IsNullOrWhiteSpace(evidence.LabResultSummaryJson));
+
+        using var doc = JsonDocument.Parse(evidence.LabResultSummaryJson);
+        var funnel = doc.RootElement.GetProperty("rejectionFunnel").GetProperty("counts");
+        Assert.True(
+            funnel.TryGetProperty(evidence.ExpectedLabRejectionCode, out var countEl),
+            $"Expected lab rejection funnel code '{evidence.ExpectedLabRejectionCode}'.");
+        Assert.True(countEl.GetInt32() > 0, $"Lab rejection code '{evidence.ExpectedLabRejectionCode}' must have a positive count.");
+
+        Assert.Equal(evidence.ExpectedEvaluationTimestamp, evidence.Capture.EvaluatedAtUtc);
+        Assert.Equal(evidence.ExpectedExecutionCandleIds, evidence.Capture.Candles.Select(c => c.Id).ToArray());
+        Assert.Equal(evidence.ExpectedHtfCandleIds, evidence.Capture.HigherTimeframeCandles.Select(c => c.Id).ToArray());
+        Assert.Equal(evidence.ExpectedCurrentCandleIndex, evidence.Capture.Candles.Count - 1);
+    }
+
+    public static decimal ExtractStrengthForTest(string? json)
+    {
+        var strength = ExtractStrength(json);
+        Assert.NotNull(strength);
+        return strength.Value;
     }
 
     private static void AssertStrength(decimal directStrength, string? labStructure, string? backtestRaw)
     {
         var labStrength = ExtractStrength(labStructure);
         var backtestStrength = ExtractStrength(backtestRaw);
+        Assert.NotNull(labStrength);
+        Assert.NotNull(backtestStrength);
 
-        Assert.Equal(directStrength, labStrength);
-        Assert.Equal(directStrength, backtestStrength);
+        Assert.Equal(directStrength, labStrength.Value);
+        Assert.Equal(directStrength, backtestStrength.Value);
 
         Assert.Equal(
             Milestone231BParityFixtures.ExtractStrengthBreakdown(labStructure),
             Milestone231BParityFixtures.ExtractStrengthBreakdown(backtestRaw));
     }
-
-    public static decimal? ExtractStrengthForTest(string? json) => ExtractStrength(json);
 
     private static decimal? ExtractStrength(string? json)
     {

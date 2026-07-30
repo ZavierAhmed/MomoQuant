@@ -566,24 +566,20 @@ public sealed class Milestone231BParityTests
         var backtestResult = Assert.Single(recording.Results);
         var capture = Assert.Single(recording.Capture.Records);
         Assert.False(backtestResult.Skipped);
-        ParityAssertionHelper.AssertPositiveEntryParity(new ParityAssertionHelper.ParityPaths
+        ParityAssertionHelper.AssertPositiveEntryParity(direct, lab, backtestResult, new ParityAssertionHelper.PositiveParityEvidence
         {
-            Direct = direct,
-            Lab = lab,
-            Backtest = backtestResult,
             Capture = capture,
             ExpectedRegime = classifiedRegime,
             ExpectedHigherTimeframe = Timeframe.H1,
             ExpectedTimeframe = Timeframe.M5,
-            ExpectedSymbol = "BTCUSDT"
+            ExpectedSymbol = "BTCUSDT",
+            ExpectedSymbolId = 1,
+            ExpectedExchangeId = 1,
+            ExpectedEvaluationTimestamp = evaluationTimeUtc,
+            ExpectedCurrentCandleIndex = evalIndex,
+            ExpectedExecutionCandleIds = ltf.Take(evalIndex + 1).Select(c => c.Id).ToArray(),
+            ExpectedHtfCandleIds = visibleHtf.Select(c => c.Id).ToArray()
         });
-        Assert.Equal(evaluationTimeUtc, capture.EvaluatedAtUtc);
-        Assert.Equal(
-            ltf.Take(evalIndex + 1).Select(c => c.Id).ToArray(),
-            capture.Candles.Select(c => c.Id).ToArray());
-        Assert.Equal(
-            visibleHtf.Select(c => c.Id).ToArray(),
-            capture.HigherTimeframeCandles.Select(c => c.Id).ToArray());
     }
 
     [Fact]
@@ -686,17 +682,19 @@ public sealed class Milestone231BParityTests
 
         var backtestResult = Assert.Single(recording.Results);
         var capture = Assert.Single(recording.Capture.Records);
-        ParityAssertionHelper.AssertPositiveEntryParity(new ParityAssertionHelper.ParityPaths
+        ParityAssertionHelper.AssertPositiveEntryParity(direct, lab, backtestResult, new ParityAssertionHelper.PositiveParityEvidence
         {
-            Direct = direct,
-            Lab = lab,
-            Backtest = backtestResult,
             Capture = capture,
             ExpectedRegime = regime,
             ExpectedHigherTimeframe = productionHtf,
             ExpectedTimeframe = Timeframe.M5,
             ExpectedSymbol = "ETHUSDT",
-            ExpectedSymbolId = 1
+            ExpectedSymbolId = 1,
+            ExpectedExchangeId = 1,
+            ExpectedEvaluationTimestamp = evaluationTimeUtc,
+            ExpectedCurrentCandleIndex = evalIndex,
+            ExpectedExecutionCandleIds = candles.Take(evalIndex + 1).Select(c => c.Id).ToArray(),
+            ExpectedHtfCandleIds = Array.Empty<long>()
         });
     }
 
@@ -793,16 +791,19 @@ public sealed class Milestone231BParityTests
 
         var backtestResult = Assert.Single(recording.Results);
         var capture = Assert.Single(recording.Capture.Records);
-        ParityAssertionHelper.AssertPositiveEntryParity(new ParityAssertionHelper.ParityPaths
+        ParityAssertionHelper.AssertPositiveEntryParity(direct, lab, backtestResult, new ParityAssertionHelper.PositiveParityEvidence
         {
-            Direct = direct,
-            Lab = lab,
-            Backtest = backtestResult,
             Capture = capture,
             ExpectedRegime = regime,
             ExpectedHigherTimeframe = productionHtf,
             ExpectedTimeframe = Timeframe.M5,
-            ExpectedSymbol = "BTCUSDT"
+            ExpectedSymbol = "BTCUSDT",
+            ExpectedSymbolId = 1,
+            ExpectedExchangeId = 1,
+            ExpectedEvaluationTimestamp = evaluationTimeUtc,
+            ExpectedCurrentCandleIndex = evalIndex,
+            ExpectedExecutionCandleIds = candles.Take(evalIndex + 1).Select(c => c.Id).ToArray(),
+            ExpectedHtfCandleIds = Array.Empty<long>()
         });
     }
 

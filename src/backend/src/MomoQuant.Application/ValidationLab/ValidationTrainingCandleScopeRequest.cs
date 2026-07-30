@@ -1,4 +1,6 @@
+using MomoQuant.Application.MarketData;
 using MomoQuant.Application.Strategies;
+using MomoQuant.Application.Strategies.MomoAdaptive;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.ValidationLab;
@@ -96,6 +98,17 @@ public sealed class ValidationTrainingCandleScopeRequest
     /// <summary>Attempt number from the durable audit execution.</summary>
     public int? BoundAttemptNumber { get; init; }
 
+    /// <summary>
+    /// LTF-only warmup fingerprint bootstrap — no HTF load and no bound audit identity (Milestone 23.1B1C).
+    /// </summary>
+    public bool LtfOnlyWarmupBootstrap { get; init; }
+
+    /// <summary>Authoritative experiment for canonical identity binding before candle access.</summary>
+    public ValidationExperiment? CanonicalExperiment { get; init; }
+
+    /// <summary>Resolved requirements for canonical identity binding before candle access.</summary>
+    public StrategyExecutionRequirements? CanonicalRequirements { get; init; }
+
     public static ValidationTrainingCandleScopeRequest FromExperiment(
         ValidationExperiment experiment,
         StrategyExecutionRequirements requirements,
@@ -136,7 +149,8 @@ public sealed class ValidationTrainingCandleScopeRequest
     public static ValidationTrainingCandleScopeRequest FromExperimentLegacy(
         ValidationExperiment experiment,
         DateTime trainingEvaluationEndExclusiveUtc,
-        int? requiredWarmupOverride = null)
+        int? requiredWarmupOverride = null,
+        bool ltfOnlyWarmupBootstrap = false)
     {
         ArgumentNullException.ThrowIfNull(experiment);
         if (experiment.TrainingStartUtc is null || experiment.ValidationStartUtc is null)
@@ -159,7 +173,8 @@ public sealed class ValidationTrainingCandleScopeRequest
             RequirementsVersion = StrategyExecutionRequirements.Version,
             StrategyCode = experiment.StrategyCode,
             StrategyVersion = experiment.StrategyVersion,
-            ExchangeId = experiment.ExchangeId
+            ExchangeId = experiment.ExchangeId,
+            LtfOnlyWarmupBootstrap = ltfOnlyWarmupBootstrap
         };
     }
 
@@ -181,10 +196,15 @@ public sealed class ValidationTrainingCandleScopeRequest
             throw new ArgumentException("BoundScopeExecutionId is required for canonical validation training.", nameof(BoundScopeExecutionId));
         if (BoundAuditExecutionId is null || BoundAuditExecutionId == Guid.Empty)
             throw new ArgumentException("BoundAuditExecutionId is required for canonical validation training.", nameof(BoundAuditExecutionId));
+        if (string.IsNullOrWhiteSpace(BoundExecutionToken))
+            throw new ArgumentException("BoundExecutionToken is required for canonical validation training.", nameof(BoundExecutionToken));
+        if (BoundAttemptNumber is not > 0)
+            throw new ArgumentException("BoundAttemptNumber must be positive for canonical validation training.", nameof(BoundAttemptNumber));
 
+        StrategyCode strategyEnum;
         try
         {
-            StrategyCodeExtensions.FromCode(StrategyCode);
+            strategyEnum = StrategyCodeExtensions.FromCode(StrategyCode);
         }
         catch (ArgumentOutOfRangeException ex)
         {
@@ -193,10 +213,134 @@ public sealed class ValidationTrainingCandleScopeRequest
                 nameof(StrategyCode),
                 ex);
         }
+
+        if (!CanonicalStrategyPortfolio.IsCanonicalActive(strategyEnum))
+        {
+            throw new ArgumentException(
+                $"Strategy code '{StrategyCode}' is not in the canonical active portfolio.",
+                nameof(StrategyCode));
+        }
+
+        if (!CanonicalStrategyVersionPolicy.IsSupportedProductionVersion(strategyEnum, StrategyVersion))
+        {
+            throw new ArgumentException(
+                $"Strategy version '{StrategyVersion}' is not a supported production version for '{StrategyCode}'.",
+                nameof(StrategyVersion));
+        }
+    }
+
+    /// <summary>
+    /// Binds and compares experiment, requirements, and scope request before any candle repository access.
+    /// </summary>
+    public void ValidateCanonicalBindings(
+        ValidationExperiment experiment,
+        StrategyExecutionRequirements requirements)
+    {
+        ArgumentNullException.ThrowIfNull(experiment);
+        ArgumentNullException.ThrowIfNull(requirements);
+        ValidateCanonical();
+
+        if (experiment.Id != ValidationExperimentId)
+        {
+            throw new ArgumentException(
+                $"ValidationExperimentId {ValidationExperimentId} does not match experiment {experiment.Id}.",
+                nameof(ValidationExperimentId));
+        }
+
+        if (experiment.SymbolId != SymbolId)
+        {
+            throw new ArgumentException(
+                $"SymbolId {SymbolId} does not match experiment symbol {experiment.SymbolId}.",
+                nameof(SymbolId));
+        }
+
+        if (!string.Equals(experiment.Symbol, SymbolName, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"SymbolName '{SymbolName}' does not match experiment symbol '{experiment.Symbol}'.",
+                nameof(SymbolName));
+        }
+
+        if (!string.Equals(experiment.Timeframe, Timeframe, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"Timeframe '{Timeframe}' does not match experiment timeframe '{experiment.Timeframe}'.",
+                nameof(Timeframe));
+        }
+
+        if (experiment.ExchangeId != ExchangeId)
+        {
+            throw new ArgumentException(
+                $"ExchangeId {ExchangeId} does not match experiment exchange {experiment.ExchangeId}.",
+                nameof(ExchangeId));
+        }
+
+        if (requirements.StrategyId != StrategyId)
+        {
+            throw new ArgumentException(
+                $"StrategyId {StrategyId} does not match resolved requirements strategy {requirements.StrategyId}.",
+                nameof(StrategyId));
+        }
+
+        if (!string.Equals(requirements.StrategyCode, StrategyCode, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"StrategyCode '{StrategyCode}' does not match resolved requirements '{requirements.StrategyCode}'.",
+                nameof(StrategyCode));
+        }
+
+        if (!string.Equals(requirements.StrategyVersion, StrategyVersion, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"StrategyVersion '{StrategyVersion}' does not match resolved requirements '{requirements.StrategyVersion}'.",
+                nameof(StrategyVersion));
+        }
+
+        if (!string.Equals(requirements.RequirementsVersion, RequirementsVersion, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"RequirementsVersion '{RequirementsVersion}' does not match resolved requirements '{requirements.RequirementsVersion}'.",
+                nameof(RequirementsVersion));
+        }
+
+        if (!string.Equals(experiment.StrategyCode, StrategyCode, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"StrategyCode '{StrategyCode}' does not match experiment strategy '{experiment.StrategyCode}'.",
+                nameof(StrategyCode));
+        }
+
+        if (!string.Equals(experiment.StrategyVersion, StrategyVersion, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"StrategyVersion '{StrategyVersion}' does not match experiment version '{experiment.StrategyVersion}'.",
+                nameof(StrategyVersion));
+        }
+
+        var strategyEnum = StrategyCodeExtensions.FromCode(StrategyCode!);
+        if (strategyEnum == global::MomoQuant.Domain.Enums.StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout
+            && !TimeframeParser.TryParse(Timeframe, out var execTf))
+        {
+            throw new InvalidOperationException(
+                $"Canonical Adaptive validation requires a parseable execution timeframe '{Timeframe}'.");
+        }
     }
 
     public void Validate()
     {
+        if (LtfOnlyWarmupBootstrap)
+        {
+            if (BoundAuditExecutionId is not null
+                || BoundScopeExecutionId is not null
+                || !string.IsNullOrWhiteSpace(BoundExecutionToken)
+                || BoundAttemptNumber is > 0)
+            {
+                throw new ArgumentException(
+                    "LTF-only warmup bootstrap must not bind durable audit execution identity.",
+                    nameof(LtfOnlyWarmupBootstrap));
+            }
+        }
+
         if (ValidationExperimentId <= 0)
             throw new ArgumentException("ValidationExperimentId must be positive.", nameof(ValidationExperimentId));
         if (SymbolId <= 0)

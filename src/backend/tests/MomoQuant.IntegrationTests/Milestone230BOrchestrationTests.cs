@@ -63,7 +63,8 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                         ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
                             experiment!,
                             trainingEvaluationEndExclusiveUtc: DateTime.SpecifyKind(
-                                experiment!.TrainingEndUtc!.Value, DateTimeKind.Utc).AddMinutes(60)),
+                                experiment!.TrainingEndUtc!.Value, DateTimeKind.Utc).AddMinutes(60),
+                            ltfOnlyWarmupBootstrap: true),
                         async trainingScope =>
                         {
                             trialCapture = await execution.ExecuteTrialAsync(
@@ -118,8 +119,13 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                 }
 
                 var failureHandler = sp.GetRequiredService<IValidationTrainingFailureHandler>();
+                var handlerScopeRequest = ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
+                    experiment!,
+                    trainingEvaluationEndExclusiveUtc: DateTime.SpecifyKind(
+                        experiment!.TrainingEndUtc!.Value, DateTimeKind.Utc).AddMinutes(60),
+                    ltfOnlyWarmupBootstrap: true);
                 await using var scopeForHandler = await sp.GetRequiredService<IValidationTrainingCandleScopeFactory>()
-                    .CreateForExperimentAsync(experiment!, CancellationToken.None);
+                    .CreateAsync(handlerScopeRequest, CancellationToken.None);
                 // Re-enter adversarial access so handler flushes denial evidence if needed.
                 try
                 {
@@ -218,7 +224,8 @@ public sealed class Milestone230BOrchestrationTests : IClassFixture<MomoQuantWeb
                 experiment!,
                 ValidationTrainingCandleScopeRequest.FromExperimentLegacy(
                     experiment!,
-                    trainingEvaluationEndExclusiveUtc: trainingEnd.AddMinutes(60)),
+                    trainingEvaluationEndExclusiveUtc: trainingEnd.AddMinutes(60),
+                    ltfOnlyWarmupBootstrap: true),
                 async trainingScope =>
                 {
                     var trialResult = await execution.ExecuteTrialAsync(

@@ -36,7 +36,9 @@ public sealed class Milestone231B1BTests
             StrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
             ExchangeId = ExchangeId,
             BoundScopeExecutionId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
-            BoundAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222")
+            BoundAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            BoundExecutionToken = "token-b1b",
+            BoundAttemptNumber = 1
         };
 
         var ex = Assert.Throws<ArgumentException>(() => request.ValidateCanonical());
@@ -62,7 +64,9 @@ public sealed class Milestone231B1BTests
             StrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
             ExchangeId = 0,
             BoundScopeExecutionId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
-            BoundAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222")
+            BoundAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            BoundExecutionToken = "token-b1b",
+            BoundAttemptNumber = 1
         };
 
         var ex = Assert.Throws<ArgumentException>(() => request.ValidateCanonical());
@@ -88,7 +92,9 @@ public sealed class Milestone231B1BTests
             StrategyVersion = null,
             ExchangeId = ExchangeId,
             BoundScopeExecutionId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
-            BoundAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222")
+            BoundAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            BoundExecutionToken = "token-b1b",
+            BoundAttemptNumber = 1
         };
 
         var ex = Assert.Throws<ArgumentException>(() => request.ValidateCanonical());
@@ -116,7 +122,9 @@ public sealed class Milestone231B1BTests
             StrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
             ExchangeId = ExchangeId,
             BoundScopeExecutionId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
-            BoundAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222")
+            BoundAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            BoundExecutionToken = "token-b1b",
+            BoundAttemptNumber = 1
         };
 
         await Assert.ThrowsAsync<ArgumentException>(() => factory.CreateAsync(request));
@@ -142,7 +150,9 @@ public sealed class Milestone231B1BTests
             StrategyVersion = MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
             ExchangeId = ExchangeId,
             BoundScopeExecutionId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
-            BoundAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222")
+            BoundAuditExecutionId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            BoundExecutionToken = "token-b1b",
+            BoundAttemptNumber = 1
         };
 
         var ex = Assert.Throws<ArgumentException>(() => request.ValidateCanonical());

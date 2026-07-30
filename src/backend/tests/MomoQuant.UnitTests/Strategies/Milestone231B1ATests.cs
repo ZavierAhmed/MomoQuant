@@ -341,6 +341,7 @@ public sealed class Milestone231B1ATests
         var candles = full.Count <= 600 ? full : full.TakeLast(600).ToList();
         Milestone231BParityFixtures.AssignSequentialIds(candles);
         var evalIndex = candles.Count - 1;
+        var evaluationTimeUtc = candles[evalIndex].CloseTimeUtc;
         // Trending snapshots force non-ranging regime → no entry.
         var snapshots = Milestone231BParityFixtures.BuildTrendingSnapshots(candles);
         var regime = DeterministicMarketRegimeClassifier.Classify(snapshots[candles[evalIndex].Id], candles[evalIndex]);
@@ -427,12 +428,17 @@ public sealed class Milestone231B1ATests
             evaluationIndex: 0);
 
         var backtest = Assert.Single(recording.Results);
-        ParityAssertionHelper.AssertRejectionParity(new ParityAssertionHelper.RejectionPaths
+        var capture = Assert.Single(recording.Capture.Records);
+        ParityAssertionHelper.AssertRejectionParity(direct, backtest, new ParityAssertionHelper.RejectionParityEvidence
         {
-            Direct = direct,
-            Backtest = backtest,
-            LabResultSummaryJson = run.ResultSummaryJson,
-            ExpectedLabRejectionCode = MomoVolatilityRangeRejectionCodes.TrendFilterFailed
+            Capture = capture,
+            ExpectedRegime = regime,
+            ExpectedLabRejectionCode = MomoVolatilityRangeRejectionCodes.TrendFilterFailed,
+            LabResultSummaryJson = run.ResultSummaryJson!,
+            ExpectedEvaluationTimestamp = evaluationTimeUtc,
+            ExpectedCurrentCandleIndex = evalIndex,
+            ExpectedExecutionCandleIds = candles.Take(evalIndex + 1).Select(c => c.Id).ToArray(),
+            ExpectedHtfCandleIds = Array.Empty<long>()
         });
     }
 
@@ -521,13 +527,19 @@ public sealed class Milestone231B1ATests
             evaluationIndex: 0);
 
         var backtest = Assert.Single(recording.Results);
-        Assert.NotEqual(SignalType.Entry, backtest.SignalType);
-        Assert.Equal(direct.SignalType, backtest.SignalType);
-        Assert.Equal(direct.Reason, backtest.Reason);
-        Assert.Equal(direct.Direction, backtest.Direction);
-        Assert.Equal(
-            StrategyLabRunner.ExtractFingerprint(direct.RawDataJson ?? "{}") ?? string.Empty,
-            Milestone231BParityFixtures.ExtractFingerprint(backtest.RawDataJson) ?? string.Empty);
+        var capture = Assert.Single(recording.Capture.Records);
+        Assert.False(string.IsNullOrWhiteSpace(direct.Reason));
+        ParityAssertionHelper.AssertRejectionParity(direct, backtest, new ParityAssertionHelper.RejectionParityEvidence
+        {
+            Capture = capture,
+            ExpectedRegime = regime,
+            ExpectedLabRejectionCode = direct.Reason!,
+            LabResultSummaryJson = run.ResultSummaryJson!,
+            ExpectedEvaluationTimestamp = evaluationTimeUtc,
+            ExpectedCurrentCandleIndex = evalIndex,
+            ExpectedExecutionCandleIds = candles.Take(evalIndex + 1).Select(c => c.Id).ToArray(),
+            ExpectedHtfCandleIds = Array.Empty<long>()
+        });
     }
 
     private static async Task AssertRejectionParityAdaptiveAsync(
@@ -611,14 +623,19 @@ public sealed class Milestone231B1ATests
             evaluationIndex: 0);
 
         var backtest = Assert.Single(recording.Results);
-        Assert.NotEqual(SignalType.Entry, backtest.SignalType);
-        Assert.Equal(direct.SignalType, backtest.SignalType);
-        Assert.Equal(direct.Reason, backtest.Reason);
-        Assert.Equal(direct.Direction, backtest.Direction);
-        Assert.Equal(direct.Strength, backtest.Strength);
-        Assert.Equal(
-            StrategyLabRunner.ExtractFingerprint(direct.RawDataJson ?? "{}") ?? string.Empty,
-            Milestone231BParityFixtures.ExtractFingerprint(backtest.RawDataJson) ?? string.Empty);
+        var capture = Assert.Single(recording.Capture.Records);
+        Assert.False(string.IsNullOrWhiteSpace(direct.Reason));
+        ParityAssertionHelper.AssertRejectionParity(direct, backtest, new ParityAssertionHelper.RejectionParityEvidence
+        {
+            Capture = capture,
+            ExpectedRegime = regime,
+            ExpectedLabRejectionCode = direct.Reason!,
+            LabResultSummaryJson = run.ResultSummaryJson!,
+            ExpectedEvaluationTimestamp = evaluationTimeUtc,
+            ExpectedCurrentCandleIndex = evalIndex,
+            ExpectedExecutionCandleIds = ltf.Take(evalIndex + 1).Select(c => c.Id).ToArray(),
+            ExpectedHtfCandleIds = visibleHtf.Select(c => c.Id).ToArray()
+        });
     }
 
     private static (ValidationTrainingCandleScope Scope, ValidationDatasetMaterializationRequest Request) CreateAdaptiveScopeRequest(
