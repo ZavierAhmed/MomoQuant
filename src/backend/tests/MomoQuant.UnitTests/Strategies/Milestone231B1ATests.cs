@@ -604,6 +604,8 @@ public sealed class Milestone231B1ATests
         IReadOnlyList<Candle> htf,
         int evalIndex)
     {
+        var rawDataContract = ParityAssertionHelper.RawDataJsonContract.Create(
+            ParityAssertionHelper.RawDataJsonRootState.Null);
         var evaluationTimeUtc = ltf[evalIndex].CloseTimeUtc;
         var visibleHtf = StrategyHigherTimeframeSupport.SliceHigherTimeframeCandles(
             new Dictionary<Timeframe, IReadOnlyList<Candle>> { [Timeframe.H1] = htf },
@@ -710,6 +712,7 @@ public sealed class Milestone231B1ATests
                 ExpectedParameters = parameters,
                 ExpectedIndicatorSnapshot = snapshot,
                 Fingerprint = ParityEvidenceContracts.RejectionFingerprintAbsent,
+                RawDataContract = rawDataContract,
                 RequiredRawDataJsonProperties = ParityEvidenceContracts.AdaptiveRejectionRawData
             });
     }
