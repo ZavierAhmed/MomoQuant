@@ -27,6 +27,12 @@ export interface StrategyLabStrategy {
   category: string;
   allowedTimeframes: string[];
   preferredTimeframe?: string;
+  requiredDataTimeframes?: string[];
+  htfMappings?: string[];
+  warmupBars?: number;
+  supportedRegimes?: string[];
+  supportsValidation?: boolean;
+  supportsOptimization?: boolean;
 }
 
 export interface StrategyLabRun {
@@ -603,6 +609,32 @@ export interface StrategyLabRunDetail {
   pathDiagnostics?: string[];
   riskPathAssessmentVersion?: string | null;
   drawdownCalculationMode?: string | null;
+  researchDiagnostics?: StrategyLabResearchDiagnostics | null;
+}
+
+export interface StrategyLabResearchDiagnostics {
+  rejectionFunnelCounts?: Record<string, number> | null;
+  entryConfirmed?: number | null;
+  evaluations?: number | null;
+  rejectionFunnelReconciled?: boolean | null;
+  regimeDistribution?: Record<string, number> | null;
+  entryCandidatesByRegime?: Record<string, number> | null;
+  executionSeries?: {
+    timeframe?: string;
+    candleCount: number;
+    warmupCount: number;
+    evaluationCount: number;
+    contentFingerprint?: string;
+  } | null;
+  htfSeries?: Array<{
+    timeframe?: string;
+    candleCount: number;
+    firstOpenUtc?: string;
+    lastCloseUtc?: string;
+    contentFingerprint?: string;
+  }> | null;
+  combinedMultiSeriesFingerprint?: string | null;
+  mappingContractVersion?: string | null;
 }
 
 export interface CreateStrategyLabRunRequest {

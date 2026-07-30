@@ -1338,30 +1338,8 @@ public sealed class BacktestEngine : IBacktestEngine
         };
     }
 
-    private static MarketRegime DetectRegimeHeuristic(IndicatorSnapshot snapshot, Candle candle)
-    {
-        if (snapshot.Ema20 is null || snapshot.Ema50 is null || snapshot.Ema200 is null)
-        {
-            return MarketRegime.Unknown;
-        }
-
-        if (snapshot.Ema20 > snapshot.Ema50 && snapshot.Ema50 > snapshot.Ema200)
-        {
-            return MarketRegime.Trending;
-        }
-
-        if (snapshot.Ema20 < snapshot.Ema50 && snapshot.Ema50 < snapshot.Ema200)
-        {
-            return MarketRegime.Trending;
-        }
-
-        if (snapshot.Atr14 is not null && candle.Close > 0 && snapshot.Atr14.Value / candle.Close * 100m > 2m)
-        {
-            return MarketRegime.HighVolatility;
-        }
-
-        return MarketRegime.Ranging;
-    }
+    private static MarketRegime DetectRegimeHeuristic(IndicatorSnapshot snapshot, Candle candle) =>
+        DeterministicMarketRegimeClassifier.Classify(snapshot, candle);
 
     private static IReadOnlyList<Candle> GetRecentCandles(IReadOnlyList<Candle> candles, int candleIndex)
     {

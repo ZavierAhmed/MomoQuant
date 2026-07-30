@@ -115,8 +115,12 @@ public static class DependencyInjection
 
         services.AddScoped<IBacktestDataLoader, BacktestDataLoader>();
         services.AddSingleton<IResearchExecutionContextAccessor, ResearchExecutionContextAccessor>();
-        services.AddScoped<StandardStrategyLabCandleDataSource>();
         services.AddScoped<IHigherTimeframeDatasetEnricher, HigherTimeframeDatasetEnricher>();
+        services.AddScoped<StandardStrategyLabCandleDataSource>(sp =>
+            new StandardStrategyLabCandleDataSource(
+                sp.GetRequiredService<IBacktestDataLoader>(),
+                sp.GetRequiredService<IHigherTimeframeDatasetEnricher>(),
+                sp.GetRequiredService<IStrategyRegistry>()));
         services.AddScoped<IBacktestEngine>(sp => new BacktestEngine(
             sp.GetRequiredService<IStrategyEngine>(),
             sp.GetRequiredService<IStrategyParameterProvider>(),

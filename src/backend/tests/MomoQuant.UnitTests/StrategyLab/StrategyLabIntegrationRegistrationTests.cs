@@ -57,8 +57,12 @@ public class StrategyLabIntegrationRegistrationTests
     }
 
     [Fact]
-    public void LabStrategyCodes_AreStable()
+    public void LabStrategyCodes_AreStableCanonicalThree()
     {
+        Assert.Equal(3, CanonicalStrategyPortfolio.StrategyLabNewRunCodes.Count);
+        Assert.Contains(StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout, CanonicalStrategyPortfolio.StrategyLabNewRunCodes);
+        Assert.Contains(StrategyCodes.PriceStructureBreakoutRetest, CanonicalStrategyPortfolio.StrategyLabNewRunCodes);
+        Assert.Contains(StrategyCodes.MomoVolatilityRangeReversion, CanonicalStrategyPortfolio.StrategyLabNewRunCodes);
         Assert.Equal("PRICE_STRUCTURE_BREAKOUT_RETEST", StrategyCodes.PriceStructureBreakoutRetest);
         Assert.Equal("PRICE_STRUCTURE_LIQUIDITY_SWEEP_RECLAIM", StrategyCodes.PriceStructureLiquiditySweepReclaim);
     }

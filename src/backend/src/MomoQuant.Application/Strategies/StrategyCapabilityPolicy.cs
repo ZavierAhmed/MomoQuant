@@ -44,7 +44,9 @@ public static class StrategyCapabilityPolicy
 
     public static bool SupportsStrategyLab(StrategyCode code) =>
         CanonicalStrategyPortfolio.IsCanonicalActive(code)
-        && code is StrategyCode.PriceStructureBreakoutRetest;
+        && code is StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout
+            or StrategyCode.PriceStructureBreakoutRetest
+            or StrategyCode.MomoVolatilityRangeReversion;
 
     public static bool SupportsStrategyLab(string? code)
     {
@@ -54,6 +56,31 @@ public static class StrategyCapabilityPolicy
         }
 
         return SupportsStrategyLab(parsed);
+    }
+
+    public static string? RejectStrategyLabReason(StrategyCode code)
+    {
+        if (!CanonicalStrategyPortfolio.CanCreateNewRun(code))
+        {
+            return CanonicalStrategyPortfolio.ArchivedCannotUseMessage(code.ToCode());
+        }
+
+        if (!SupportsStrategyLab(code))
+        {
+            return "Strategy is not enabled for Strategy Laboratory.";
+        }
+
+        return null;
+    }
+
+    public static string? RejectStrategyLabReason(string? code)
+    {
+        if (!TryParse(code, out var parsed))
+        {
+            return "Strategy code is invalid.";
+        }
+
+        return RejectStrategyLabReason(parsed);
     }
 
     public static string? RejectOptimizationReason(StrategyCode code)

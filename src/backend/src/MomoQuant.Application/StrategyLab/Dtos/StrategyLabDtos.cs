@@ -365,6 +365,41 @@ public sealed class StrategyLabRunDetailDto
     public string? RiskPathAssessmentVersion { get; init; }
     public ScoreDistributionDiagnosticsDto? PortfolioRiskScoreDiagnostics { get; init; }
     public string? DrawdownCalculationMode { get; init; }
+
+    /// <summary>Multi-series / rejection research diagnostics from ResultSummaryJson (23.1B).</summary>
+    public StrategyLabResearchDiagnosticsDto? ResearchDiagnostics { get; init; }
+}
+
+public sealed class StrategyLabResearchDiagnosticsDto
+{
+    public Dictionary<string, int>? RejectionFunnelCounts { get; init; }
+    public int? EntryConfirmed { get; init; }
+    public int? Evaluations { get; init; }
+    public bool? RejectionFunnelReconciled { get; init; }
+    public Dictionary<string, int>? RegimeDistribution { get; init; }
+    public Dictionary<string, int>? EntryCandidatesByRegime { get; init; }
+    public StrategyLabSeriesFingerprintDto? ExecutionSeries { get; init; }
+    public IReadOnlyList<StrategyLabHtfSeriesFingerprintDto>? HtfSeries { get; init; }
+    public string? CombinedMultiSeriesFingerprint { get; init; }
+    public string? MappingContractVersion { get; init; }
+}
+
+public sealed class StrategyLabSeriesFingerprintDto
+{
+    public string? Timeframe { get; init; }
+    public int CandleCount { get; init; }
+    public int WarmupCount { get; init; }
+    public int EvaluationCount { get; init; }
+    public string? ContentFingerprint { get; init; }
+}
+
+public sealed class StrategyLabHtfSeriesFingerprintDto
+{
+    public string? Timeframe { get; init; }
+    public int CandleCount { get; init; }
+    public DateTime? FirstOpenUtc { get; init; }
+    public DateTime? LastCloseUtc { get; init; }
+    public string? ContentFingerprint { get; init; }
 }
 
 public sealed class CreateStrategyLabRunRequest

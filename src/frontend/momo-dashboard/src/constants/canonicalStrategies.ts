@@ -9,8 +9,12 @@ export const CANONICAL_STRATEGY_CODES = [
 
 export type CanonicalStrategyCode = (typeof CANONICAL_STRATEGY_CODES)[number];
 
-/** Only Price Structure supports new Strategy Laboratory runs in 23.1A. */
-export const STRATEGY_LAB_NEW_RUN_CODES = ['PRICE_STRUCTURE_BREAKOUT_RETEST'] as const;
+/** Canonical strategies eligible for new Strategy Laboratory research runs. */
+export const STRATEGY_LAB_NEW_RUN_CODES = [
+  'MOMO_ADAPTIVE_MTF_TREND_BREAKOUT',
+  'PRICE_STRUCTURE_BREAKOUT_RETEST',
+  'MOMO_VOLATILITY_RANGE_REVERSION',
+] as const;
 
 /** Default placeholder for advisory / risk sample payloads. */
 export const DEFAULT_SAMPLE_STRATEGY_CODE: CanonicalStrategyCode = 'MOMO_ADAPTIVE_MTF_TREND_BREAKOUT';

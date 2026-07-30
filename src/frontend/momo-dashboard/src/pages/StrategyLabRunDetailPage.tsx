@@ -172,6 +172,7 @@ export function StrategyLabRunDetailPage() {
   if (error || !detail) return <ErrorState message={error ?? 'Run not found.'} onRetry={load} />;
 
   const { run, summary, funnel, gatedComparison, warnings, coverageDiagnostics, zeroCandidateExplanation, diagnosticEvents } = detail;
+  const research = detail.researchDiagnostics;
   const isLiquidity = (funnel.strategyFamily ?? '').includes('Liquidity')
     || run.strategyCode.includes('LIQUIDITY_SWEEP');
 
@@ -365,18 +366,69 @@ export function StrategyLabRunDetailPage() {
       ) : null}
 
       {activeTab === 'experiment' ? (
-        <KeyValueGrid
-          items={[
-            { label: 'Experiment Fingerprint', value: run.experimentFingerprint },
-            { label: 'Strategy Version', value: run.strategyVersion },
-            { label: 'Execution Mode', value: run.executionMode },
-            { label: 'Initial Balance', value: formatNumber(run.initialBalance) },
-            { label: 'Parameters', value: run.parametersJson },
-            { label: 'Created', value: formatDate(run.createdAtUtc) },
-            { label: 'Completed', value: run.completedAtUtc ? formatDate(run.completedAtUtc) : '—' },
-            { label: 'Error', value: run.errorMessage ?? '—' },
-          ]}
-        />
+        <div className="space-y-4">
+          <KeyValueGrid
+            items={[
+              { label: 'Experiment Fingerprint', value: run.experimentFingerprint },
+              { label: 'Strategy Version', value: run.strategyVersion },
+              { label: 'Execution Mode', value: run.executionMode },
+              { label: 'Initial Balance', value: formatNumber(run.initialBalance) },
+              { label: 'Parameters', value: run.parametersJson },
+              { label: 'Created', value: formatDate(run.createdAtUtc) },
+              { label: 'Completed', value: run.completedAtUtc ? formatDate(run.completedAtUtc) : '—' },
+              { label: 'Error', value: run.errorMessage ?? '—' },
+            ]}
+          />
+          {research ? (
+            <div className="space-y-3 rounded-lg border border-slate-800 p-4 text-sm text-slate-300">
+              <div className="font-medium text-slate-100">Multi-series research diagnostics</div>
+              <div>Mapping contract: {research.mappingContractVersion ?? '—'}</div>
+              <div>Combined multi-series FP: {research.combinedMultiSeriesFingerprint ?? '—'}</div>
+              {research.executionSeries ? (
+                <div>
+                  Execution series ({research.executionSeries.timeframe}): {research.executionSeries.candleCount} candles,
+                  warmup {research.executionSeries.warmupCount}, eval {research.executionSeries.evaluationCount},
+                  FP {research.executionSeries.contentFingerprint ?? '—'}
+                </div>
+              ) : null}
+              {(research.htfSeries ?? []).map((series) => (
+                <div key={`${series.timeframe}-${series.contentFingerprint}`}>
+                  HTF {series.timeframe}: {series.candleCount} candles, FP {series.contentFingerprint ?? '—'}
+                </div>
+              ))}
+              <div className="font-medium text-slate-100 pt-2">Regime distribution</div>
+              {Object.entries(research.regimeDistribution ?? {}).length === 0 ? (
+                <div>—</div>
+              ) : (
+                Object.entries(research.regimeDistribution ?? {}).map(([k, v]) => (
+                  <div key={k}>{k}: {v}</div>
+                ))
+              )}
+              <div className="font-medium text-slate-100 pt-2">Entry candidates by regime</div>
+              {Object.entries(research.entryCandidatesByRegime ?? {}).length === 0 ? (
+                <div>—</div>
+              ) : (
+                Object.entries(research.entryCandidatesByRegime ?? {}).map(([k, v]) => (
+                  <div key={k}>{k}: {v}</div>
+                ))
+              )}
+              <div className="font-medium text-slate-100 pt-2">Rejection funnel</div>
+              <div>
+                Evaluations: {research.evaluations ?? '—'} · Entry confirmed: {research.entryConfirmed ?? '—'} ·
+                Reconciled: {research.rejectionFunnelReconciled == null ? '—' : research.rejectionFunnelReconciled ? 'Yes' : 'No'}
+              </div>
+              {Object.entries(research.rejectionFunnelCounts ?? {}).length === 0 ? (
+                <div>—</div>
+              ) : (
+                Object.entries(research.rejectionFunnelCounts ?? {})
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([k, v]) => (
+                    <div key={k}>{k}: {v}</div>
+                  ))
+              )}
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

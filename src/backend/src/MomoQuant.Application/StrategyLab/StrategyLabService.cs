@@ -1,7 +1,9 @@
 using System.Text.Json;
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Common;
+using MomoQuant.Application.MarketData;
 using MomoQuant.Application.Strategies;
+using MomoQuant.Application.Strategies.Implementations;
 using MomoQuant.Application.Strategies.PriceStructure;
 using MomoQuant.Application.StrategyLab.Confidence;
 using MomoQuant.Application.StrategyLab.Dtos;
@@ -53,21 +55,23 @@ public sealed class StrategyLabStrategyDto
     public required string Category { get; init; }
     public required IReadOnlyList<string> AllowedTimeframes { get; init; }
     public string? PreferredTimeframe { get; init; }
+    public required IReadOnlyList<string> RequiredDataTimeframes { get; init; }
+    public required IReadOnlyList<string> HtfMappings { get; init; }
+    public int WarmupBars { get; init; }
+    public required IReadOnlyList<string> SupportedRegimes { get; init; }
+    public bool SupportsValidation { get; init; }
+    public bool SupportsOptimization { get; init; }
 }
 
 public sealed class StrategyLabService : IStrategyLabService
 {
-    private static readonly HashSet<string> LabStrategyCodes =
-    [
-        StrategyCodes.PriceStructureBreakoutRetest
-    ];
-
     private readonly IStrategyLabRunRepository _runRepository;
     private readonly IStrategyResearchCandidateRepository _candidateRepository;
     private readonly IStrategyRepository _strategyRepository;
     private readonly IStrategyRegistry _strategyRegistry;
     private readonly ISymbolRepository _symbolRepository;
     private readonly IStrategyLabQueue _queue;
+    private readonly IStrategyDataRequirementService _requirementService;
     private readonly SyntheticCandleScenarioRunner _syntheticRunner = new();
 
     public StrategyLabService(
@@ -76,7 +80,8 @@ public sealed class StrategyLabService : IStrategyLabService
         IStrategyRepository strategyRepository,
         IStrategyRegistry strategyRegistry,
         ISymbolRepository symbolRepository,
-        IStrategyLabQueue queue)
+        IStrategyLabQueue queue,
+        IStrategyDataRequirementService requirementService)
     {
         _runRepository = runRepository;
         _candidateRepository = candidateRepository;
@@ -84,32 +89,64 @@ public sealed class StrategyLabService : IStrategyLabService
         _strategyRegistry = strategyRegistry;
         _symbolRepository = symbolRepository;
         _queue = queue;
+        _requirementService = requirementService;
     }
 
-    public Task<ServiceResult<IReadOnlyList<StrategyLabStrategyDto>>> GetLabStrategiesAsync(CancellationToken cancellationToken = default)
+    public async Task<ServiceResult<IReadOnlyList<StrategyLabStrategyDto>>> GetLabStrategiesAsync(CancellationToken cancellationToken = default)
     {
-        var strategies = LabStrategyCodes.Select(code =>
+        var requirementsResult = await _requirementService.GetAllAsync(cancellationToken);
+        var requirementsByCode = (requirementsResult.Data ?? Array.Empty<Strategies.Dtos.StrategyDataRequirementDto>())
+            .ToDictionary(r => r.StrategyCode, StringComparer.OrdinalIgnoreCase);
+
+        var strategies = new List<StrategyLabStrategyDto>();
+        foreach (var code in CanonicalStrategyPortfolio.StrategyLabNewRunCodes)
         {
-            var entity = _strategyRegistry.GetByCode(StrategyCodeExtensions.FromCode(code));
-            return new StrategyLabStrategyDto
+            if (!StrategyCapabilityPolicy.SupportsStrategyLab(code))
+            {
+                continue;
+            }
+
+            var strategyEnum = StrategyCodeExtensions.FromCode(code);
+            var plugin = _strategyRegistry.GetByCode(strategyEnum);
+            var entity = await _strategyRepository.GetByCodeAsync(strategyEnum, cancellationToken);
+            requirementsByCode.TryGetValue(code, out var requirement);
+
+            var allowed = requirement?.AllowedExecutionTimeframes?.Count > 0
+                ? (IReadOnlyList<string>)requirement.AllowedExecutionTimeframes
+                : (IReadOnlyList<string>)(plugin?.SupportedTimeframes.Select(TimeframeParser.ToApiString).ToList()
+                  ?? new List<string>());
+            var htfMappings = (IReadOnlyList<string>)(requirement?.HigherTimeframeFilters ?? Array.Empty<string>());
+            var preferred = requirement?.PreferredExecutionTimeframe
+                ?? (allowed.Count > 0 ? allowed[0] : null);
+
+            strategies.Add(new StrategyLabStrategyDto
             {
                 Code = code,
-                Name = entity?.Name ?? code,
-                Version = "1.1.0",
-                Category = "Price Action / Market Structure",
-                AllowedTimeframes = ["5m", "15m", "30m", "1h", "4h"],
-                PreferredTimeframe = "15m"
-            };
-        }).ToList();
+                Name = plugin?.Name ?? entity?.Name ?? code,
+                Version = entity?.Version ?? ResolvePluginVersion(plugin),
+                Category = ResolveLabCategory(strategyEnum),
+                AllowedTimeframes = allowed,
+                PreferredTimeframe = preferred,
+                RequiredDataTimeframes = BuildRequiredDataTimeframes(allowed, htfMappings),
+                HtfMappings = htfMappings,
+                WarmupBars = requirement?.WarmupCandles ?? 100,
+                SupportedRegimes = (plugin?.SupportedRegimes ?? Array.Empty<MarketRegime>())
+                    .Select(r => r.ToString())
+                    .ToList(),
+                SupportsValidation = StrategyCapabilityPolicy.SupportsValidation(strategyEnum),
+                SupportsOptimization = StrategyCapabilityPolicy.SupportsOptimization(strategyEnum)
+            });
+        }
 
-        return Task.FromResult(ServiceResult<IReadOnlyList<StrategyLabStrategyDto>>.Ok(strategies));
+        return ServiceResult<IReadOnlyList<StrategyLabStrategyDto>>.Ok(strategies);
     }
 
     public async Task<ServiceResult<StrategyLabRunDto>> CreateRunAsync(CreateStrategyLabRunRequest request, CancellationToken cancellationToken = default)
     {
-        if (!LabStrategyCodes.Contains(request.StrategyCode))
+        var rejectReason = StrategyCapabilityPolicy.RejectStrategyLabReason(request.StrategyCode);
+        if (rejectReason is not null)
         {
-            return ServiceResult<StrategyLabRunDto>.Fail("Strategy is not enabled for Strategy Laboratory.");
+            return ServiceResult<StrategyLabRunDto>.Fail(rejectReason, "strategyCode");
         }
 
         StrategyCode strategyEnum;
@@ -122,11 +159,10 @@ public sealed class StrategyLabService : IStrategyLabService
             return ServiceResult<StrategyLabRunDto>.Fail("Strategy code is invalid.", "strategyCode");
         }
 
-        if (!CanonicalStrategyPortfolio.CanCreateNewRun(strategyEnum))
+        var timeframeError = await ValidateLabTimeframeAsync(strategyEnum, request.Timeframe, cancellationToken);
+        if (timeframeError is not null)
         {
-            return ServiceResult<StrategyLabRunDto>.Fail(
-                CanonicalStrategyPortfolio.ArchivedCannotUseMessage(request.StrategyCode),
-                "strategyCode");
+            return ServiceResult<StrategyLabRunDto>.Fail(timeframeError, "timeframe");
         }
 
         var symbol = await _symbolRepository.GetByIdAsync(request.SymbolId, cancellationToken);
@@ -298,6 +334,7 @@ public sealed class StrategyLabService : IStrategyLabService
         IReadOnlyList<string> pathDiagnostics = [];
         string? riskPathVersion = null;
         string? drawdownMode = null;
+        StrategyLabResearchDiagnosticsDto? researchDiagnostics = null;
         if (!string.IsNullOrWhiteSpace(run.ResultSummaryJson) && run.ResultSummaryJson != "{}")
         {
             try
@@ -338,6 +375,8 @@ public sealed class StrategyLabService : IStrategyLabService
                 {
                     drawdownMode = ddm.GetString();
                 }
+
+                researchDiagnostics = ParseResearchDiagnostics(root, jsonOptions);
             }
             catch (JsonException)
             {
@@ -363,7 +402,8 @@ public sealed class StrategyLabService : IStrategyLabService
             PathDiagnostics = pathDiagnostics,
             RiskPathAssessmentVersion = riskPathVersion,
             PortfolioRiskScoreDiagnostics = portfolioScoreDiag,
-            DrawdownCalculationMode = drawdownMode
+            DrawdownCalculationMode = drawdownMode,
+            ResearchDiagnostics = researchDiagnostics
         });
     }
 
@@ -1046,6 +1086,77 @@ public sealed class StrategyLabService : IStrategyLabService
         return false;
     }
 
+    /// <summary>Parses multi-series fingerprint and rejection-funnel payloads from ResultSummaryJson.</summary>
+    private static StrategyLabResearchDiagnosticsDto? ParseResearchDiagnostics(
+        JsonElement root,
+        JsonSerializerOptions jsonOptions)
+    {
+        var hasAny = TryGetJsonProperty(root, "rejectionFunnel", out _)
+            || TryGetJsonProperty(root, "regimeDistribution", out _)
+            || TryGetJsonProperty(root, "executionSeries", out _)
+            || TryGetJsonProperty(root, "combinedMultiSeriesFingerprint", out _)
+            || TryGetJsonProperty(root, "mappingContractVersion", out _);
+        if (!hasAny)
+        {
+            return null;
+        }
+
+        Dictionary<string, int>? rejectionCounts = null;
+        int? entryConfirmed = null;
+        int? evaluations = null;
+        bool? reconciled = null;
+        if (TryGetJsonProperty(root, "rejectionFunnel", out var rf) && rf.ValueKind == JsonValueKind.Object)
+        {
+            if (TryGetJsonProperty(rf, "counts", out var counts) && counts.ValueKind == JsonValueKind.Object)
+            {
+                rejectionCounts = JsonSerializer.Deserialize<Dictionary<string, int>>(counts.GetRawText(), jsonOptions);
+            }
+
+            if (TryGetJsonProperty(rf, "entryConfirmed", out var ec) && ec.TryGetInt32(out var ecVal))
+            {
+                entryConfirmed = ecVal;
+            }
+
+            if (TryGetJsonProperty(rf, "evaluations", out var ev) && ev.TryGetInt32(out var evVal))
+            {
+                evaluations = evVal;
+            }
+
+            if (TryGetJsonProperty(rf, "reconciled", out var rec) && (rec.ValueKind is JsonValueKind.True or JsonValueKind.False))
+            {
+                reconciled = rec.GetBoolean();
+            }
+        }
+
+        return new StrategyLabResearchDiagnosticsDto
+        {
+            RejectionFunnelCounts = rejectionCounts,
+            EntryConfirmed = entryConfirmed,
+            Evaluations = evaluations,
+            RejectionFunnelReconciled = reconciled,
+            RegimeDistribution = TryGetJsonProperty(root, "regimeDistribution", out var rd) && rd.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Deserialize<Dictionary<string, int>>(rd.GetRawText(), jsonOptions)
+                : null,
+            EntryCandidatesByRegime = TryGetJsonProperty(root, "entryCandidatesByRegime", out var ecr) && ecr.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Deserialize<Dictionary<string, int>>(ecr.GetRawText(), jsonOptions)
+                : null,
+            ExecutionSeries = TryGetJsonProperty(root, "executionSeries", out var es) && es.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Deserialize<StrategyLabSeriesFingerprintDto>(es.GetRawText(), jsonOptions)
+                : null,
+            HtfSeries = TryGetJsonProperty(root, "htfSeries", out var hs) && hs.ValueKind == JsonValueKind.Array
+                ? JsonSerializer.Deserialize<List<StrategyLabHtfSeriesFingerprintDto>>(hs.GetRawText(), jsonOptions)
+                : null,
+            CombinedMultiSeriesFingerprint = TryGetJsonProperty(root, "combinedMultiSeriesFingerprint", out var cm)
+                && cm.ValueKind == JsonValueKind.String
+                    ? cm.GetString()
+                    : null,
+            MappingContractVersion = TryGetJsonProperty(root, "mappingContractVersion", out var mv)
+                && mv.ValueKind == JsonValueKind.String
+                    ? mv.GetString()
+                    : null
+        };
+    }
+
     /// <summary>
     /// Legacy runs stored confidence reason like "Confidence 70.00 &lt; 80.00" before threshold columns existed.
     /// </summary>
@@ -1066,4 +1177,85 @@ public sealed class StrategyLabService : IStrategyLabService
 
         return null;
     }
+
+    private async Task<string?> ValidateLabTimeframeAsync(
+        StrategyCode strategyCode,
+        string timeframe,
+        CancellationToken cancellationToken)
+    {
+        if (!TimeframeNormalizer.TryNormalize(timeframe, out var canonical)
+            || !TimeframeParser.TryParse(canonical, out _))
+        {
+            return TimeframeNormalizer.UnsupportedTimeframeMessage(timeframe);
+        }
+
+        var entity = await _strategyRepository.GetByCodeAsync(strategyCode, cancellationToken);
+        IReadOnlyList<string> allowed;
+        if (entity is not null)
+        {
+            var req = await _requirementService.GetByStrategyIdAsync(entity.Id, cancellationToken);
+            allowed = req.Succeeded && req.Data?.AllowedExecutionTimeframes.Count > 0
+                ? req.Data.AllowedExecutionTimeframes
+                : (IReadOnlyList<string>)Array.Empty<string>();
+        }
+        else
+        {
+            var plugin = _strategyRegistry.GetByCode(strategyCode);
+            allowed = (IReadOnlyList<string>)(plugin?.SupportedTimeframes.Select(TimeframeParser.ToApiString).ToList()
+                ?? new List<string>());
+        }
+
+        if (allowed.Count == 0)
+        {
+            return null;
+        }
+
+        if (allowed.Contains(canonical, StringComparer.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return $"Timeframe '{canonical}' is not supported for strategy '{strategyCode.ToCode()}'. Allowed: {string.Join(", ", allowed)}.";
+    }
+
+    private static IReadOnlyList<string> BuildRequiredDataTimeframes(
+        IReadOnlyList<string> allowedExecution,
+        IReadOnlyList<string> htfMappings)
+    {
+        var required = new HashSet<string>(allowedExecution, StringComparer.OrdinalIgnoreCase);
+        foreach (var mapping in htfMappings)
+        {
+            var parts = mapping.Split(':', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 2)
+            {
+                continue;
+            }
+
+            required.Add(parts[0]);
+            required.Add(parts[1]);
+        }
+
+        return required.OrderBy(t => t, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static string ResolveLabCategory(StrategyCode code) =>
+        code switch
+        {
+            StrategyCode.PriceStructureBreakoutRetest => "Price Action / Market Structure",
+            StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout => "Trend / Breakout",
+            StrategyCode.MomoVolatilityRangeReversion => "Range / Mean Reversion",
+            _ => "General"
+        };
+
+    private static string ResolvePluginVersion(ITradingStrategy? plugin) =>
+        plugin switch
+        {
+            MomoAdaptiveMultiTimeframeTrendBreakoutStrategy =>
+                MomoAdaptiveMultiTimeframeTrendBreakoutStrategy.Version,
+            MomoVolatilityRangeReversionStrategy =>
+                MomoVolatilityRangeReversionStrategy.Version,
+            PriceStructureBreakoutRetestStrategy =>
+                PriceStructureBreakoutRetestStrategy.Version,
+            _ => "1.0.0"
+        };
 }

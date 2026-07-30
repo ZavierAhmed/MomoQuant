@@ -44,7 +44,8 @@ public sealed class ValidationTrainingStrategyLabCandleDataSource : IStrategyLab
             EvaluationFromUtc = DateTime.SpecifyKind(run.FromUtc, DateTimeKind.Utc),
             EvaluationToExclusiveUtc = DateTime.SpecifyKind(run.ToUtc, DateTimeKind.Utc),
             WarmupCandleCount = warmupCandles,
-            CallerComponent = _callerComponent
+            CallerComponent = _callerComponent,
+            StrategyCode = run.StrategyCode
         };
 
         var dataset = _scope.CreateStrategyLabDataset(request);

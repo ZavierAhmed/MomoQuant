@@ -33,6 +33,12 @@ public sealed class StrategyLabDataset
     public string? EvaluationContentFingerprint { get; init; }
     public string? CombinedContentFingerprint { get; init; }
 
+    /// <summary>
+    /// Closed higher-timeframe series keyed by timeframe. Preserved through FromBacktest/ToBacktest.
+    /// </summary>
+    public IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>> HigherTimeframeSeriesByTimeframe { get; init; }
+        = new Dictionary<Timeframe, IReadOnlyList<Candle>>();
+
     public static StrategyLabDataset FromBacktest(BacktestDataset dataset) =>
         new()
         {
@@ -42,7 +48,8 @@ public sealed class StrategyLabDataset
             Candles = dataset.Candles,
             IndicatorSnapshots = dataset.IndicatorSnapshots,
             EvaluationIndices = dataset.EvaluationIndices,
-            WarmupCandleCount = Math.Max(0, dataset.Candles.Count - dataset.EvaluationIndices.Count)
+            WarmupCandleCount = Math.Max(0, dataset.Candles.Count - dataset.EvaluationIndices.Count),
+            HigherTimeframeSeriesByTimeframe = CopyHtfSeries(dataset.HigherTimeframeSeriesByTimeframe)
         };
 
     public BacktestDataset ToBacktest() =>
@@ -53,6 +60,24 @@ public sealed class StrategyLabDataset
             Timeframe = Timeframe,
             Candles = Candles,
             IndicatorSnapshots = IndicatorSnapshots,
-            EvaluationIndices = EvaluationIndices
+            EvaluationIndices = EvaluationIndices,
+            HigherTimeframeSeriesByTimeframe = CopyHtfSeries(HigherTimeframeSeriesByTimeframe)
         };
+
+    private static IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>> CopyHtfSeries(
+        IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>? source)
+    {
+        if (source is null || source.Count == 0)
+        {
+            return new Dictionary<Timeframe, IReadOnlyList<Candle>>();
+        }
+
+        var copy = new Dictionary<Timeframe, IReadOnlyList<Candle>>();
+        foreach (var (tf, candles) in source.OrderBy(kv => (int)kv.Key))
+        {
+            copy[tf] = candles;
+        }
+
+        return copy;
+    }
 }

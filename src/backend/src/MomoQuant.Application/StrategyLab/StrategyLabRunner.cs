@@ -9,6 +9,9 @@ using MomoQuant.Application.Research;
 using MomoQuant.Application.Risk;
 using MomoQuant.Application.Risk.Models;
 using MomoQuant.Application.Strategies;
+using MomoQuant.Application.Strategies.Implementations;
+using MomoQuant.Application.Strategies.MomoAdaptive;
+using MomoQuant.Application.Strategies.MomoRange;
 using MomoQuant.Application.Strategies.PriceStructure;
 using MomoQuant.Application.Strategies.PriceStructure.Dtos;
 using MomoQuant.Application.StrategyLab.Confidence;
@@ -152,8 +155,14 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 return;
             }
 
-            var parameters = JsonSerializer.Deserialize<Dictionary<string, string>>(run.ParametersJson) ?? new Dictionary<string, string>();
+            var parameters = MergeDefaultParameters(
+                plugin,
+                JsonSerializer.Deserialize<Dictionary<string, string>>(run.ParametersJson) ?? new Dictionary<string, string>());
             var warmup = await ResolveWarmupAsync(strategyEntity.Id, cancellationToken);
+            var requiresAdaptiveHtf = StrategyHigherTimeframeSupport.TryResolveHigherTimeframe(
+                plugin,
+                parsedTimeframe,
+                out var mappedHigherTimeframe);
 
             if (isValidationTraining)
             {
@@ -207,6 +216,38 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 }
 
                 coverageDiagnostics = coverage.Data;
+
+                if (requiresAdaptiveHtf)
+                {
+                    var htfCanonical = TimeframeParser.ToApiString(mappedHigherTimeframe);
+                    run.CurrentStage = $"Checking higher-timeframe coverage ({htfCanonical})...";
+                    await _runRepository.UpdateAsync(run, cancellationToken);
+
+                    var htfWarmup = Math.Max(warmup, 200);
+                    var htfCoverage = await _coverageService.EnsureCoverageAsync(
+                        run.ExchangeId,
+                        run.SymbolId,
+                        htfCanonical,
+                        run.FromUtc,
+                        run.ToUtc,
+                        htfWarmup,
+                        allowAutoImport: allowImport,
+                        OnCoverageProgressAsync,
+                        cancellationToken);
+
+                    if (!htfCoverage.Succeeded)
+                    {
+                        PersistCoverageDiagnostics(run, htfCoverage.Data ?? coverageDiagnostics);
+                        var missing = htfCoverage.Data?.MissingRanges is { Count: > 0 } ranges
+                            ? string.Join("; ", ranges.Select(r => $"{r.FromUtc:O}..{r.ToUtc:O}"))
+                            : "unknown";
+                        await FailRunAsync(
+                            run,
+                            $"Higher-timeframe coverage failed for {run.StrategyCode} {run.Symbol} {htfCanonical}. Missing ranges: {missing}. {htfCoverage.ErrorMessage}",
+                            cancellationToken);
+                        return;
+                    }
+                }
             }
 
             run.Status = StrategyLabRunStatus.PreparingStrategy;
@@ -247,6 +288,33 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             }
 
             var dataset = labDataset;
+
+            if (requiresAdaptiveHtf)
+            {
+                var htfMissing = !dataset.HigherTimeframeSeriesByTimeframe.TryGetValue(mappedHigherTimeframe, out var htfSeries)
+                    || htfSeries is null
+                    || htfSeries.Count == 0;
+                if (htfMissing)
+                {
+                    PersistCoverageDiagnostics(run, coverageDiagnostics);
+                    await FailRunAsync(
+                        run,
+                        $"{MomoAdaptiveMtfRejectionCodes.MtfDataUnavailable}: mapped higher-timeframe series '{TimeframeParser.ToApiString(mappedHigherTimeframe)}' is missing for {run.StrategyCode} {run.Symbol} {run.Timeframe}. LTF must never substitute for HTF.",
+                        cancellationToken);
+                    return;
+                }
+
+                // Reject LTF-as-HTF substitution: every mapped HTF bar must carry the mapped HTF timeframe.
+                if (htfSeries!.Any(c => c.Timeframe != mappedHigherTimeframe || c.Timeframe == parsedTimeframe))
+                {
+                    PersistCoverageDiagnostics(run, coverageDiagnostics);
+                    await FailRunAsync(
+                        run,
+                        $"{MomoAdaptiveMtfRejectionCodes.MtfDataUnavailable}: mapped higher-timeframe series '{TimeframeParser.ToApiString(mappedHigherTimeframe)}' contains non-HTF (LTF) candles for {run.StrategyCode} {run.Symbol} {run.Timeframe}. LTF must never substitute for HTF.",
+                        cancellationToken);
+                    return;
+                }
+            }
 
             var legacyMeta = ExperimentFingerprintBuilder.BuildCandleDatasetFingerprint(
                 run.ExchangeId,
@@ -369,12 +437,19 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
             var evaluations = 0;
             var totalEvals = Math.Max(evaluationIndices.Count, 1);
             var detectedInMemory = 0;
+            var missingFingerprintCount = 0;
+            var rejectionFunnel = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var regimeDistribution = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var entryCandidatesByRegime = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var entryConfirmed = 0;
             // Production factory returns CandlePrefixView so we can mutate visible count without reallocating.
             // Copied-list factory (tests) allocates a new window each step via CreateVisibleWindow.
             var candleWindow = _candleWindowFactory.CreateVisibleWindow(dataset.Candles, 0);
             var checkpointEvery = Math.Clamp(50, 10, 500);
             var checkpointCount = 0;
             var evalStartedUtc = DateTime.UtcNow;
+            var seenFingerprints = new HashSet<string>(StringComparer.Ordinal);
+            parameters["__seenFingerprints"] = JsonSerializer.Serialize(seenFingerprints);
 
             for (var idx = 0; idx < evaluationIndices.Count; idx++)
             {
@@ -401,6 +476,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 decimal? target;
                 string reason;
                 CandidateConfidenceResult? confidenceResult = null;
+                MarketRegime regime = MarketRegime.Unknown;
 
                 if (detector is not null)
                 {
@@ -413,6 +489,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                     reason = detectorResult.Reason;
                     if (structureCandidate is null)
                     {
+                        IncrementReason(rejectionFunnel, reason);
                         if (idx % checkpointEvery == 0)
                         {
                             checkpointCount++;
@@ -425,6 +502,7 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                     }
 
                     detectedInMemory++;
+                    entryConfirmed++;
                     fingerprint = structureCandidate.SetupFingerprint;
                     direction = structureCandidate.Direction;
                     entry = structureCandidate.EntryPrice;
@@ -440,16 +518,27 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 }
                 else
                 {
+                    var snapshot = dataset.IndicatorSnapshots.GetValueOrDefault(candle.Id);
+                    regime = DeterministicMarketRegimeClassifier.Classify(snapshot, candle);
+                    IncrementReason(regimeDistribution, regime.ToString());
+
+                    var (higherTimeframe, higherTimeframeCandles) = StrategyHigherTimeframeSupport.BuildContextHigherTimeframe(
+                        plugin,
+                        parsedTimeframe,
+                        dataset.HigherTimeframeSeriesByTimeframe,
+                        candle.CloseTimeUtc);
+
                     var context = new StrategyContext
                     {
                         ExchangeId = run.ExchangeId,
                         SymbolId = run.SymbolId,
                         Symbol = run.Symbol,
                         Timeframe = parsedTimeframe,
-                        HigherTimeframe = parsedTimeframe,
-                        MarketRegime = MarketRegime.Trending,
+                        HigherTimeframe = higherTimeframe,
+                        HigherTimeframeCandles = higherTimeframeCandles,
+                        MarketRegime = regime,
                         Candles = slice,
-                        IndicatorSnapshot = dataset.IndicatorSnapshots.GetValueOrDefault(candle.Id),
+                        IndicatorSnapshot = snapshot,
                         StrategyParameters = parameters,
                         EvaluatedAtUtc = candle.CloseTimeUtc,
                         CurrentCandleIndex = candleIndex
@@ -458,15 +547,44 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                     var signal = plugin.Evaluate(context);
                     if (signal.SignalType != SignalType.Entry || signal.Direction == TradeDirection.None)
                     {
+                        IncrementReason(rejectionFunnel, string.IsNullOrWhiteSpace(signal.Reason) ? "NoTrade" : signal.Reason);
+                        if (idx % checkpointEvery == 0)
+                        {
+                            checkpointCount++;
+                            run.PercentComplete = 40m + Math.Round((decimal)idx / totalEvals * 45m, 1);
+                            run.EvaluationsCount = evaluations;
+                            await _runRepository.UpdateAsync(run, cancellationToken);
+                        }
+
                         continue;
                     }
 
                     detectedInMemory++;
+                    entryConfirmed++;
+                    IncrementReason(entryCandidatesByRegime, regime.ToString());
                     structureJson = signal.RawDataJson ?? "{}";
                     fingerprint = ExtractFingerprint(structureJson);
                     if (string.IsNullOrWhiteSpace(fingerprint))
                     {
-                        fingerprint = $"legacy-{run.Id}-{candle.CloseTimeUtc:yyyyMMddHHmmss}-{signal.Direction}";
+                        missingFingerprintCount++;
+                        var invalid = BuildCandidate(
+                            run,
+                            strategyEntity,
+                            signal.Direction,
+                            signal.EntryPrice ?? candle.Close,
+                            signal.SuggestedStopLoss ?? 0m,
+                            signal.SuggestedTakeProfit ?? 0m,
+                            $"missing-fp-{run.Id}-{candle.CloseTimeUtc:yyyyMMddHHmmss}-{signal.Direction}",
+                            structureJson,
+                            parameters,
+                            candle,
+                            "MissingSetupFingerprint");
+                        invalid.CandidateStatus = StrategyResearchCandidateStatus.SimulationInvalid;
+                        invalid.RawOutcomeStatus = RawOutcomeStatus.Invalid;
+                        invalid.RawExitReason = "MissingSetupFingerprint";
+                        candidates.Add(invalid);
+                        IncrementReason(rejectionFunnel, "MissingSetupFingerprint");
+                        continue;
                     }
 
                     direction = signal.Direction;
@@ -474,10 +592,14 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                     stop = signal.SuggestedStopLoss;
                     target = signal.SuggestedTakeProfit;
                     reason = signal.Reason;
+                    seenFingerprints.Add(fingerprint);
+                    parameters["__seenFingerprints"] = JsonSerializer.Serialize(seenFingerprints);
                 }
 
                 if (string.IsNullOrWhiteSpace(fingerprint))
                 {
+                    missingFingerprintCount++;
+                    IncrementReason(rejectionFunnel, "MissingSetupFingerprint");
                     continue;
                 }
 
@@ -551,6 +673,15 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                     run.Status = StrategyLabRunStatus.Evaluating;
                     await _runRepository.UpdateAsync(run, cancellationToken);
                 }
+            }
+
+            if (missingFingerprintCount > 0 && candidates.Count == 0)
+            {
+                await FailRunAsync(
+                    run,
+                    $"MissingSetupFingerprint: {missingFingerprintCount} entry signal(s) lacked a setup fingerprint; no candidates persisted.",
+                    cancellationToken);
+                return;
             }
 
             if (observeRisk && riskSnapshot is not null)
@@ -656,12 +787,19 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 ? new ZeroCandidateExplanationDto
                 {
                     Classification = funnelDiagnostics.ZeroCandidateClassification,
-                    PrimaryBlocker = funnelDiagnostics.PrimaryBlocker,
-                    Details = funnelDiagnostics.PrimaryBlockerDetails,
+                    PrimaryBlocker = funnelDiagnostics.PrimaryBlocker
+                        ?? (rejectionFunnel.Count > 0
+                            ? rejectionFunnel.OrderByDescending(kv => kv.Value).First().Key
+                            : null),
+                    Details = funnelDiagnostics.PrimaryBlockerDetails
+                        ?? (rejectionFunnel.Count > 0
+                            ? $"Rejection funnel: {string.Join(", ", rejectionFunnel.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}={kv.Value}"))}; evaluations={evaluations}; entryConfirmed={entryConfirmed}."
+                            : null),
                     SuggestedNextAction = funnelDiagnostics.SuggestedNextAction
                 }
                 : null;
 
+            var rejectionTotal = rejectionFunnel.Values.Sum();
             run.ResultSummaryJson = JsonSerializer.Serialize(new
             {
                 summary,
@@ -673,6 +811,15 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 diagnosticEvents = funnelDiagnostics.SampleEvents.Select(MapDiagnosticEvent).ToList(),
                 sampleFingerprints = funnelDiagnostics.SampleFingerprints,
                 structureFunnel = funnelDiagnostics,
+                rejectionFunnel = new
+                {
+                    counts = rejectionFunnel.OrderBy(kv => kv.Key, StringComparer.Ordinal).ToDictionary(kv => kv.Key, kv => kv.Value),
+                    entryConfirmed,
+                    evaluations,
+                    reconciled = rejectionTotal + entryConfirmed == evaluations
+                },
+                regimeDistribution = regimeDistribution.OrderBy(kv => kv.Key, StringComparer.Ordinal).ToDictionary(kv => kv.Key, kv => kv.Value),
+                entryCandidatesByRegime = entryCandidatesByRegime.OrderBy(kv => kv.Key, StringComparer.Ordinal).ToDictionary(kv => kv.Key, kv => kv.Value),
                 riskOnlyShadowPortfolio = shadowResult?.RiskOnlySummary,
                 fullPipelineShadowPortfolio = shadowResult?.FullPipelineSummary,
                 portfolioPathDivergence = shadowResult?.Divergence,
@@ -692,6 +839,23 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
                 drawdownCalculationMode = DrawdownCalculationMode.RealizedOnly.ToString(),
                 pathDiagnostics = shadowResult?.Diagnostics
             }, JsonOptions);
+
+            // Final serialize replaces ResultSummaryJson; re-merge durable research fingerprints.
+            MergeResultSummary(run, "candleContentFingerprint", new
+            {
+                algorithmVersion = contentFp.AlgorithmVersion,
+                fullSha256 = contentFp.FullSha256,
+                shortDisplayHash = contentFp.ShortDisplayHash,
+                legacyMetadataFingerprint = contentFp.LegacyMetadataFingerprint,
+                candleCount = contentFp.CandleCount
+            });
+            PersistMultiSeriesFingerprints(
+                run,
+                dataset,
+                plugin,
+                parsedTimeframe,
+                requiresAdaptiveHtf ? mappedHigherTimeframe : null,
+                contentFp);
 
             run.EvaluationsCount = evaluations;
             run.RawCandidateCount = candidates.Count;
@@ -1497,5 +1661,111 @@ public sealed class StrategyLabRunner : IStrategyLabRunner
         {
             return DefaultWarmup;
         }
+    }
+
+    private static void IncrementReason(IDictionary<string, int> counts, string reason)
+    {
+        var key = string.IsNullOrWhiteSpace(reason) ? "Unknown" : reason.Trim();
+        counts[key] = counts.TryGetValue(key, out var existing) ? existing + 1 : 1;
+    }
+
+    private static Dictionary<string, string> MergeDefaultParameters(
+        ITradingStrategy plugin,
+        Dictionary<string, string> runParameters)
+    {
+        var defaults = ResolveDefaultParameters(plugin);
+        var merged = new Dictionary<string, string>(defaults, StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in runParameters)
+        {
+            merged[key] = value;
+        }
+
+        return merged;
+    }
+
+    private static IReadOnlyDictionary<string, string> ResolveDefaultParameters(ITradingStrategy plugin) =>
+        plugin switch
+        {
+            MomoAdaptiveMultiTimeframeTrendBreakoutStrategy =>
+                MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract(),
+            MomoVolatilityRangeReversionStrategy =>
+                MomoVolatilityRangeReversionParameters.GetDefaultParameterContract(),
+            PriceStructureBreakoutRetestStrategy =>
+                new Dictionary<string, string>
+                {
+                    ["swingLeftBars"] = "2",
+                    ["swingRightBars"] = "2",
+                    ["minSwingDistanceBars"] = "3",
+                    ["useWicksForSwing"] = "true",
+                    ["minBreakoutClosePercent"] = "0",
+                    ["breakoutMustCloseBeyondLevel"] = "true",
+                    ["maxRetestBars"] = "20",
+                    ["retestTolerancePercent"] = "0.15",
+                    ["retestToleranceMode"] = "Percent",
+                    ["retestToleranceAtrMultiplier"] = "0.25",
+                    ["allowWickThroughLevel"] = "true",
+                    ["maxRetestPenetrationPercent"] = "0.30",
+                    ["confirmationMode"] = "ReactionClose",
+                    ["fixedRewardRisk"] = "2.0",
+                    ["stopBufferPercent"] = "0.05"
+                },
+            _ => new Dictionary<string, string>()
+        };
+
+    private static void PersistMultiSeriesFingerprints(
+        StrategyLabRun run,
+        StrategyLabDataset dataset,
+        ITradingStrategy plugin,
+        Timeframe executionTimeframe,
+        Timeframe? mappedHigherTimeframe,
+        CandleContentFingerprintResult executionContentFp)
+    {
+        var warmupCount = dataset.WarmupCandleCount;
+        var evaluationCount = dataset.EvaluationIndices.Count;
+        var executionSeries = new
+        {
+            timeframe = TimeframeParser.ToApiString(executionTimeframe),
+            candleCount = dataset.Candles.Count,
+            warmupCount,
+            evaluationCount,
+            contentFingerprint = executionContentFp.FullSha256
+        };
+
+        var htfSeriesPayload = new List<object>();
+        var htfFingerprintsOrdered = new List<string>();
+        foreach (var (tf, candles) in dataset.HigherTimeframeSeriesByTimeframe.OrderBy(kv => (int)kv.Key))
+        {
+            if (candles.Count == 0)
+            {
+                continue;
+            }
+
+            var fp = ExperimentFingerprintBuilder.BuildCandleContentFingerprint(candles);
+            htfFingerprintsOrdered.Add($"{TimeframeParser.ToApiString(tf)}:{fp.FullSha256}");
+            htfSeriesPayload.Add(new
+            {
+                timeframe = TimeframeParser.ToApiString(tf),
+                candleCount = candles.Count,
+                firstOpenUtc = candles[0].OpenTimeUtc,
+                lastCloseUtc = candles[^1].CloseTimeUtc,
+                contentFingerprint = fp.FullSha256
+            });
+        }
+
+        var mapping = mappedHigherTimeframe.HasValue
+            ? $"{TimeframeParser.ToApiString(executionTimeframe)}:{TimeframeParser.ToApiString(mappedHigherTimeframe.Value)}"
+            : "none";
+        var mappingContractVersion = StrategyHigherTimeframeSupport.UsesMomoAdaptiveMapping(plugin)
+            ? $"{StrategyHigherTimeframeSupport.AdaptiveHtfMappingContractVersion}+{DeterministicMarketRegimeClassifier.MappingContractVersion}"
+            : DeterministicMarketRegimeClassifier.MappingContractVersion;
+
+        var combinedRaw =
+            $"{run.StrategyCode}|{run.StrategyVersion}|{run.Symbol}|{TimeframeParser.ToApiString(executionTimeframe)}|{mapping}|{executionContentFp.FullSha256}|{string.Join(",", htfFingerprintsOrdered)}|{run.FromUtc:O}|{run.ToUtc:O}|{mappingContractVersion}";
+        var combinedFp = SetupFingerprintHasher.Hash(combinedRaw);
+
+        MergeResultSummary(run, "executionSeries", executionSeries);
+        MergeResultSummary(run, "htfSeries", htfSeriesPayload);
+        MergeResultSummary(run, "combinedMultiSeriesFingerprint", combinedFp);
+        MergeResultSummary(run, "mappingContractVersion", mappingContractVersion);
     }
 }

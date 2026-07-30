@@ -29,11 +29,31 @@ public static class CanonicalStrategyPortfolio
         StrategyCode.MomoVolatilityRangeReversion
     ];
 
-    /// <summary>Only Price Structure is research-lab enabled in 23.1A.</summary>
+    /// <summary>Canonical strategies eligible for new Strategy Laboratory research runs.</summary>
     public static IReadOnlyList<string> StrategyLabNewRunCodes { get; } =
     [
-        StrategyCodes.PriceStructureBreakoutRetest
+        StrategyCodes.MomoAdaptiveMultiTimeframeTrendBreakout,
+        StrategyCodes.PriceStructureBreakoutRetest,
+        StrategyCodes.MomoVolatilityRangeReversion
     ];
+
+    public static bool IsStrategyLabNewRunCode(string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return false;
+        }
+
+        foreach (var allowed in StrategyLabNewRunCodes)
+        {
+            if (string.Equals(allowed, code, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public static bool IsCanonicalActive(string? code)
     {

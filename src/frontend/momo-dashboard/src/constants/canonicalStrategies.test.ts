@@ -85,13 +85,18 @@ describe('canonicalStrategies', () => {
     ]);
   });
 
-  it('limits strategy lab new-run codes to Price Structure only', () => {
+  it('limits strategy lab new-run codes to the three canonical strategies', () => {
     const labStrategies = filterStrategyLabNewRunStrategies([
       { code: CANONICAL_STRATEGY_CODES[0], name: 'A' },
       { code: CANONICAL_STRATEGY_CODES[1], name: 'B' },
+      { code: CANONICAL_STRATEGY_CODES[2], name: 'C' },
       { code: 'VWAP_MEAN_REVERSION', name: 'Legacy' },
     ]);
-    expect(labStrategies.map((s) => s.code)).toEqual([CANONICAL_STRATEGY_CODES[1]]);
+    expect(labStrategies.map((s) => s.code)).toEqual([
+      CANONICAL_STRATEGY_CODES[0],
+      CANONICAL_STRATEGY_CODES[1],
+      CANONICAL_STRATEGY_CODES[2],
+    ]);
   });
 
   it('filters code-only lists to canonical strategies for validation lab selectors', () => {

@@ -9,6 +9,8 @@ namespace MomoQuant.Application.Strategies;
 
 public static class StrategyHigherTimeframeSupport
 {
+    public const string AdaptiveHtfMappingContractVersion = "AdaptiveHtfMapping/v1";
+
     public static bool UsesMomoAdaptiveMapping(ITradingStrategy strategy) =>
         strategy is MomoAdaptiveMultiTimeframeTrendBreakoutStrategy;
 

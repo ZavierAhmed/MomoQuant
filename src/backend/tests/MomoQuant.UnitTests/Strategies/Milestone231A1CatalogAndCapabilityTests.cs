@@ -113,6 +113,24 @@ public sealed class Milestone231A1CatalogAndCapabilityTests
     }
 
     [Fact]
+    public void StrategyCapabilityPolicy_Adaptive_SupportsStrategyLab()
+    {
+        Assert.True(StrategyCapabilityPolicy.SupportsStrategyLab(StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout));
+    }
+
+    [Fact]
+    public void StrategyCapabilityPolicy_Range_SupportsStrategyLab()
+    {
+        Assert.True(StrategyCapabilityPolicy.SupportsStrategyLab(StrategyCode.MomoVolatilityRangeReversion));
+    }
+
+    [Fact]
+    public void StrategyCapabilityPolicy_Psbr_SupportsStrategyLab()
+    {
+        Assert.True(StrategyCapabilityPolicy.SupportsStrategyLab(StrategyCode.PriceStructureBreakoutRetest));
+    }
+
+    [Fact]
     public void CatalogDefaults_Adaptive_MatchGetDefaultParameterContract()
     {
         var contract = MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract();

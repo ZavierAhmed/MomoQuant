@@ -1016,6 +1016,8 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
             datasetCtx,
             "Combined");
 
+        var htfSeries = MaterializeScopedHigherTimeframeSeries(request, parsedTimeframe);
+
         return new StrategyLabDataset
         {
             SymbolId = request.SymbolId,
@@ -1027,12 +1029,116 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
             WarmupCandleCount = warmup.Count,
             WarmupContentFingerprint = warmup.Count > 0 ? ComputeContentFingerprint(warmup) : null,
             EvaluationContentFingerprint = evaluation.Length > 0 ? ComputeContentFingerprint(evaluation) : null,
-            CombinedContentFingerprint = candles.Count > 0 ? ComputeContentFingerprint(candles) : null
+            CombinedContentFingerprint = candles.Count > 0 ? ComputeContentFingerprint(candles) : null,
+            HigherTimeframeSeriesByTimeframe = htfSeries
         };
     }
 
     // REMOVED in Milestone 23.0E1B: Legacy CreateStrategyLabDataset(StrategyLabRun, int, ValidationCandleAccessContext)
     // Use CreateStrategyLabDataset(ValidationDatasetMaterializationRequest) instead
+
+    private IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>> MaterializeScopedHigherTimeframeSeries(
+        ValidationDatasetMaterializationRequest request,
+        Timeframe executionTimeframe)
+    {
+        var needsAdaptiveHtf = false;
+        Timeframe mappedHtf = default;
+        if (!string.IsNullOrWhiteSpace(request.StrategyCode))
+        {
+            try
+            {
+                var code = StrategyCodeExtensions.FromCode(request.StrategyCode);
+                if (code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout
+                    && executionTimeframe is Timeframe.M5 or Timeframe.M15 or Timeframe.H1 or Timeframe.H4)
+                {
+                    mappedHtf = Strategies.MomoAdaptive.MomoAdaptiveMtfTrendBreakoutEvaluator.ResolveHigherTimeframe(executionTimeframe);
+                    needsAdaptiveHtf = true;
+                }
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                // ignore unknown codes — Adaptive gate only
+            }
+        }
+
+        if (!needsAdaptiveHtf)
+        {
+            return FilterScopedHtf(request.HigherTimeframeSeriesByTimeframe);
+        }
+
+        var scoped = FilterScopedHtf(request.HigherTimeframeSeriesByTimeframe);
+        if (!scoped.TryGetValue(mappedHtf, out var series) || series.Count == 0)
+        {
+            var denial =
+                $"Adaptive validation HTF '{TimeframeParser.ToApiString(mappedHtf)}' is missing from the validation partition. Unrestricted candle repositories must not fill validation HTF.";
+            var ctx = ValidationCandleAccessContext.Create(request.CallerComponent, ValidationCandleAccessPurpose.DatasetMaterialization);
+            RecordDenied(
+                request.EvaluationFromUtc,
+                request.EvaluationToExclusiveUtc,
+                request.WarmupCandleCount,
+                ctx,
+                ValidationCandlePartitionDenialCodes.TimeframeMismatch,
+                denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                request.EvaluationFromUtc,
+                request.EvaluationToExclusiveUtc,
+                request.WarmupCandleCount,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.TimeframeMismatch,
+                denial,
+                request.CallerComponent);
+        }
+
+        return scoped;
+    }
+
+    private IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>> FilterScopedHtf(
+        IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>? source)
+    {
+        if (source is null || source.Count == 0)
+        {
+            return new Dictionary<Timeframe, IReadOnlyList<Candle>>();
+        }
+
+        var boundExclusive = Partition.TrainingEvaluationEndExclusiveUtc;
+        if (boundExclusive > ValidationBoundaryUtc)
+        {
+            boundExclusive = ValidationBoundaryUtc;
+        }
+
+        var filtered = new Dictionary<Timeframe, IReadOnlyList<Candle>>();
+        foreach (var (tf, candles) in source)
+        {
+            var kept = candles
+                .Where(c => c.OpenTimeUtc < boundExclusive)
+                .ToList();
+            if (kept.Count != candles.Count)
+            {
+                var denial =
+                    $"Higher-timeframe candles for {TimeframeParser.ToApiString(tf)} extend beyond TrainingEvaluationEndExclusiveUtc/ValidationBoundaryUtc and are rejected.";
+                throw new ValidationCandlePartitionViolationException(
+                    ValidationExperimentId,
+                    ScopeExecutionId,
+                    ValidationBoundaryUtc,
+                    SegmentStartUtc,
+                    SegmentEndExclusiveUtc,
+                    Partition.RequiredWarmupCandleCount,
+                    SegmentStartUtc,
+                    SegmentEndExclusiveUtc,
+                    ValidationCandlePartitionDenialCodes.TimeframeMismatch,
+                    denial,
+                    "ValidationTrainingCandleScope");
+            }
+
+            filtered[tf] = kept;
+        }
+
+        return filtered;
+    }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 

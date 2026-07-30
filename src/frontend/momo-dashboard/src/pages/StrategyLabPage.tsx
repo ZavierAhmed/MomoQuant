@@ -222,6 +222,25 @@ export function StrategyLabPage() {
             onChange={(value) => setForm((p) => ({ ...p, timeframe: value }))}
             options={(selectedStrategy?.allowedTimeframes ?? ['15m']).map((tf) => ({ value: tf, label: tf }))}
           />
+          {selectedStrategy ? (
+            <div className="md:col-span-2 space-y-2 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-3 text-sm text-slate-300">
+              <div>
+                Required series:{' '}
+                {(selectedStrategy.requiredDataTimeframes ?? selectedStrategy.allowedTimeframes).join(', ')}
+              </div>
+              <div>Warmup bars: {selectedStrategy.warmupBars ?? '—'}</div>
+              <div>Supported regimes: {(selectedStrategy.supportedRegimes ?? []).join(', ') || '—'}</div>
+              {(selectedStrategy.htfMappings?.length ?? 0) > 0 ? (
+                <div>HTF mappings: {selectedStrategy.htfMappings!.join(', ')}</div>
+              ) : null}
+              {selectedStrategy.supportsValidation === false || selectedStrategy.supportsOptimization === false ? (
+                <div className="text-amber-200">
+                  {selectedStrategy.supportsValidation === false ? 'Validation Laboratory locked for this strategy. ' : null}
+                  {selectedStrategy.supportsOptimization === false ? 'Parameter optimization locked for this strategy.' : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <DateField label="From" value={form.fromUtc} onChange={(value) => setForm((p) => ({ ...p, fromUtc: value }))} />
           <DateField label="To" value={form.toUtc} onChange={(value) => setForm((p) => ({ ...p, toUtc: value }))} />
           <SelectField

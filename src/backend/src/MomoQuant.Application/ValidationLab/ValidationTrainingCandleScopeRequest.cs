@@ -1,4 +1,6 @@
 using MomoQuant.Application.Strategies;
+using MomoQuant.Domain.Enums;
+using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.ValidationLab;
 
 namespace MomoQuant.Application.ValidationLab;
@@ -207,6 +209,15 @@ public sealed class ValidationDatasetMaterializationRequest
     public required DateTime EvaluationToExclusiveUtc { get; init; }
     public required int WarmupCandleCount { get; init; }
     public required string CallerComponent { get; init; }
+
+    /// <summary>Optional strategy code used for Adaptive HTF partition safety checks.</summary>
+    public string? StrategyCode { get; init; }
+
+    /// <summary>
+    /// Optional higher-timeframe candles already scoped to the validation partition.
+    /// Must never be filled from unrestricted candle repositories.
+    /// </summary>
+    public IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>? HigherTimeframeSeriesByTimeframe { get; init; }
 }
 
 /// <summary>Immutable partition metadata exposed by the training candle scope.</summary>

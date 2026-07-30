@@ -1006,7 +1006,8 @@ public sealed class PriceStructureBreakoutRetestV10HistoricalTests
             new Mock<IStrategyRepository>().Object,
             new Mock<IStrategyRegistry>().Object,
             new Mock<ISymbolRepository>().Object,
-            new Mock<IStrategyLabQueue>().Object);
+            new Mock<IStrategyLabQueue>().Object,
+            new Mock<IStrategyDataRequirementService>().Object);
 
         var result = await service.GetRerunConfigAsync(1);
 
@@ -1048,7 +1049,8 @@ public sealed class PriceStructureBreakoutRetestV10HistoricalTests
             new Mock<IStrategyRepository>().Object,
             new Mock<IStrategyRegistry>().Object,
             new Mock<ISymbolRepository>().Object,
-            new Mock<IStrategyLabQueue>().Object);
+            new Mock<IStrategyLabQueue>().Object,
+            new Mock<IStrategyDataRequirementService>().Object);
 
         var result = await service.GetRerunConfigAsync(2);
 
