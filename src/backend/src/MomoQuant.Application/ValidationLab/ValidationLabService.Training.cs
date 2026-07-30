@@ -458,6 +458,7 @@ public sealed partial class ValidationLabService
                         StrategyId = scopeRequest.StrategyId,
                         StrategyCode = scopeRequest.StrategyCode,
                         StrategyVersion = scopeRequest.StrategyVersion,
+                        ExchangeId = scopeRequest.ExchangeId,
                         BoundScopeExecutionId = auditExecution.ScopeExecutionId,
                         BoundAuditExecutionId = auditExecution.AuditExecutionId,
                         BoundExecutionToken = auditExecution.ExecutionToken,

@@ -390,9 +390,19 @@ internal static class Milestone231BParityFixtures
         }
 
         using var document = JsonDocument.Parse(rawDataJson);
-        return document.RootElement.TryGetProperty("strengthBreakdown", out var breakdown)
-            ? breakdown.GetRawText()
-            : null;
+        var root = document.RootElement;
+        if (root.TryGetProperty("strengthBreakdown", out var breakdown))
+        {
+            return breakdown.GetRawText();
+        }
+
+        if (root.TryGetProperty("diagnostics", out var diagnostics)
+            && diagnostics.TryGetProperty("strengthBreakdown", out breakdown))
+        {
+            return breakdown.GetRawText();
+        }
+
+        return null;
     }
 
     public static bool HasStrengthBreakdown(string? rawDataJson) =>

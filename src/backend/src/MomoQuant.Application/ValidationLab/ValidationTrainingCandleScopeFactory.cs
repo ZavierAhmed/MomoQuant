@@ -1,5 +1,6 @@
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.MarketData;
+using MomoQuant.Application.Strategies;
 using MomoQuant.Application.Strategies.MomoAdaptive;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
@@ -31,15 +32,28 @@ public interface IValidationTrainingCandleScopeFactory
 /// <summary>
 /// Builds an immutable training candle scope from DB candles strictly before ValidationStartUtc.
 /// Loads exact warm-up (latest N closed bars before evaluation start) plus evaluation bars.
-/// When Adaptive requires HTF, binds mapped HTF into the scope at construction (Milestone 23.1B1A).
+/// When Adaptive requires HTF, binds mapped HTF into the scope at construction (Milestone 23.1B1A/B1B).
 /// Uses the inner (unscoped) candle repository to avoid recursive boundary checks during bootstrap.
 /// </summary>
 public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCandleScopeFactory
 {
     private readonly IUnscopedCandleReader _candles;
+    private readonly IValidationCandleAccessRecorder? _recorder;
     private readonly ValidationScopeFactoryCapability _capability = ValidationScopeFactoryCapability.Create();
 
     public ValidationTrainingCandleScopeFactory(IUnscopedCandleReader candles) => _candles = candles;
+
+    public ValidationTrainingCandleScopeFactory(
+        IUnscopedCandleReader candles,
+        IValidationCandleAccessRecorder recorder)
+    {
+        _candles = candles;
+        _recorder = recorder;
+    }
+
+    /// <summary>Bootstrap access evidence from the most recent <see cref="CreateAsync"/> attempt.</summary>
+    public IReadOnlyList<ValidationCandleAccessRecord> LastBootstrapAccessEvidence { get; private set; } =
+        Array.Empty<ValidationCandleAccessRecord>();
 
     public async Task<IValidationTrainingCandleScope> CreateAsync(
         ValidationTrainingCandleScopeRequest request,
@@ -47,6 +61,11 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
     {
         ArgumentNullException.ThrowIfNull(request);
         request.Validate();
+
+        if (request.BoundAuditExecutionId is not null)
+        {
+            request.ValidateCanonical();
+        }
 
         if (!TimeframeParser.TryParse(request.Timeframe, out var timeframe))
         {
@@ -58,6 +77,8 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
         var boundary = request.ValidationBoundaryUtc;
         var loadEndExclusive = evalEndExclusive <= boundary ? evalEndExclusive : boundary;
         var requiredWarmup = request.RequiredWarmupCandleCount;
+        var scopeExecutionId = request.BoundScopeExecutionId ?? Guid.NewGuid();
+        var bootstrapRecords = new List<ValidationCandleAccessRecord>();
 
         using (_capability.Activate())
         {
@@ -76,7 +97,6 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
                 warmup = Array.Empty<Candle>();
             }
 
-            // Evaluation: >= start AND < endExclusive AND < boundary
             var evaluation = await _candles.GetCandlesChronologicalUnscopedAsync(
                 request.SymbolId,
                 timeframe,
@@ -118,7 +138,6 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
             else if (availableWarmup >= requiredWarmup)
             {
                 status = ValidationWarmupStatus.Complete;
-                // Exact N: keep latest required only (already TAKE N from repo, but clamp).
                 if (availableWarmup > requiredWarmup)
                 {
                     warmup = warmup.TakeLast(requiredWarmup).ToList();
@@ -137,25 +156,113 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
                     $"requirementsVersion={request.RequirementsVersion}.");
             }
 
-            var exchangeId = warmup.Concat(evaluation).Select(c => (long?)c.ExchangeId).FirstOrDefault(id => id.HasValue && id.Value > 0);
-            var mappedHtf = TryResolveAdaptiveMappedHtf(request.StrategyCode, timeframe);
+            var exchangeId = request.ExchangeId > 0 ? request.ExchangeId : (long?)null;
+            var mappedHtf = TryResolveMappedHtf(request.StrategyCode, timeframe);
+            if (request.BoundAuditExecutionId is not null
+                && !string.IsNullOrWhiteSpace(request.StrategyCode)
+                && StrategyCodeExtensions.FromCode(request.StrategyCode)
+                    == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout
+                && !mappedHtf.HasValue)
+            {
+                throw new InvalidOperationException(
+                    $"Canonical Adaptive validation requires mapped HTF for execution timeframe '{request.Timeframe}'.");
+            }
             IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>? htfPartition = null;
             string? htfFingerprint = null;
 
             if (mappedHtf.HasValue)
             {
-                htfPartition = await LoadAuthorizedHtfPartitionAsync(
+                if (exchangeId is not > 0)
+                {
+                    throw new InvalidOperationException(
+                        "Canonical validation training requires ExchangeId when mapped HTF is required.");
+                }
+
+                var htfWarmup = Math.Max(requiredWarmup, 200);
+                var raw = await _candles.GetCandlesChronologicalUnscopedAsync(
+                    request.SymbolId,
+                    mappedHtf.Value,
+                    fromUtc: evalStart,
+                    toUtc: loadEndExclusive,
+                    warmUpCount: htfWarmup,
+                    cancellationToken);
+
+                var validation = ValidationHtfPartitionValidator.ValidateRawHtfPartitionFailClosed(
+                    raw,
+                    request.SymbolId,
+                    exchangeId.Value,
+                    mappedHtf.Value,
+                    loadEndExclusive,
+                    boundary);
+
+                if (!validation.Succeeded)
+                {
+                    var denied = CreateBootstrapAccessRecord(
+                        request,
+                        scopeExecutionId,
+                        sequenceNumber: 1,
+                        mappedHtf.Value,
+                        evalStart,
+                        loadEndExclusive,
+                        htfWarmup,
+                        returned: raw,
+                        denied: true,
+                        denialCode: validation.DenialCode!,
+                        denialReason: validation.DenialReason!);
+                    bootstrapRecords.Add(denied);
+                    LastBootstrapAccessEvidence = bootstrapRecords;
+
+                    await PersistDeniedBootstrapEvidenceAsync(
+                        request,
+                        scopeExecutionId,
+                        warmup,
+                        evaluation,
+                        availableWarmup,
+                        status,
+                        evalStart,
+                        loadEndExclusive,
+                        boundary,
+                        requiredWarmup,
+                        exchangeId,
+                        mappedHtf,
+                        bootstrapRecords,
+                        cancellationToken);
+
+                    throw new ValidationCandlePartitionViolationException(
+                        request.ValidationExperimentId,
+                        scopeExecutionId,
+                        boundary,
+                        evalStart,
+                        loadEndExclusive,
+                        htfWarmup,
+                        evalStart,
+                        loadEndExclusive,
+                        validation.DenialCode!,
+                        validation.DenialReason!,
+                        "ValidationTrainingCandleScopeFactory");
+                }
+
+                htfPartition = new Dictionary<Timeframe, IReadOnlyList<Candle>>
+                {
+                    [mappedHtf.Value] = validation.Authorized
+                };
+                htfFingerprint = ValidationTrainingCandleScope.ComputeContentFingerprint(validation.Authorized);
+
+                bootstrapRecords.Add(CreateBootstrapAccessRecord(
                     request,
+                    scopeExecutionId,
+                    sequenceNumber: 1,
                     mappedHtf.Value,
                     evalStart,
                     loadEndExclusive,
-                    boundary,
-                    exchangeId,
-                    requiredWarmup,
-                    cancellationToken);
-                htfFingerprint = ValidationTrainingCandleScope.ComputeContentFingerprint(
-                    htfPartition[mappedHtf.Value]);
+                    htfWarmup,
+                    validation.Authorized,
+                    denied: false,
+                    denialCode: null,
+                    denialReason: null));
             }
+
+            LastBootstrapAccessEvidence = bootstrapRecords;
 
             var combined = warmup.Concat(evaluation).ToList();
             var partition = ValidationTrainingCandleScope.BuildPartition(
@@ -186,91 +293,153 @@ public sealed class ValidationTrainingCandleScopeFactory : IValidationTrainingCa
                 partition,
                 warmup,
                 evaluation,
-                scopeExecutionId: request.BoundScopeExecutionId,
+                scopeExecutionId: scopeExecutionId,
                 boundAuditExecutionId: request.BoundAuditExecutionId,
                 higherTimeframePartition: htfPartition,
                 strategyCode: request.StrategyCode,
                 strategyVersion: request.StrategyVersion,
                 exchangeId: exchangeId,
-                mappedHigherTimeframe: mappedHtf);
+                mappedHigherTimeframe: mappedHtf,
+                bootstrapAccessRecords: bootstrapRecords);
         }
     }
 
-    private async Task<IReadOnlyDictionary<Timeframe, IReadOnlyList<Candle>>> LoadAuthorizedHtfPartitionAsync(
+    private async Task PersistDeniedBootstrapEvidenceAsync(
         ValidationTrainingCandleScopeRequest request,
-        Timeframe mappedHtf,
+        Guid scopeExecutionId,
+        IReadOnlyList<Candle> warmup,
+        IReadOnlyList<Candle> evaluation,
+        int availableWarmup,
+        ValidationWarmupStatus status,
         DateTime evalStart,
         DateTime loadEndExclusive,
         DateTime boundary,
-        long? expectedExchangeId,
         int requiredWarmup,
+        long? exchangeId,
+        Timeframe? mappedHtf,
+        IReadOnlyList<ValidationCandleAccessRecord> bootstrapRecords,
         CancellationToken cancellationToken)
     {
-        var htfWarmup = Math.Max(requiredWarmup, 200);
-        var raw = await _candles.GetCandlesChronologicalUnscopedAsync(
-            request.SymbolId,
-            mappedHtf,
-            fromUtc: evalStart,
-            toUtc: loadEndExclusive,
-            warmUpCount: htfWarmup,
-            cancellationToken);
-
-        var authorized = raw
-            .Where(c =>
-            {
-                var open = DateTime.SpecifyKind(c.OpenTimeUtc, DateTimeKind.Utc);
-                var close = DateTime.SpecifyKind(c.CloseTimeUtc, DateTimeKind.Utc);
-                if (c.SymbolId != request.SymbolId)
-                {
-                    return false;
-                }
-
-                if (expectedExchangeId.HasValue && c.ExchangeId != expectedExchangeId.Value)
-                {
-                    return false;
-                }
-
-                if (c.Timeframe != mappedHtf || !c.IsClosed)
-                {
-                    return false;
-                }
-
-                if (close > loadEndExclusive || close > boundary || open >= loadEndExclusive)
-                {
-                    return false;
-                }
-
-                return true;
-            })
-            .OrderBy(c => c.OpenTimeUtc)
-            .ToList();
-
-        if (authorized.Count == 0)
+        if (_recorder is null
+            || request.BoundAuditExecutionId is not Guid auditId
+            || request.BoundScopeExecutionId is not Guid boundScopeId
+            || string.IsNullOrWhiteSpace(request.BoundExecutionToken))
         {
-            var denial =
-                $"Adaptive validation HTF '{TimeframeParser.ToApiString(mappedHtf)}' is missing from authorized unscoped load. " +
-                "Coverage/import/repos must not repair validation HTF after scope construction.";
-            throw new ValidationCandlePartitionViolationException(
-                request.ValidationExperimentId,
-                request.BoundScopeExecutionId ?? Guid.Empty,
-                boundary,
-                evalStart,
-                loadEndExclusive,
-                htfWarmup,
-                evalStart,
-                loadEndExclusive,
-                ValidationCandlePartitionDenialCodes.MissingPartitionHtf,
-                denial,
-                "ValidationTrainingCandleScopeFactory");
+            return;
         }
 
-        return new Dictionary<Timeframe, IReadOnlyList<Candle>>
+        var combined = warmup.Concat(evaluation).ToList();
+        var partition = ValidationTrainingCandleScope.BuildPartition(
+            request.ValidationExperimentId,
+            request.SymbolId,
+            request.SymbolName,
+            request.Timeframe,
+            requiredWarmup,
+            availableWarmup,
+            evaluation.Count,
+            status,
+            evalStart,
+            loadEndExclusive,
+            boundary,
+            request.RequirementsVersion,
+            warmup,
+            evaluation,
+            combined,
+            strategyCode: request.StrategyCode,
+            strategyVersion: request.StrategyVersion,
+            exchangeId: exchangeId,
+            mappedHigherTimeframe: mappedHtf is { } htf
+                ? TimeframeParser.ToApiString(htf)
+                : null,
+            higherTimeframeContentFingerprint: null);
+
+        var shell = new ValidationTrainingCandleScope(
+            partition,
+            warmup,
+            evaluation,
+            scopeExecutionId: scopeExecutionId,
+            boundAuditExecutionId: auditId,
+            higherTimeframePartition: null,
+            strategyCode: request.StrategyCode,
+            strategyVersion: request.StrategyVersion,
+            exchangeId: exchangeId,
+            mappedHigherTimeframe: mappedHtf,
+            bootstrapAccessRecords: bootstrapRecords);
+
+        using var auditAmbient = ValidationAuditExecutionAmbient.Enter(new ValidationAuditExecutionAmbientContext
         {
-            [mappedHtf] = authorized
+            AuditExecutionId = auditId,
+            ScopeExecutionId = boundScopeId,
+            ExecutionToken = request.BoundExecutionToken!,
+            AttemptNumber = request.BoundAttemptNumber ?? 0,
+            ValidationExperimentId = request.ValidationExperimentId
+        });
+
+        await _recorder.FlushAsync(shell, cancellationToken).ConfigureAwait(false);
+        await shell.DisposeAsync().ConfigureAwait(false);
+    }
+
+    private static ValidationCandleAccessRecord CreateBootstrapAccessRecord(
+        ValidationTrainingCandleScopeRequest request,
+        Guid scopeExecutionId,
+        long sequenceNumber,
+        Timeframe mappedHtf,
+        DateTime evalStart,
+        DateTime loadEndExclusive,
+        int htfWarmup,
+        IReadOnlyList<Candle>? returned,
+        bool denied,
+        string? denialCode,
+        string? denialReason)
+    {
+        var htfApi = TimeframeParser.ToApiString(mappedHtf);
+        var context = ValidationCandleAccessContext.Create(
+            "ValidationTrainingCandleScopeFactory",
+            ValidationCandleAccessPurpose.FactoryBootstrapHtfLoad);
+
+        return new ValidationCandleAccessRecord
+        {
+            AccessEventId = Guid.NewGuid(),
+            ScopeExecutionId = scopeExecutionId,
+            ScopeSequenceNumber = sequenceNumber,
+            ValidationExperimentId = request.ValidationExperimentId,
+            CallerComponent = context.ToCallerAuditLabel(),
+            AccessPurpose = ValidationCandleAccessPurpose.FactoryBootstrapHtfLoad,
+            RequestedStartUtc = evalStart,
+            RequestedEndUtc = loadEndExclusive,
+            RequestedCandleCount = htfWarmup,
+            ReturnedStartUtc = returned is { Count: > 0 }
+                ? DateTime.SpecifyKind(returned[0].OpenTimeUtc, DateTimeKind.Utc)
+                : null,
+            ReturnedEndUtc = returned is { Count: > 0 }
+                ? DateTime.SpecifyKind(returned[^1].CloseTimeUtc, DateTimeKind.Utc)
+                : null,
+            ReturnedCandleCount = returned?.Count ?? 0,
+            MinimumReturnedTimestampUtc = returned is { Count: > 0 }
+                ? returned.Min(c => DateTime.SpecifyKind(c.OpenTimeUtc, DateTimeKind.Utc))
+                : null,
+            MaximumReturnedTimestampUtc = returned is { Count: > 0 }
+                ? returned.Max(c => DateTime.SpecifyKind(c.CloseTimeUtc, DateTimeKind.Utc))
+                : null,
+            CandleContentFingerprint = returned is { Count: > 0 }
+                ? ValidationTrainingCandleScope.ComputeContentFingerprint(returned)
+                : null,
+            AccessedAtUtc = DateTime.UtcNow,
+            WasDenied = denied,
+            DenialCode = denialCode,
+            DenialReason = denialReason,
+            DatasetPartition = $"BootstrapHTF:{htfApi}:S{request.SymbolId}:E{request.ExchangeId}",
+            RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion,
+            AuditExecutionId = request.BoundAuditExecutionId,
+            RequestSymbolId = request.SymbolId,
+            RequestExchangeId = request.ExchangeId,
+            RequestTimeframeApi = htfApi,
+            RequestStrategyCode = request.StrategyCode,
+            RequestStrategyVersion = request.StrategyVersion
         };
     }
 
-    private static Timeframe? TryResolveAdaptiveMappedHtf(string? strategyCode, Timeframe executionTimeframe)
+    private static Timeframe? TryResolveMappedHtf(string? strategyCode, Timeframe executionTimeframe)
     {
         if (string.IsNullOrWhiteSpace(strategyCode))
         {

@@ -4,8 +4,11 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Strategies;
+using MomoQuant.Application.Strategies.Implementations;
+using MomoQuant.Application.Strategies.PriceStructure;
 using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.ValidationLab;
+using MomoQuant.Domain.Constants;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
 using MomoQuant.Domain.StrategyLab;
@@ -139,7 +142,10 @@ public static class Program
                 ValidationBoundaryUtc = boundary,
                 RequiredWarmupCandleCount = requiredWarmup,
                 RequirementsVersion = StrategyExecutionRequirements.Version,
+                StrategyId = 1,
                 StrategyCode = fixture.Experiment.StrategyCode,
+                StrategyVersion = fixture.Experiment.StrategyVersion,
+                ExchangeId = symbol.ExchangeId,
                 BoundScopeExecutionId = execution.ScopeExecutionId,
                 BoundAuditExecutionId = execution.AuditExecutionId,
                 BoundExecutionToken = execution.ExecutionToken,
@@ -413,7 +419,10 @@ public static class Program
                 ValidationBoundaryUtc = boundaryUtc,
                 RequiredWarmupCandleCount = replacementWarmup,
                 RequirementsVersion = StrategyExecutionRequirements.Version,
+                StrategyId = 1,
                 StrategyCode = experiment.StrategyCode,
+                StrategyVersion = experiment.StrategyVersion,
+                ExchangeId = symbol.ExchangeId,
                 BoundScopeExecutionId = replacement.ScopeExecutionId,
                 BoundAuditExecutionId = replacement.AuditExecutionId,
                 BoundExecutionToken = replacement.ExecutionToken,
@@ -605,8 +614,8 @@ public static class Program
             Name = name,
             ExperimentType = ValidationExperimentType.ValidateExistingFrozenConfiguration,
             Status = ValidationExperimentStatus.Draft,
-            StrategyCode = "PSBR",
-            StrategyVersion = "1.0.0",
+            StrategyCode = StrategyCodes.PriceStructureBreakoutRetest,
+            StrategyVersion = PriceStructureBreakoutRetestEvaluator.StrategyVersion,
             ExchangeId = 1,
             Exchange = "binance",
             SymbolId = 1,

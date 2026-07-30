@@ -110,6 +110,13 @@ public sealed class ValidationCandleAccessRecord
     /// <summary>Authoritative audit-execution linkage from the bound scope (Milestone 23.1B1A).</summary>
     public Guid? AuditExecutionId { get; init; }
 
+    /// <summary>Factory bootstrap request context (Milestone 23.1B1B).</summary>
+    public long? RequestSymbolId { get; init; }
+    public long? RequestExchangeId { get; init; }
+    public string? RequestTimeframeApi { get; init; }
+    public string? RequestStrategyCode { get; init; }
+    public string? RequestStrategyVersion { get; init; }
+
     /// <summary>Optional; incremented when a flush attempt includes this event.</summary>
     public int FlushAttemptCount { get; set; }
 
@@ -244,7 +251,8 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         string? strategyCode = null,
         string? strategyVersion = null,
         long? exchangeId = null,
-        Timeframe? mappedHigherTimeframe = null)
+        Timeframe? mappedHigherTimeframe = null,
+        IReadOnlyList<ValidationCandleAccessRecord>? bootstrapAccessRecords = null)
     {
         ArgumentNullException.ThrowIfNull(partition);
         ArgumentNullException.ThrowIfNull(warmupCandles);
@@ -306,6 +314,11 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                     _boundStrategyCode,
                     TimeframeParser.TryParse(partition.Timeframe, out var execTf) ? execTf : null));
         _higherTimeframePartition = CloneHigherTimeframePartition(higherTimeframePartition);
+
+        if (bootstrapAccessRecords is { Count: > 0 })
+        {
+            SeedBootstrapAccessRecords(bootstrapAccessRecords);
+        }
     }
 
     private static void ValidateCandlePartition(
@@ -1173,7 +1186,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         }
 
         var expectedSymbolId = Partition.SymbolId > 0 ? Partition.SymbolId : request.SymbolId;
-        var expectedExchangeId = _boundExchangeId ?? ResolvePartitionExchangeId();
+        var expectedExchangeId = _boundExchangeId ?? Partition.ExchangeId;
 
         if (!needsAdaptiveHtf)
         {
@@ -1493,6 +1506,24 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    private void SeedBootstrapAccessRecords(IReadOnlyList<ValidationCandleAccessRecord> records)
+    {
+        lock (_gate)
+        {
+            foreach (var record in records.OrderBy(r => r.ScopeSequenceNumber))
+            {
+                if (record.ScopeExecutionId != ScopeExecutionId)
+                {
+                    throw new InvalidOperationException(
+                        "Bootstrap access record ScopeExecutionId does not match the training scope.");
+                }
+
+                _accessLog.Add(record);
+                _nextScopeSequence = Math.Max(_nextScopeSequence, record.ScopeSequenceNumber);
+            }
+        }
+    }
 
     private IReadOnlyList<Candle> SliceWarmupBefore(DateTime beforeUtc, int count)
     {

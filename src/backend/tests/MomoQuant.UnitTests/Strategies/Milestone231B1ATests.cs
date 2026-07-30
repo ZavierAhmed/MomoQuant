@@ -351,13 +351,14 @@ public sealed class Milestone231B1ATests
             ["__seenFingerprints"] = "[]"
         };
         var plugin = new MomoVolatilityRangeReversionStrategy();
+        var rangeHtf = StrategyHigherTimeframeSupport.ResolveGeneralHigherTimeframe(Timeframe.M5);
         var direct = plugin.Evaluate(new StrategyContext
         {
             ExchangeId = 1,
             SymbolId = 1,
             Symbol = "ETHUSDT",
             Timeframe = Timeframe.M5,
-            HigherTimeframe = Timeframe.H1,
+            HigherTimeframe = rangeHtf,
             MarketRegime = regime,
             Candles = candles,
             IndicatorSnapshot = snapshots[candles[evalIndex].Id],
@@ -426,10 +427,13 @@ public sealed class Milestone231B1ATests
             evaluationIndex: 0);
 
         var backtest = Assert.Single(recording.Results);
-        Assert.NotEqual(SignalType.Entry, backtest.SignalType);
-        Assert.Equal(direct.SignalType, backtest.SignalType);
-        Assert.Equal(direct.Reason, backtest.Reason);
-        Assert.Equal(direct.Direction, backtest.Direction);
+        ParityAssertionHelper.AssertRejectionParity(new ParityAssertionHelper.RejectionPaths
+        {
+            Direct = direct,
+            Backtest = backtest,
+            LabResultSummaryJson = run.ResultSummaryJson,
+            ExpectedLabRejectionCode = MomoVolatilityRangeRejectionCodes.TrendFilterFailed
+        });
     }
 
     [Fact]

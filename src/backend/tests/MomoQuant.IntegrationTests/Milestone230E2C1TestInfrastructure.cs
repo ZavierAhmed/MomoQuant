@@ -11,6 +11,8 @@ using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.ValidationLab;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.MarketData;
+using MomoQuant.Application.Strategies.PriceStructure;
+using MomoQuant.Domain.Constants;
 using MomoQuant.Domain.ValidationLab;
 using MomoQuant.Persistence;
 using MomoQuant.Persistence.Repositories;
@@ -31,8 +33,8 @@ internal static class E2C1AuditFixtures
             Name = rawName.Length <= 300 ? rawName : rawName[..300],
             ExperimentType = ValidationExperimentType.ValidateExistingFrozenConfiguration,
             Status = ValidationExperimentStatus.Draft,
-            StrategyCode = "PSBR",
-            StrategyVersion = "1.0.0",
+            StrategyCode = StrategyCodes.PriceStructureBreakoutRetest,
+            StrategyVersion = PriceStructureBreakoutRetestEvaluator.StrategyVersion,
             ExchangeId = 1,
             Exchange = "binance",
             SymbolId = 1,

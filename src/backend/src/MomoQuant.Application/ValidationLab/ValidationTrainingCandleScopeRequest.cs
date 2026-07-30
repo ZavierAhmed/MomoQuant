@@ -32,7 +32,10 @@ public enum ValidationCandleAccessPurpose
     DirectWarmup = 15,
     DirectEvaluation = 16,
     /// <summary>Higher-timeframe series access during dataset materialization.</summary>
-    HigherTimeframeAccess = 17
+    HigherTimeframeAccess = 17,
+
+    /// <summary>Factory bootstrap HTF load during scope construction (Milestone 23.1B1B).</summary>
+    FactoryBootstrapHtfLoad = 18
 }
 
 /// <summary>Caller identity + access purpose for audited candle reads.</summary>
@@ -78,6 +81,9 @@ public sealed class ValidationTrainingCandleScopeRequest
     public string? StrategyCode { get; init; }
     public string? StrategyVersion { get; init; }
 
+    /// <summary>Authoritative exchange for canonical validation training (from experiment).</summary>
+    public long ExchangeId { get; init; }
+
     /// <summary>Bound durable scope identity (Milestone 23.0E2C1). When set, the scope must use this exact Guid.</summary>
     public Guid? BoundScopeExecutionId { get; init; }
 
@@ -117,11 +123,16 @@ public sealed class ValidationTrainingCandleScopeRequest
             RequirementsVersion = requirements.RequirementsVersion,
             StrategyId = requirements.StrategyId,
             StrategyCode = requirements.StrategyCode,
-            StrategyVersion = requirements.StrategyVersion ?? experiment.StrategyVersion
+            StrategyVersion = requirements.StrategyVersion ?? experiment.StrategyVersion,
+            ExchangeId = experiment.ExchangeId
         };
     }
 
-    /// <summary>Obsolete-path helper when only experiment.RequiredWarmupCandles is available.</summary>
+    /// <summary>
+    /// Quarantined legacy helper — must not be used without a bound durable audit execution.
+    /// Prefer <see cref="FromExperiment"/> after resolving <see cref="StrategyExecutionRequirements"/>.
+    /// </summary>
+    [Obsolete("Quarantined — use FromExperiment with bound audit execution. Legacy path must not be used without bound audit.")]
     public static ValidationTrainingCandleScopeRequest FromExperimentLegacy(
         ValidationExperiment experiment,
         DateTime trainingEvaluationEndExclusiveUtc,
@@ -147,8 +158,41 @@ public sealed class ValidationTrainingCandleScopeRequest
             RequiredWarmupCandleCount = warmup,
             RequirementsVersion = StrategyExecutionRequirements.Version,
             StrategyCode = experiment.StrategyCode,
-            StrategyVersion = experiment.StrategyVersion
+            StrategyVersion = experiment.StrategyVersion,
+            ExchangeId = experiment.ExchangeId
         };
+    }
+
+    /// <summary>
+    /// Canonical workflow identity validation — requires bound strategy and audit execution fields.
+    /// </summary>
+    public void ValidateCanonical()
+    {
+        Validate();
+        if (StrategyId is not > 0)
+            throw new ArgumentException("StrategyId is required for canonical validation training.", nameof(StrategyId));
+        if (string.IsNullOrWhiteSpace(StrategyCode))
+            throw new ArgumentException("StrategyCode is required for canonical validation training.", nameof(StrategyCode));
+        if (string.IsNullOrWhiteSpace(StrategyVersion))
+            throw new ArgumentException("StrategyVersion is required for canonical validation training.", nameof(StrategyVersion));
+        if (ExchangeId <= 0)
+            throw new ArgumentException("ExchangeId must be positive for canonical validation training.", nameof(ExchangeId));
+        if (BoundScopeExecutionId is null || BoundScopeExecutionId == Guid.Empty)
+            throw new ArgumentException("BoundScopeExecutionId is required for canonical validation training.", nameof(BoundScopeExecutionId));
+        if (BoundAuditExecutionId is null || BoundAuditExecutionId == Guid.Empty)
+            throw new ArgumentException("BoundAuditExecutionId is required for canonical validation training.", nameof(BoundAuditExecutionId));
+
+        try
+        {
+            StrategyCodeExtensions.FromCode(StrategyCode);
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            throw new ArgumentException(
+                $"Unknown or unsupported strategy code '{StrategyCode}' for canonical validation training.",
+                nameof(StrategyCode),
+                ex);
+        }
     }
 
     public void Validate()

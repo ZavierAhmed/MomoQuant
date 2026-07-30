@@ -112,7 +112,8 @@ public sealed class ValidationWarmupBoundaryMatrixTests
             TrainingEvaluationEndExclusiveUtc = endExclusive,
             ValidationBoundaryUtc = Boundary,
             RequiredWarmupCandleCount = 3,
-            RequirementsVersion = StrategyExecutionRequirements.Version
+            RequirementsVersion = StrategyExecutionRequirements.Version,
+            ExchangeId = 1
         };
 
         var scope = await factory.CreateAsync(request);
@@ -225,7 +226,8 @@ public sealed class ValidationWarmupBoundaryMatrixTests
         TrainingEvaluationEndExclusiveUtc = Boundary,
         ValidationBoundaryUtc = Boundary,
         RequiredWarmupCandleCount = requiredWarmup,
-        RequirementsVersion = StrategyExecutionRequirements.Version
+        RequirementsVersion = StrategyExecutionRequirements.Version,
+        ExchangeId = 1
     };
 
     private static List<Candle> BuildWarmupCandles(int count, long symbolId = SymbolId) =>
