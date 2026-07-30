@@ -294,6 +294,58 @@ public sealed class Milestone231B1CParityEvidenceTests
     }
 
     [Fact]
+    public void PositiveParity_ExactRawContract_RejectsWrongCandidateNestedSetup()
+    {
+        const string expectedRaw =
+            "{\"setupFingerprint\":\"fp-1\",\"strength\":0.75,\"strengthBreakdown\":{\"total\":0.75},\"setup\":{\"direction\":\"Long\"},\"reasonCode\":\"EntryConfirmed\"}";
+        const string wrongCandidateRaw =
+            "{\"setupFingerprint\":\"fp-1\",\"strength\":0.75,\"strengthBreakdown\":{\"total\":0.75},\"setup\":{\"direction\":\"Short\"},\"reasonCode\":\"EntryConfirmed\"}";
+        var contract = ParityAssertionHelper.RawDataJsonContract.Create(
+            ParityAssertionHelper.RawDataJsonRootState.PresentJsonObject,
+            ("setupFingerprint", ParityAssertionHelper.JsonPropertyExpectation.String("fp-1")),
+            ("strength", ParityAssertionHelper.JsonPropertyExpectation.Number(0.75m)),
+            ("strengthBreakdown", ParityAssertionHelper.JsonPropertyExpectation.Json("{\"total\":0.75}")),
+            ("setup", ParityAssertionHelper.JsonPropertyExpectation.Json("{\"direction\":\"Long\"}")),
+            ("reasonCode", ParityAssertionHelper.JsonPropertyExpectation.String("EntryConfirmed")));
+        var directContext = BuildDirectContext();
+        var direct = EntrySignal(expectedRaw);
+        var lab = EntryLabEvaluation(expectedRaw);
+        var backtest = EntryBacktest(expectedRaw);
+        var capture = CaptureWithCandles([BuildCandle(1)]);
+        var candidate = EntryLabCandidate();
+        candidate.StructureJson = wrongCandidateRaw;
+        var evidence = CopyPositiveEvidence(BuildPositiveEvidence(capture), rawDataContract: contract);
+
+        Assert.ThrowsAny<Exception>(() =>
+            AssertPositive(directContext, direct, lab, backtest, capture, candidate, evidence));
+    }
+
+    [Fact]
+    public void RawDataContract_ExactNestedJson_AcceptsEquivalentNumericFormatting()
+    {
+        var contract = ParityAssertionHelper.RawDataJsonContract.Create(
+            ParityAssertionHelper.RawDataJsonRootState.PresentJsonObject,
+            ("setup", ParityAssertionHelper.JsonPropertyExpectation.Json("{\"brokenLevel\":51364,\"retestExtreme\":51328.8}")));
+
+        ParityAssertionHelper.AssertRawDataJsonContract(
+            contract,
+            "{\"setup\":{\"brokenLevel\":51364.000,\"retestExtreme\":51328.800}}");
+    }
+
+    [Fact]
+    public void RawDataContract_ExactNestedJson_RejectsDuplicateNestedProperty()
+    {
+        var contract = ParityAssertionHelper.RawDataJsonContract.Create(
+            ParityAssertionHelper.RawDataJsonRootState.PresentJsonObject,
+            ("setup", ParityAssertionHelper.JsonPropertyExpectation.Json("{\"direction\":\"Long\"}")));
+
+        Assert.ThrowsAny<Exception>(() =>
+            ParityAssertionHelper.AssertRawDataJsonContract(
+                contract,
+                "{\"setup\":{\"direction\":\"Long\",\"direction\":\"Long\"}}"));
+    }
+
+    [Fact]
     public void PositiveParity_WrongDirectContextExchange_Fails()
     {
         var directContext = BuildDirectContext(exchangeId: 99);
@@ -925,6 +977,8 @@ public sealed class Milestone231B1CParityEvidenceTests
             Fingerprint = baseEvidence.Fingerprint,
             RequiredRawDataJsonProperties = baseEvidence.RequiredRawDataJsonProperties,
             RequiredStructureJsonProperties = baseEvidence.RequiredStructureJsonProperties,
+            RawDataContract = baseEvidence.RawDataContract,
+            OutcomeContract = baseEvidence.OutcomeContract,
             ExpectedCandidateStatus = baseEvidence.ExpectedCandidateStatus
         };
         ParityAssertionHelper.AssertPositiveThreePathParity(directContext, direct, backtest, evidence);
@@ -1030,6 +1084,8 @@ public sealed class Milestone231B1CParityEvidenceTests
         long[]? expectedExecutionCandleIds = null,
         IndicatorSnapshot? expectedIndicatorSnapshot = null,
         ParityAssertionHelper.FingerprintContract? fingerprint = null,
+        ParityAssertionHelper.RawDataJsonContract? rawDataContract = null,
+        ParityAssertionHelper.PositiveOutcomeContract? outcomeContract = null,
         IReadOnlyList<(StrategyContext Context, StrategySignalResult Result)>? labEvaluations = null) =>
         new()
         {
@@ -1054,7 +1110,9 @@ public sealed class Milestone231B1CParityEvidenceTests
             ExpectedIndicatorSnapshot = expectedIndicatorSnapshot ?? source.ExpectedIndicatorSnapshot,
             Fingerprint = fingerprint ?? source.Fingerprint,
             RequiredRawDataJsonProperties = source.RequiredRawDataJsonProperties,
-            RequiredStructureJsonProperties = source.RequiredStructureJsonProperties
+            RequiredStructureJsonProperties = source.RequiredStructureJsonProperties,
+            RawDataContract = rawDataContract ?? source.RawDataContract,
+            OutcomeContract = outcomeContract ?? source.OutcomeContract
         };
 
     private static ParityAssertionHelper.RejectionThreePathEvidence CopyRejectionEvidence(

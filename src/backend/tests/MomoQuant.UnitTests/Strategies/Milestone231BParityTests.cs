@@ -510,7 +510,9 @@ public sealed class Milestone231BParityTests
     [Fact]
     public async Task CrossPath_Adaptive_DirectLabBacktest_IdenticalAtSameT()
     {
-        const string expectedFingerprint = "8DC2EABFE2BA0A5E";
+        const string expectedFingerprint = ParityEvidenceContracts.AdaptivePositiveFingerprint;
+        var rawDataContract = ParityEvidenceContracts.CreateAdaptivePositiveRawDataContract();
+        var outcomeContract = ParityEvidenceContracts.CreateAdaptivePositiveOutcomeContract();
         var (fullLtf, fullHtf) = AdaptiveDefaultFixtures.BuildValidLong(Start);
         // Align with BacktestEngine's 600-candle visible window so absolute indices in RawDataJson match.
         var ltf = fullLtf.Count <= 600 ? fullLtf : fullLtf.TakeLast(600).ToList();
@@ -622,7 +624,10 @@ public sealed class Milestone231BParityTests
                 ExpectedParameters = parameters,
                 ExpectedIndicatorSnapshot = context.IndicatorSnapshot,
                 Fingerprint = ParityEvidenceContracts.PositiveFingerprint(expectedFingerprint),
-                RequiredRawDataJsonProperties = ParityEvidenceContracts.AdaptivePositiveRawData,
+                RawDataContract = rawDataContract,
+                OutcomeContract = outcomeContract,
+                RequiredRawDataJsonProperties =
+                    ["setupFingerprint", "strengthBreakdown", "setup", "version", "reasonCode"],
                 RequiredStructureJsonProperties = ParityEvidenceContracts.AdaptivePositiveStructure
             });
     }

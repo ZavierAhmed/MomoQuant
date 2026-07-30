@@ -64,6 +64,15 @@ internal static class ParityAssertionHelper
         public sealed record RequiredAbsent : FingerprintContract;
     }
 
+    /// <summary>Immutable independently declared positive outcome for every execution path.</summary>
+    public sealed record PositiveOutcomeContract(
+        TradeDirection Direction,
+        decimal EntryPrice,
+        decimal StopLoss,
+        decimal TakeProfit,
+        decimal Strength,
+        string Reason);
+
     public sealed class PositiveThreePathEvidence
     {
         public required IReadOnlyList<(StrategyContext Context, StrategySignalResult Result)> LabEvaluations { get; init; }
@@ -90,6 +99,7 @@ internal static class ParityAssertionHelper
         public required IReadOnlyList<string> RequiredRawDataJsonProperties { get; init; }
         public required IReadOnlyList<string> RequiredStructureJsonProperties { get; init; }
         public RawDataJsonContract? RawDataContract { get; init; }
+        public PositiveOutcomeContract? OutcomeContract { get; init; }
         public StrategyResearchCandidateStatus ExpectedCandidateStatus { get; init; } = StrategyResearchCandidateStatus.Detected;
     }
 
@@ -158,6 +168,13 @@ internal static class ParityAssertionHelper
         AssertSignalResultsEqual(direct, labEval.Result, "direct", "lab");
         AssertDirectMatchesBacktest(direct, backtestResult);
 
+        if (evidence.OutcomeContract is { } outcome)
+        {
+            AssertPositiveOutcome(outcome, direct, "direct");
+            AssertPositiveOutcome(outcome, labEval.Result, "lab");
+            AssertPositiveOutcome(outcome, backtestResult, "backtest");
+        }
+
         Assert.Equal(evidence.ExpectedRegime.ToString(), backtestResult.Regime);
 
         AssertFingerprintContract(
@@ -168,17 +185,20 @@ internal static class ParityAssertionHelper
             labCandidate.SetupFingerprint);
 
         AssertRawDataEvidence(evidence.RawDataContract, evidence.RequiredRawDataJsonProperties,
-            direct.RawDataJson, labEval.Result.RawDataJson, backtestResult.RawDataJson);
+            direct.RawDataJson, labEval.Result.RawDataJson, backtestResult.RawDataJson, labCandidate.StructureJson);
 
-        AssertStrengthAndBreakdown(
-            direct.RawDataJson,
-            labEval.Result.RawDataJson,
-            backtestResult.RawDataJson,
-            labCandidate.StructureJson);
+        if (evidence.RawDataContract is null)
+        {
+            AssertStrengthAndBreakdown(
+                direct.RawDataJson,
+                labEval.Result.RawDataJson,
+                backtestResult.RawDataJson,
+                labCandidate.StructureJson);
 
-        AssertRequiredJsonProperties(
-            evidence.RequiredStructureJsonProperties,
-            labCandidate.StructureJson);
+            AssertRequiredJsonProperties(
+                evidence.RequiredStructureJsonProperties,
+                labCandidate.StructureJson);
+        }
 
         AssertCandidateParity(labEval, labCandidate, direct, evidence);
     }
@@ -521,6 +541,15 @@ internal static class ParityAssertionHelper
         Assert.Equal(labEval.Result.Reason, labCandidate.StrategyReason);
         Assert.Equal(evidence.ExpectedCandidateStatus, labCandidate.CandidateStatus);
 
+        if (evidence.OutcomeContract is { } outcome)
+        {
+            Assert.Equal(outcome.Direction, labCandidate.Direction);
+            Assert.Equal(outcome.EntryPrice, labCandidate.ProposedEntryPrice);
+            Assert.Equal(outcome.StopLoss, labCandidate.StopLoss);
+            Assert.Equal(outcome.TakeProfit, labCandidate.Target1);
+            Assert.Equal(outcome.Reason, labCandidate.StrategyReason);
+        }
+
         var risk = labCandidate.Direction == TradeDirection.Long
             ? labCandidate.ProposedEntryPrice - labCandidate.StopLoss
             : labCandidate.StopLoss - labCandidate.ProposedEntryPrice;
@@ -541,10 +570,41 @@ internal static class ParityAssertionHelper
                 break;
         }
 
-        Assert.Equal(direct.Strength, ParityAssertionHelper.ExtractStrengthForTest(labCandidate.StructureJson));
-        Assert.Equal(
-            Milestone231BParityFixtures.ExtractStrengthBreakdown(direct.RawDataJson),
-            Milestone231BParityFixtures.ExtractStrengthBreakdown(labCandidate.StructureJson));
+        if (evidence.RawDataContract is null)
+        {
+            Assert.Equal(direct.Strength, ParityAssertionHelper.ExtractStrengthForTest(labCandidate.StructureJson));
+            Assert.Equal(
+                Milestone231BParityFixtures.ExtractStrengthBreakdown(direct.RawDataJson),
+                Milestone231BParityFixtures.ExtractStrengthBreakdown(labCandidate.StructureJson));
+        }
+    }
+
+    private static void AssertPositiveOutcome(
+        PositiveOutcomeContract expected,
+        StrategySignalResult actual,
+        string sourceLabel)
+    {
+        Assert.Equal(expected.Direction, actual.Direction);
+        Assert.Equal(expected.EntryPrice, actual.EntryPrice);
+        Assert.Equal(expected.StopLoss, actual.SuggestedStopLoss);
+        Assert.Equal(expected.TakeProfit, actual.SuggestedTakeProfit);
+        Assert.Equal(expected.Strength, actual.Strength);
+        Assert.Equal(expected.Reason, actual.Reason);
+        _ = sourceLabel;
+    }
+
+    private static void AssertPositiveOutcome(
+        PositiveOutcomeContract expected,
+        StrategyEvaluationResult actual,
+        string sourceLabel)
+    {
+        Assert.Equal(expected.Direction, actual.Direction);
+        Assert.Equal(expected.EntryPrice, actual.EntryPrice);
+        Assert.Equal(expected.StopLoss, actual.SuggestedStopLoss);
+        Assert.Equal(expected.TakeProfit, actual.SuggestedTakeProfit);
+        Assert.Equal(expected.Strength, actual.Strength);
+        Assert.Equal(expected.Reason, actual.Reason);
+        _ = sourceLabel;
     }
 
     private static void AssertParametersJsonMatchesContext(
@@ -892,13 +952,80 @@ internal static class ParityAssertionHelper
                 break;
             case JsonPropertyState.ExactJsonValue:
                 Assert.False(string.IsNullOrWhiteSpace(expectation.CanonicalJsonValue));
-                Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expectation.CanonicalJsonValue), JsonNode.Parse(actual.GetRawText())),
-                    $"Property '{propertyName}' differs from its canonical JSON value.");
+                using (var expectedDocument = JsonDocument.Parse(expectation.CanonicalJsonValue!))
+                {
+                    Assert.True(
+                        JsonElementsSemanticallyEqual(expectedDocument.RootElement, actual),
+                        $"Property '{propertyName}' differs from its canonical JSON value. " +
+                        $"Expected: {expectation.CanonicalJsonValue}; actual: {actual.GetRawText()}");
+                }
                 break;
             default:
                 Assert.Fail($"Unsupported property state '{expectation.State}'.");
                 break;
         }
+    }
+
+    private static bool JsonElementsSemanticallyEqual(JsonElement expected, JsonElement actual)
+    {
+        if (expected.ValueKind != actual.ValueKind)
+        {
+            return false;
+        }
+
+        switch (expected.ValueKind)
+        {
+            case JsonValueKind.Object:
+                var expectedProperties = ToUniquePropertyMap(expected);
+                var actualProperties = ToUniquePropertyMap(actual);
+                if (expectedProperties is null || actualProperties is null || expectedProperties.Count != actualProperties.Count)
+                {
+                    return false;
+                }
+
+                foreach (var (name, expectedValue) in expectedProperties)
+                {
+                    if (!actualProperties.TryGetValue(name, out var actualValue)
+                        || !JsonElementsSemanticallyEqual(expectedValue, actualValue))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            case JsonValueKind.Array:
+                var expectedItems = expected.EnumerateArray().ToArray();
+                var actualItems = actual.EnumerateArray().ToArray();
+                return expectedItems.Length == actualItems.Length
+                       && expectedItems.Zip(actualItems).All(pair => JsonElementsSemanticallyEqual(pair.First, pair.Second));
+            case JsonValueKind.Number:
+                return expected.TryGetDecimal(out var expectedNumber)
+                       && actual.TryGetDecimal(out var actualNumber)
+                       && expectedNumber == actualNumber;
+            case JsonValueKind.String:
+                return string.Equals(expected.GetString(), actual.GetString(), StringComparison.Ordinal);
+            case JsonValueKind.True:
+            case JsonValueKind.False:
+                return expected.GetBoolean() == actual.GetBoolean();
+            case JsonValueKind.Null:
+                return true;
+            default:
+                return expected.GetRawText() == actual.GetRawText();
+        }
+    }
+
+    private static Dictionary<string, JsonElement>? ToUniquePropertyMap(JsonElement element)
+    {
+        var properties = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var property in element.EnumerateObject())
+        {
+            if (!properties.TryAdd(property.Name, property.Value))
+            {
+                return null;
+            }
+        }
+
+        return properties;
     }
 
     private static void AssertIndicatorSnapshotIdentity(
