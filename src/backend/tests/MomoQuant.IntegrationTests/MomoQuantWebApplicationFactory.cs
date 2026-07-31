@@ -17,6 +17,12 @@ public class MomoQuantWebApplicationFactory : WebApplicationFactory<Program>
     public IIntegrationDatabaseInitializationObserver InitializationObserver { get; set; } =
         NoOpIntegrationDatabaseInitializationObserver.Instance;
 
+    /// <summary>
+    /// Explicit, already-validated target used only by fixtures which own a disposable database.
+    /// Default integration tests continue to resolve MOMO_INTEGRATION_MYSQL normally.
+    /// </summary>
+    public IntegrationDatabaseTarget? DatabaseTargetOverride { get; init; }
+
     static MomoQuantWebApplicationFactory()
     {
         // Optional gitignored local overrides (never commit). Loaded once for the test host process.
@@ -34,7 +40,9 @@ public class MomoQuantWebApplicationFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
-        var target = IntegrationDatabaseInitialization.ResolveTarget(InitializationObserver);
+        var target = DatabaseTargetOverride is null
+            ? IntegrationDatabaseInitialization.ResolveTarget(InitializationObserver)
+            : ResolveOverriddenTarget(DatabaseTargetOverride);
         LastResolvedDatabaseName = target.NormalizedDatabaseName;
         LastConnectionSource = target.ConnectionSource;
 
@@ -71,6 +79,14 @@ public class MomoQuantWebApplicationFactory : WebApplicationFactory<Program>
                     target.ConnectionString,
                     ServerVersion.Parse(PersistenceConstants.MySqlServerVersion)));
         });
+    }
+
+    private IntegrationDatabaseTarget ResolveOverriddenTarget(IntegrationDatabaseTarget target)
+    {
+        // Revalidate at the factory boundary so an override cannot bypass the normal safety guard.
+        var validated = IntegrationDatabaseSafetyGuard.Validate(target.ConnectionString, "factory override");
+        InitializationObserver.OnDbContextCreating();
+        return validated;
     }
 
     private static void TryLoadLocalEnvFile()

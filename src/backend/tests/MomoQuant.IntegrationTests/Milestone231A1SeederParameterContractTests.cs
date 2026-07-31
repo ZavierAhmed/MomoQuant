@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Xunit.Abstractions;
 using MomoQuant.Application.Strategies.MomoAdaptive;
 using MomoQuant.Application.Strategies.MomoRange;
+using MomoQuant.Domain.Exchanges;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.Strategies;
 using MomoQuant.Persistence;
@@ -13,13 +15,17 @@ namespace MomoQuant.IntegrationTests;
 /// Milestone 23.1A1C — MySQL seeder reconciliation for canonical parameter contracts.
 /// </summary>
 [Collection("Integration")]
-public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<MomoQuantWebApplicationFactory>
+public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<DisposableIntegrationDatabaseFixture>
 {
-    private readonly MomoQuantWebApplicationFactory _factory;
+    private readonly DisposableIntegrationDatabaseFixture _fixture;
+    private readonly ITestOutputHelper _output;
 
-    public Milestone231A1SeederParameterContractTests(MomoQuantWebApplicationFactory factory)
+    public Milestone231A1SeederParameterContractTests(
+        DisposableIntegrationDatabaseFixture fixture,
+        ITestOutputHelper output)
     {
-        _factory = factory;
+        _fixture = fixture;
+        _output = output;
     }
 
     [Theory]
@@ -29,9 +35,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [InlineData(Timeframe.H4)]
     public async Task Seeder_Adaptive_ActiveKeysMatchContract(Timeframe timeframe)
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
@@ -40,12 +46,7 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
             .Where(p => p.StrategyId == strategy.Id && p.Timeframe == timeframe && p.SymbolId == null && p.IsActive)
             .ToListAsync();
 
-        Assert.Equal(contract.Count, active.Count);
-        foreach (var (key, expected) in contract)
-        {
-            var row = Assert.Single(active, p => string.Equals(p.ParameterKey, key, StringComparison.OrdinalIgnoreCase));
-            Assert.Equal(NormalizeDecimalish(expected), NormalizeDecimalish(row.ParameterValue));
-        }
+        AssertCanonicalContract(contract, active, strategy.Id, timeframe);
 
         var obsolete = await db.StrategyParameters
             .Where(p => p.StrategyId == strategy.Id && p.Timeframe == timeframe && p.SymbolId == null)
@@ -68,9 +69,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [InlineData(Timeframe.H1)]
     public async Task Seeder_Range_ActiveKeysMatchContract(Timeframe timeframe)
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoVolatilityRangeReversion);
@@ -79,12 +80,7 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
             .Where(p => p.StrategyId == strategy.Id && p.Timeframe == timeframe && p.SymbolId == null && p.IsActive)
             .ToListAsync();
 
-        Assert.Equal(contract.Count, active.Count);
-        foreach (var (key, expected) in contract)
-        {
-            var row = Assert.Single(active, p => string.Equals(p.ParameterKey, key, StringComparison.OrdinalIgnoreCase));
-            Assert.Equal(NormalizeDecimalish(expected), NormalizeDecimalish(row.ParameterValue));
-        }
+        AssertCanonicalContract(contract, active, strategy.Id, timeframe);
 
         var obsolete = await db.StrategyParameters
             .Where(p => p.StrategyId == strategy.Id && p.Timeframe == timeframe && p.SymbolId == null)
@@ -103,9 +99,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [Fact]
     public async Task Seeder_ObsoleteKeys_AreDeactivatedOnReseed()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
@@ -132,9 +128,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [Fact]
     public async Task Seeder_IsIdempotent_ActiveKeyCountsStable()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var adaptive = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
@@ -158,9 +154,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [Fact]
     public async Task Seeder_CaseInsensitiveKeys_DoNotCreateDuplicates()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
@@ -195,9 +191,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [Fact]
     public async Task Seeder_BoolAndDecimal_NormalizeInContractComparisons()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
@@ -228,9 +224,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [Fact]
     public async Task Seeder_PreservesUnprovenancedAdaptiveRewardRiskOf20()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
@@ -256,9 +252,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [Fact]
     public async Task Seeder_DoesNotBlindlyOverwriteNonSeedAdaptiveRewardRisk()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
@@ -282,9 +278,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [Fact]
     public async Task Seeder_AdaptiveRewardRiskReseed_IsIdempotent()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await RestoreAdaptiveSymbolNullContractAsync(
             db,
             (await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout)).Id,
@@ -312,9 +308,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [Fact]
     public async Task Seeder_BlankAdaptiveRewardRisk_BackfillsTo250()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
@@ -337,32 +333,27 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [Fact]
     public async Task Seeder_MissingAdaptiveDefaults_Receive250AndExactContractKeys()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
+        var contract = MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract();
         var existing = await db.StrategyParameters
             .Where(p => p.StrategyId == strategy.Id && p.Timeframe == Timeframe.M5 && p.SymbolId == null)
             .ToListAsync();
+        _output.WriteLine(BuildContractDiagnostic(contract, existing.Where(p => p.IsActive).ToList(), strategy.Id, Timeframe.M5));
         db.StrategyParameters.RemoveRange(existing);
         await DeleteAnySeedProvenanceRowsAsync(db, strategy.Id);
         await db.SaveChangesAsync();
 
         await seeder.SeedAsync();
 
-        var contract = MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract();
         var active = await db.StrategyParameters
             .Where(p => p.StrategyId == strategy.Id && p.Timeframe == Timeframe.M5 && p.SymbolId == null && p.IsActive)
             .ToListAsync();
-        Assert.Equal(contract.Count, active.Count);
-        Assert.Equal(active.Count, active.Select(p => p.ParameterKey.ToLowerInvariant()).Distinct().Count());
-        foreach (var (key, expected) in contract)
-        {
-            var row = Assert.Single(active, p => string.Equals(p.ParameterKey, key, StringComparison.OrdinalIgnoreCase));
-            Assert.Equal(NormalizeDecimalish(expected), NormalizeDecimalish(row.ParameterValue));
-        }
+        AssertCanonicalContract(contract, active, strategy.Id, Timeframe.M5);
 
         Assert.Equal(NormalizeDecimalish("2.50"), NormalizeDecimalish(Assert.Single(active, p =>
             string.Equals(p.ParameterKey, "fixedRewardRisk", StringComparison.OrdinalIgnoreCase)).ParameterValue));
@@ -376,9 +367,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [Fact]
     public async Task Seeder_DoesNotInsertHiddenSeedProvenanceParameter()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
         await DeleteAnySeedProvenanceRowsAsync(db, strategy.Id);
         await seeder.SeedAsync();
@@ -391,15 +382,72 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     }
 
     [Fact]
-    public async Task Seeder_PreservesSymbolSpecificOverrides()
+    public async Task Seeder_PreservesSyntheticUnknownAdaptiveGlobalParameters()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
-        var symbol = await db.Symbols.AsNoTracking().FirstAsync();
+        var contract = MomoAdaptiveMtfTrendBreakoutEvaluator.GetDefaultParameterContract();
+        var syntheticKeys = new[]
+        {
+            "testOnlyUnknownAdaptiveA",
+            "testOnlyUnknownAdaptiveB",
+            "testOnlyUnknownAdaptiveC"
+        };
+        db.StrategyParameters.AddRange(syntheticKeys.Select(key => new StrategyParameter
+        {
+            StrategyId = strategy.Id,
+            ParameterKey = key,
+            ParameterValue = "test-only",
+            ValueType = SettingValueType.String,
+            Timeframe = Timeframe.M5,
+            SymbolId = null,
+            IsActive = true,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        }));
+        await db.SaveChangesAsync();
+
+        await seeder.SeedAsync();
+        var active = await db.StrategyParameters
+            .Where(p => p.StrategyId == strategy.Id && p.Timeframe == Timeframe.M5 && p.SymbolId == null && p.IsActive)
+            .ToListAsync();
+
+        Assert.Equal(27, active.Count);
+        Assert.All(syntheticKeys, key => Assert.Contains(active, parameter =>
+            string.Equals(parameter.ParameterKey, key, StringComparison.Ordinal)
+            && parameter.IsActive));
+        var canonical = active.Where(parameter => contract.ContainsKey(parameter.ParameterKey)).ToList();
+        AssertCanonicalContract(contract, canonical, strategy.Id, Timeframe.M5);
+    }
+
+    [Fact]
+    public async Task Seeder_PreservesSymbolSpecificOverrides()
+    {
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
+        await seeder.SeedAsync();
+
+        var strategy = await db.Strategies.SingleAsync(s => s.Code == StrategyCode.MomoAdaptiveMultiTimeframeTrendBreakout);
+        var exchange = await db.Exchanges.AsNoTracking().OrderBy(item => item.Id).FirstAsync();
+        var symbol = new Symbol
+        {
+            ExchangeId = exchange.Id,
+            SymbolName = "SEEDERCONTRACT",
+            BaseAsset = "SEEDER",
+            QuoteAsset = "USDT",
+            ContractType = ContractType.Perpetual,
+            IsActive = true,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+        db.Symbols.Add(symbol);
+        await db.SaveChangesAsync();
+
         var overrideRow = new StrategyParameter
         {
             StrategyId = strategy.Id,
@@ -429,9 +477,9 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
     [Fact]
     public async Task Seeder_PreservesArchivedHistoricalParameters()
     {
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
-        var seeder = scope.ServiceProvider.GetRequiredService<IStrategyDataSeeder>();
+        await using var testScope = await _fixture.CreateTestScopeAsync();
+        var db = testScope.Db;
+        var seeder = testScope.Seeder;
         await seeder.SeedAsync();
 
         var archived = await db.Strategies.FirstOrDefaultAsync(s => s.Code == StrategyCode.EmaPullback);
@@ -544,5 +592,75 @@ public sealed class Milestone231A1SeederParameterContractTests : IClassFixture<M
         }
 
         return value;
+    }
+
+    private static void AssertCanonicalContract(
+        IReadOnlyDictionary<string, string> contract,
+        IReadOnlyList<StrategyParameter> active,
+        long strategyId,
+        Timeframe timeframe)
+    {
+        var diagnostic = BuildContractDiagnostic(contract, active, strategyId, timeframe);
+        var canonicalKeys = new HashSet<string>(contract.Keys, StringComparer.OrdinalIgnoreCase);
+        var missing = contract.Keys.Where(key => !active.Any(row =>
+            string.Equals(row.ParameterKey, key, StringComparison.OrdinalIgnoreCase))).ToList();
+        var unexpected = active.Where(row => !canonicalKeys.Contains(row.ParameterKey)).ToList();
+        var duplicates = active.GroupBy(row => row.ParameterKey, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .ToList();
+        var mismatches = contract.Where(pair => active.Where(row =>
+                string.Equals(row.ParameterKey, pair.Key, StringComparison.OrdinalIgnoreCase))
+            .Any(row => NormalizeDecimalish(row.ParameterValue) != NormalizeDecimalish(pair.Value)))
+            .ToList();
+
+        Assert.True(
+            active.Count == contract.Count
+            && missing.Count == 0
+            && unexpected.Count == 0
+            && duplicates.Count == 0
+            && mismatches.Count == 0,
+            diagnostic);
+    }
+
+    private static string BuildContractDiagnostic(
+        IReadOnlyDictionary<string, string> contract,
+        IReadOnlyList<StrategyParameter> active,
+        long strategyId,
+        Timeframe timeframe)
+    {
+        var canonicalKeys = new HashSet<string>(contract.Keys, StringComparer.OrdinalIgnoreCase);
+        var missing = contract.Keys.Where(key => !active.Any(row =>
+            string.Equals(row.ParameterKey, key, StringComparison.OrdinalIgnoreCase)));
+        var unexpected = active.Where(row => !canonicalKeys.Contains(row.ParameterKey)).ToList();
+        var duplicates = active.GroupBy(row => row.ParameterKey, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .Select(group => $"{group.Key}: [{string.Join(", ", group.Select(row => row.Id))}]");
+        var mismatches = contract.Select(pair => new
+            {
+                pair.Key,
+                Expected = pair.Value,
+                Actual = active.Where(row => string.Equals(row.ParameterKey, pair.Key, StringComparison.OrdinalIgnoreCase))
+                    .Select(row => row.ParameterValue)
+                    .ToList()
+            })
+            .Where(item => item.Actual.Any(value => NormalizeDecimalish(value) != NormalizeDecimalish(item.Expected)))
+            .Select(item => $"{item.Key}: expected {item.Expected}; actual [{string.Join(", ", item.Actual)}]");
+
+        var rows = active.OrderBy(row => row.Id).Select(row =>
+            $"Id={row.Id}; ParameterKey={row.ParameterKey}; ParameterValue={row.ParameterValue}; ValueType={row.ValueType}; Timeframe={row.Timeframe}; SymbolId={row.SymbolId?.ToString() ?? "null"}; IsActive={row.IsActive}; CreatedAtUtc={row.CreatedAtUtc:O}; UpdatedAtUtc={row.UpdatedAtUtc:O}");
+        return $"""
+            Adaptive parameter contract diagnostic
+            StrategyId: {strategyId}
+            Timeframe: {timeframe}
+            Expected canonical count: {contract.Count}
+            Actual active count: {active.Count}
+            Missing canonical keys: [{string.Join(", ", missing)}]
+            Unexpected active keys: [{string.Join(", ", unexpected.Select(row => row.ParameterKey))}]
+            Case-insensitive duplicates: [{string.Join("; ", duplicates)}]
+            Duplicate row IDs: [{string.Join(", ", active.GroupBy(row => row.ParameterKey, StringComparer.OrdinalIgnoreCase).Where(group => group.Count() > 1).SelectMany(group => group.Select(row => row.Id)))}]
+            Value mismatches: [{string.Join("; ", mismatches)}]
+            Full active rows:
+            {string.Join(Environment.NewLine, rows)}
+            """;
     }
 }

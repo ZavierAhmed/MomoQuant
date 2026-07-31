@@ -158,6 +158,7 @@ namespace MomoQuant.Persistence.Migrations
 
         private static void AddColumnIfMissing(MigrationBuilder migrationBuilder, string table, string column, string definition)
         {
+            var escapedDefinition = definition.Replace("'", "''", StringComparison.Ordinal);
             migrationBuilder.Sql(
                 $"""
                  SET @column_exists := (
@@ -169,7 +170,7 @@ namespace MomoQuant.Persistence.Migrations
 
                  SET @add_column_sql := IF(
                      @column_exists = 0,
-                     'ALTER TABLE `{table}` ADD COLUMN {definition}',
+                     'ALTER TABLE `{table}` ADD COLUMN {escapedDefinition}',
                      'SELECT 1');
 
                  PREPARE add_column_stmt FROM @add_column_sql;
