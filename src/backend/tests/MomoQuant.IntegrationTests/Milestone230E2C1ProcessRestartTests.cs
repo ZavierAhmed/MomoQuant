@@ -1,8 +1,7 @@
-using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using MomoQuant.Persistence;
+using Xunit.Abstractions;
 
 namespace MomoQuant.IntegrationTests;
 
@@ -12,9 +11,17 @@ namespace MomoQuant.IntegrationTests;
 [Collection("Integration")]
 public sealed class Milestone230E2C1ProcessRestartTests : IClassFixture<MomoQuantWebApplicationFactory>
 {
+    private const string ConnectionEnvironmentVariable = "MOMOQUANT_AUDIT_RESTART_CONNECTION";
     private readonly MomoQuantWebApplicationFactory _factory;
+    private readonly TestSubprocessRunner _subprocessRunner;
 
-    public Milestone230E2C1ProcessRestartTests(MomoQuantWebApplicationFactory factory) => _factory = factory;
+    public Milestone230E2C1ProcessRestartTests(
+        MomoQuantWebApplicationFactory factory,
+        ITestOutputHelper output)
+    {
+        _factory = factory;
+        _subprocessRunner = new TestSubprocessRunner(output);
+    }
 
     [Fact]
     public async Task CrashBeforeFirstFlush_RestartCannotTreatZeroRowsAsComplete()
@@ -87,32 +94,49 @@ public sealed class Milestone230E2C1ProcessRestartTests : IClassFixture<MomoQuan
 
         var fixtureId = Guid.NewGuid();
         var resultPath = Path.Combine(Path.GetTempPath(), $"e2c1-{fixtureId:N}.json");
-        var project = FindHarnessProject();
+        var accessHintPath = Path.Combine(Path.GetTempPath(), $"e2c1-access-{fixtureId:N}.txt");
+        var harnessAssembly = AuditRestartHarnessOutput.ResolveAssemblyPath();
 
-        // Ensure schema exists via factory host (migrates on startup).
-        await using (var scope = _factory.Services.CreateAsyncScope())
+        try
         {
-            _ = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            // Ensure schema exists via factory host (migrates on startup).
+            await using (var scope = _factory.Services.CreateAsyncScope())
+            {
+                _ = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            }
+
+            var write = await RunHarnessAsync(
+                harnessAssembly,
+                connection,
+                phase: "write",
+                crashPoint,
+                fixtureId,
+                resultPath: null);
+            Assert.True(
+                write.ExitCode == 42,
+                $"Write phase expected exit 42, got {write.ExitCode}. stdout={write.StdOut} stderr={write.StdErr}");
+
+            var recover = await RunHarnessAsync(
+                harnessAssembly,
+                connection,
+                phase: "recover",
+                crashPoint,
+                fixtureId,
+                resultPath);
+            Assert.True(
+                recover.ExitCode == 0,
+                $"Recover phase expected exit 0, got {recover.ExitCode}. stdout={recover.StdOut} stderr={recover.StdErr}");
+
+            Assert.True(File.Exists(resultPath), $"Result file missing. stdout={recover.StdOut} stderr={recover.StdErr}");
+            var json = await File.ReadAllTextAsync(resultPath);
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.Clone();
         }
-
-        var write = await RunHarnessAsync(
-            project,
-            $"--phase write --crash-point {crashPoint} --fixture-id {fixtureId:D} --connection \"{connection}\"");
-        Assert.True(
-            write.ExitCode == 42,
-            $"Write phase expected exit 42, got {write.ExitCode}. stdout={write.StdOut} stderr={write.StdErr}");
-
-        var recover = await RunHarnessAsync(
-            project,
-            $"--phase recover --crash-point {crashPoint} --fixture-id {fixtureId:D} --connection \"{connection}\" --result-path \"{resultPath}\"");
-        Assert.True(
-            recover.ExitCode == 0,
-            $"Recover phase expected exit 0, got {recover.ExitCode}. stdout={recover.StdOut} stderr={recover.StdErr}");
-
-        Assert.True(File.Exists(resultPath), $"Result file missing. stdout={recover.StdOut} stderr={recover.StdErr}");
-        var json = await File.ReadAllTextAsync(resultPath);
-        using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.Clone();
+        finally
+        {
+            DeleteTestOwnedFile(resultPath);
+            DeleteTestOwnedFile(accessHintPath);
+        }
     }
 
     private static string ResolveConnection()
@@ -121,80 +145,53 @@ public sealed class Milestone230E2C1ProcessRestartTests : IClassFixture<MomoQuan
         return target.ConnectionString;
     }
 
-    private static string FindHarnessProject()
+    private Task<TestSubprocessResult> RunHarnessAsync(
+        string harnessAssembly,
+        string connection,
+        string phase,
+        string crashPoint,
+        Guid fixtureId,
+        string? resultPath)
     {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
+        var arguments = new List<string>
         {
-            var candidate = Path.Combine(
-                dir.FullName,
-                "src", "backend", "tests", "MomoQuant.AuditRestartHarness",
-                "MomoQuant.AuditRestartHarness.csproj");
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            // From bin/Debug/net8.0 of IntegrationTests
-            candidate = Path.Combine(
-                dir.FullName,
-                "..", "..", "..", "..",
-                "MomoQuant.AuditRestartHarness",
-                "MomoQuant.AuditRestartHarness.csproj");
-            candidate = Path.GetFullPath(candidate);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            dir = dir.Parent;
+            harnessAssembly,
+            "--phase", phase,
+            "--crash-point", crashPoint,
+            "--fixture-id", fixtureId.ToString("D")
+        };
+        if (!string.IsNullOrWhiteSpace(resultPath))
+        {
+            arguments.Add("--result-path");
+            arguments.Add(resultPath);
         }
 
-        throw new FileNotFoundException("MomoQuant.AuditRestartHarness.csproj not found.");
+        var dotnetHost = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
+        var request = new TestSubprocessRequest(
+            phase,
+            crashPoint,
+            fixtureId,
+            string.IsNullOrWhiteSpace(dotnetHost) ? "dotnet" : dotnetHost,
+            arguments,
+            new Dictionary<string, string>
+            {
+                [ConnectionEnvironmentVariable] = connection
+            });
+        return _subprocessRunner.RunAsync(request);
     }
 
-    private static async Task<(int ExitCode, string StdOut, string StdErr)> RunHarnessAsync(
-        string projectPath,
-        string args)
+    private static void DeleteTestOwnedFile(string path)
     {
-        // Always build so process tests pick up harness changes.
-        var psi = new ProcessStartInfo
+        try
         {
-            FileName = "dotnet",
-            Arguments = $"run --project \"{projectPath}\" -- {args}",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        return await StartProcessAsync(psi);
-    }
-
-    private static async Task<(int ExitCode, string StdOut, string StdErr)> StartProcessAsync(ProcessStartInfo psi)
-    {
-        using var process = new Process { StartInfo = psi };
-        var stdout = new StringBuilder();
-        var stderr = new StringBuilder();
-        process.OutputDataReceived += (_, e) =>
-        {
-            if (e.Data is not null)
+            if (File.Exists(path))
             {
-                stdout.AppendLine(e.Data);
+                File.Delete(path);
             }
-        };
-        process.ErrorDataReceived += (_, e) =>
+        }
+        catch (IOException)
         {
-            if (e.Data is not null)
-            {
-                stderr.AppendLine(e.Data);
-            }
-        };
-
-        Assert.True(process.Start());
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        await process.WaitForExitAsync();
-        return (process.ExitCode, stdout.ToString(), stderr.ToString());
+            // Test-owned diagnostics should not hide the primary restart assertion.
+        }
     }
 }

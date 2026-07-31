@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -29,11 +30,25 @@ namespace MomoQuant.AuditRestartHarness;
 public static class Program
 {
     private const int CrashExitCode = 42;
+    internal const string ConnectionEnvironmentVariableName = "MOMOQUANT_AUDIT_RESTART_CONNECTION";
+    private const string OrchestrationProbeArgument = "--orchestration-probe";
+    private const string OrchestrationProbeChildArgument = "--orchestration-probe-child";
 
     public static async Task<int> Main(string[] args)
     {
         try
         {
+            if (args is [OrchestrationProbeArgument])
+            {
+                return await RunOrchestrationProbeAsync();
+            }
+
+            if (args is [OrchestrationProbeChildArgument])
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan);
+                return 0;
+            }
+
             var options = HarnessArgs.Parse(args);
             EnsureTestDatabase(options.Connection);
 
@@ -53,6 +68,43 @@ public static class Program
             Console.Error.WriteLine(ex.ToString());
             return 1;
         }
+    }
+
+    private static async Task<int> RunOrchestrationProbeAsync()
+    {
+        var dotnetHost = Environment.ProcessPath;
+        var harnessAssembly = typeof(Program).Assembly.Location;
+        if (string.IsNullOrWhiteSpace(dotnetHost) || !File.Exists(dotnetHost))
+        {
+            return Fail("The orchestration probe could not resolve the current dotnet host.");
+        }
+
+        if (string.IsNullOrWhiteSpace(harnessAssembly) || !File.Exists(harnessAssembly))
+        {
+            return Fail("The orchestration probe could not resolve the compiled harness assembly.");
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = dotnetHost,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add(harnessAssembly);
+        startInfo.ArgumentList.Add(OrchestrationProbeChildArgument);
+
+        using var descendant = Process.Start(startInfo);
+        if (descendant is null)
+        {
+            return Fail("The orchestration probe could not start its test-owned descendant.");
+        }
+
+        Console.WriteLine(
+            $"ORCHESTRATION_PROBE rootPid={Environment.ProcessId} descendantPid={descendant.Id}");
+        Console.Out.Flush();
+
+        await descendant.WaitForExitAsync();
+        return descendant.ExitCode;
     }
 
     private static async Task<int> RunWriteAsync(IServiceProvider sp, HarnessArgs options)
@@ -825,7 +877,7 @@ internal sealed class HarnessArgs
         string? phase = null;
         string? crash = null;
         string? fixture = null;
-        string? connection = null;
+        var connection = Environment.GetEnvironmentVariable(Program.ConnectionEnvironmentVariableName);
         string? resultPath = null;
 
         for (var i = 0; i < args.Length; i++)
@@ -854,9 +906,6 @@ internal sealed class HarnessArgs
                 case "--fixture-id":
                     fixture = value;
                     break;
-                case "--connection":
-                    connection = value;
-                    break;
                 case "--result-path":
                     resultPath = value;
                     break;
@@ -869,7 +918,7 @@ internal sealed class HarnessArgs
             || string.IsNullOrWhiteSpace(connection))
         {
             throw new ArgumentException(
-                "Required: --phase write|recover --crash-point <name> --fixture-id <guid> --connection <mysql>");
+                $"Required: --phase write|recover --crash-point <name> --fixture-id <guid> and environment variable {Program.ConnectionEnvironmentVariableName}.");
         }
 
         return new HarnessArgs

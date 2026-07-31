@@ -23,6 +23,21 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MomoQuant.Api\MomoQuant.Api.csproj" />
+    <ProjectReference Include="..\MomoQuant.AuditRestartHarness\MomoQuant.AuditRestartHarness.csproj"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
+
+  <Target Name="CopyAuditRestartHarnessOutput" AfterTargets="Build">
+    <ItemGroup>
+      <AuditRestartHarnessOutput Include="$(MSBuildProjectDirectory)\..\MomoQuant.AuditRestartHarness\bin\$(Configuration)\$(TargetFramework)\**\*" />
+    </ItemGroup>
+
+    <Error Condition="'@(AuditRestartHarnessOutput)' == ''"
+           Text="The MomoQuant.AuditRestartHarness build output is missing. Build the integration test project so its harness dependency is produced." />
+    <MakeDir Directories="$(OutDir)AuditRestartHarness" />
+    <Copy SourceFiles="@(AuditRestartHarnessOutput)"
+          DestinationFiles="@(AuditRestartHarnessOutput->'$(OutDir)AuditRestartHarness\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>
