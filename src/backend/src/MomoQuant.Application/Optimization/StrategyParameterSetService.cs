@@ -10,6 +10,8 @@ namespace MomoQuant.Application.Optimization;
 
 public sealed class StrategyParameterSetService : IStrategyParameterSetService
 {
+    private const string HistoricalNotEvaluatedReason = "PARAMETER_SET_HISTORICAL_NOT_EVALUATED";
+    private const string ResearchOnlyReason = "PARAMETER_SET_RESEARCH_ONLY";
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
     private readonly IStrategyParameterSetRepository _repository;
@@ -41,13 +43,13 @@ public sealed class StrategyParameterSetService : IStrategyParameterSetService
             if (string.Equals(request.ValidationStatus, ValidationStatus.Failed.ToString(), StringComparison.OrdinalIgnoreCase))
             {
                 return ServiceResult<StrategyParameterSetDto>.Fail(
-                    "This parameter set failed validation and cannot be approved.");
+                    "This parameter set failed validation and cannot be approved for research.");
             }
 
             if (validationTradeCount is 0)
             {
                 return ServiceResult<StrategyParameterSetDto>.Fail(
-                    "No trades were produced. Run optimization or adjust strategy settings before approving.");
+                    "No trades were produced. Run optimization or adjust strategy settings before approving for research.");
             }
         }
 
@@ -66,6 +68,7 @@ public sealed class StrategyParameterSetService : IStrategyParameterSetService
             ValidationMetricsJson = request.ValidationMetrics is null ? null : JsonSerializer.Serialize(request.ValidationMetrics, JsonOptions),
             RobustnessScore = request.RobustnessScore,
             IsApproved = approve,
+            QualificationStatus = ParameterSetQualificationStatus.ResearchOnly,
             IsDefaultForStrategy = request.SetAsDefault && approve,
             IsDefaultForSymbolTimeframe = request.SetAsDefault && request.SymbolId.HasValue && approve,
             CreatedAtUtc = DateTime.UtcNow,
@@ -91,7 +94,7 @@ public sealed class StrategyParameterSetService : IStrategyParameterSetService
             if (metrics?.TradeCount == 0)
             {
                 return ServiceResult<StrategyParameterSetDto>.Fail(
-                    "No trades were produced. This parameter set cannot be approved.");
+                    "No trades were produced. This parameter set cannot be approved for research.");
             }
         }
 
@@ -143,10 +146,22 @@ public sealed class StrategyParameterSetService : IStrategyParameterSetService
             OptimizationRunId = entity.OptimizationRunId,
             RobustnessScore = entity.RobustnessScore,
             IsApproved = entity.IsApproved,
+            QualificationStatus = entity.QualificationStatus.ToString(),
+            ApprovalScope = "Research",
+            IsDeploymentQualified = entity.QualificationStatus == ParameterSetQualificationStatus.DeploymentQualified,
+            QualificationBlockingReasons = GetQualificationBlockingReasons(entity.QualificationStatus),
             IsDefaultForStrategy = entity.IsDefaultForStrategy,
             IsDefaultForSymbolTimeframe = entity.IsDefaultForSymbolTimeframe,
             CreatedAtUtc = entity.CreatedAtUtc,
             ApprovedAtUtc = entity.ApprovedAtUtc
         };
     }
+
+    private static IReadOnlyList<string> GetQualificationBlockingReasons(ParameterSetQualificationStatus status) =>
+        status switch
+        {
+            ParameterSetQualificationStatus.HistoricalNotEvaluated => [HistoricalNotEvaluatedReason],
+            ParameterSetQualificationStatus.ResearchOnly => [ResearchOnlyReason],
+            _ => []
+        };
 }

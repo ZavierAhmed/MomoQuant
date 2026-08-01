@@ -3,6 +3,11 @@ import { SelectField } from '@/components/forms/fields';
 import { useAsync } from '@/hooks/useAsync';
 import { strategyResearchApi } from '@/api/strategyResearchApi';
 import { formatDate } from '@/components/common/utils';
+import {
+  parameterSetApprovalLabel,
+  parameterSetQualificationExplanation,
+  parameterSetQualificationLabel,
+} from './parameterSetQualification';
 
 type Props = {
   strategyCode?: string;
@@ -47,7 +52,7 @@ export function StrategyParameterSetSelector({
 
     return sets.map((set) => ({
       value: set.id,
-      label: `${set.name}${set.isApproved ? ' — Approved' : ''}${
+      label: `${set.name} — ${parameterSetApprovalLabel(set)} — ${parameterSetQualificationLabel(set)}${
         set.robustnessScore != null ? ` — Robustness ${set.robustnessScore.toFixed(1)}` : ''
       }`,
     }));
@@ -71,9 +76,9 @@ export function StrategyParameterSetSelector({
         error={error}
         hint={
           requiredForLivePaper
-            ? 'LivePaper uses a frozen approved parameter set when selected. Parameters cannot change during the session.'
+            ? 'LivePaper is a simulated research workflow and accepts a research-approved parameter set. Research approval is not deployment qualification.'
             : hasSavedSets
-              ? 'Reuse a saved or approved parameter set, or keep strategy defaults.'
+              ? 'Reuse a saved parameter set for research, or keep strategy defaults.'
               : 'No saved parameter sets yet.'
         }
         placeholder="Use strategy defaults"
@@ -116,8 +121,12 @@ export function ParameterSetMeta({ parameterSetId }: { parameterSetId?: number |
   if (!parameterSetId || !detail.data) return null;
 
   return (
-    <p className="text-xs text-emerald-300">
-      Using parameter set #{detail.data.id} ({detail.data.name}) — saved {formatDate(detail.data.createdAtUtc)}
-    </p>
+    <div className="space-y-1 text-xs">
+      <p className="text-emerald-300">
+        Using parameter set #{detail.data.id} ({detail.data.name}) — {parameterSetApprovalLabel(detail.data)} —{' '}
+        {parameterSetQualificationLabel(detail.data)} — saved {formatDate(detail.data.createdAtUtc)}
+      </p>
+      <p className="text-slate-500">{parameterSetQualificationExplanation(detail.data)}</p>
+    </div>
   );
 }

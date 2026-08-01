@@ -422,7 +422,7 @@ public sealed class TargetParameterOptimizationService : ITargetParameterOptimiz
 
         if (request.Approve && target.Status != ParameterSetTestStatus.ValidationPassed)
         {
-            return ServiceResult<StrategyParameterSetDto>.Fail("Only validation-passed parameter sets can be approved.");
+            return ServiceResult<StrategyParameterSetDto>.Fail("Only validation-passed parameter sets can be approved for research.");
         }
 
         return await SaveParameterSetInternalAsync(
@@ -480,7 +480,7 @@ public sealed class TargetParameterOptimizationService : ITargetParameterOptimiz
     {
         if (approve && target.Status != ParameterSetTestStatus.ValidationPassed)
         {
-            return ServiceResult<StrategyParameterSetDto>.Fail("Only validation-passed parameter sets can be approved.");
+            return ServiceResult<StrategyParameterSetDto>.Fail("Only validation-passed parameter sets can be approved for research.");
         }
 
         var name = nameOverride ?? BuildParameterSetName(run.StrategyCode, run.Symbol, run.Timeframe);

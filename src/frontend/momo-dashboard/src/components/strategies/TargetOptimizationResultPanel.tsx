@@ -113,8 +113,9 @@ function ParameterSetCard({
           onClick={() => save(true)}
           className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
-          Save & Approve
+          Save & Approve for research
         </button>
+        <span className="self-center text-xs text-slate-500">Research approval does not grant deployment qualification.</span>
       </div>
       {error ? <p className="mt-2 text-sm text-rose-300">{error}</p> : null}
       <details className="mt-3 text-sm text-slate-400">

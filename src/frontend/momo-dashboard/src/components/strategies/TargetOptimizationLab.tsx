@@ -138,7 +138,7 @@ export function TargetOptimizationLab({ strategy }: Props) {
           The system will tune parameters on the first 70% of the selected date range. Then it will test the best parameters on the last 30%, which was not used for tuning.
         </p>
         <p className="mb-4 rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 text-sm text-amber-100">
-          Good training results alone are not enough. A parameter set is only approved if it also performs well on unseen validation data.
+          Good training results alone are not enough. A parameter set is only approved for research if it also performs well on unseen validation data. Research approval is not deployment qualification.
         </p>
 
         <div className="grid gap-4 lg:grid-cols-2">
@@ -213,7 +213,7 @@ export function TargetOptimizationLab({ strategy }: Props) {
         <div className="mt-4 flex flex-wrap gap-4">
           <CheckboxField label="Auto-import missing candles" checked={autoImportMissingCandles} onChange={setAutoImportMissingCandles} />
           <CheckboxField label="Save best if passed" checked={saveBestIfPassed} onChange={setSaveBestIfPassed} />
-          <CheckboxField label="Auto-approve if passed" checked={autoApproveIfPassed} onChange={setAutoApproveIfPassed} />
+          <CheckboxField label="Auto-approve for research if passed" checked={autoApproveIfPassed} onChange={setAutoApproveIfPassed} />
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2">

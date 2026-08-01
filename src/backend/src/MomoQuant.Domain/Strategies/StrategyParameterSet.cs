@@ -4,7 +4,7 @@ using MomoQuant.Domain.Enums;
 namespace MomoQuant.Domain.Strategies;
 
 /// <summary>
-/// Frozen, user-approved strategy parameter set for backtest, benchmark, and LivePaper simulation.
+/// Saved strategy parameters for controlled research, including backtest, benchmark, and LivePaper simulation.
 /// Parameters must not mutate during live/paper execution.
 /// </summary>
 public class StrategyParameterSet : Entity
@@ -22,7 +22,9 @@ public class StrategyParameterSet : Entity
     public string? TrainingMetricsJson { get; set; }
     public string? ValidationMetricsJson { get; set; }
     public decimal? RobustnessScore { get; set; }
+    /// <summary>Human approval for controlled research use; this is not deployment qualification.</summary>
     public bool IsApproved { get; set; }
+    public ParameterSetQualificationStatus QualificationStatus { get; set; } = ParameterSetQualificationStatus.ResearchOnly;
     public bool IsDefaultForStrategy { get; set; }
     public bool IsDefaultForSymbolTimeframe { get; set; }
     public DateTime CreatedAtUtc { get; set; }

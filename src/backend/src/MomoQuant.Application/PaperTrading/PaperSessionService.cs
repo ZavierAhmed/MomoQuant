@@ -434,7 +434,7 @@ public sealed class PaperSessionService : IPaperSessionService
             if (!parameterSet.IsApproved)
             {
                 return ServiceResult<ValidatedPaperRequest>.Fail(
-                    "Parameter set must be approved before use in paper trading.",
+                    "Parameter set must be research-approved before use in paper trading.",
                     "parameterSetId");
             }
 
@@ -462,7 +462,7 @@ public sealed class PaperSessionService : IPaperSessionService
             if (frozenParameters.Count == 0)
             {
                 return ServiceResult<ValidatedPaperRequest>.Fail(
-                    "Approved parameter set could not be loaded.",
+                    "Research-approved parameter set could not be loaded.",
                     "parameterSetId");
             }
 

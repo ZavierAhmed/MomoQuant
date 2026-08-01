@@ -147,6 +147,10 @@ export interface StrategyParameterSet {
   source: string;
   robustnessScore?: number;
   isApproved: boolean;
+  qualificationStatus: 'HistoricalNotEvaluated' | 'ResearchOnly' | 'DeploymentQualified' | string;
+  approvalScope: 'Research' | string;
+  isDeploymentQualified: boolean;
+  qualificationBlockingReasons: string[];
   createdAtUtc: string;
   approvedAtUtc?: string;
 }

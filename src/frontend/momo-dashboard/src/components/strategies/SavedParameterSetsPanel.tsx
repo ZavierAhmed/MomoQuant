@@ -7,6 +7,11 @@ import { Badge } from '@/components/common/Badge';
 import { DataTable } from '@/components/common/DataTable';
 import { formatNumber } from '@/components/common/utils';
 import { timeframeLabel } from '@/constants/timeframes';
+import {
+  parameterSetApprovalLabel,
+  parameterSetQualificationExplanation,
+  parameterSetQualificationLabel,
+} from './parameterSetQualification';
 
 type Props = {
   strategyCode: string;
@@ -27,7 +32,7 @@ export function SavedParameterSetsPanel({ strategyCode }: Props) {
     <section className="rounded-lg border border-slate-800 p-4">
       <h2 className="text-lg font-medium text-slate-100">Saved Parameter Sets</h2>
       <p className="mt-1 text-sm text-slate-400">
-        Approved sets remain frozen for LivePaper. Use them in backtests or paper simulation from the backtesting page.
+        Research-approved sets may be used in current simulated research workflows. Research approval is not deployment qualification.
       </p>
       {rows.length === 0 ? (
         <p className="mt-4 text-sm text-slate-500">No saved parameter sets for this strategy yet.</p>
@@ -40,9 +45,15 @@ export function SavedParameterSetsPanel({ strategyCode }: Props) {
                 key: 'approved',
                 header: 'Status',
                 render: (row) => (
-                  <Badge tone={row.isApproved ? 'success' : 'neutral'}>
-                    {row.isApproved ? 'Approved' : row.source}
-                  </Badge>
+                  <div className="space-y-1">
+                    <Badge tone={row.isApproved ? 'success' : 'neutral'}>{parameterSetApprovalLabel(row)}</Badge>
+                    <div>
+                      <Badge tone={row.isDeploymentQualified ? 'success' : 'warning'}>
+                        {parameterSetQualificationLabel(row)}
+                      </Badge>
+                    </div>
+                    <p className="max-w-xs text-xs text-slate-500">{parameterSetQualificationExplanation(row)}</p>
+                  </div>
                 ),
               },
               { key: 'timeframe', header: 'Timeframe', render: (row) => timeframeLabel(row.timeframe) },

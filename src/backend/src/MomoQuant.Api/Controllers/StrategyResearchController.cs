@@ -122,7 +122,7 @@ public sealed class StrategyResearchController : ApiControllerBase
     public async Task<IActionResult> ApproveParameterSet(long id, CancellationToken cancellationToken)
     {
         var result = await _parameterSetService.ApproveAsync(id, cancellationToken);
-        return result.Succeeded ? OkResponse(result.Data, "Parameter set approved.") : FailResponse(result.ErrorMessage ?? "Failed to approve parameter set.");
+        return result.Succeeded ? OkResponse(result.Data, "Parameter set approved for research.") : FailResponse(result.ErrorMessage ?? "Failed to approve parameter set for research.");
     }
 
     [HttpGet("parameter-definitions/{strategyCode}")]
@@ -182,7 +182,7 @@ public sealed class StrategyResearchController : ApiControllerBase
     public async Task<IActionResult> ApproveTargetOptimizationBest(long runId, CancellationToken cancellationToken)
     {
         var result = await _targetOptimizationService.ApproveBestAsync(runId, cancellationToken);
-        return result.Succeeded ? OkResponse(result.Data, "Parameter set approved.") : FailResponse(result.ErrorMessage ?? "Failed to approve parameter set.");
+        return result.Succeeded ? OkResponse(result.Data, "Parameter set approved for research.") : FailResponse(result.ErrorMessage ?? "Failed to approve parameter set for research.");
     }
 
     [HttpGet("target-optimization/{runId:long}/export/json")]

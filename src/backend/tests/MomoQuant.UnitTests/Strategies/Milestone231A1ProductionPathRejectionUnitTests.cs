@@ -280,6 +280,41 @@ public sealed class Milestone231A1ProductionPathRejectionUnitTests
     }
 
     [Fact]
+    public async Task Paper_DisabledCanonicalRequest_FailsBeforeSessionCreation()
+    {
+        var disabled = new Strategy
+        {
+            Id = 99,
+            Code = StrategyCode.PriceStructureBreakoutRetest,
+            Name = "Disabled PSBR",
+            IsEnabled = false,
+            Version = "1.1"
+        };
+        var sessions = new Mock<IPaperTradingSessionRepository>(MockBehavior.Strict);
+        var tradingSessions = new Mock<ITradingSessionRepository>(MockBehavior.Strict);
+        var service = CreatePaperService(disabled, sessions, tradingSessions);
+
+        var result = await service.CreateAsync(new CreatePaperSessionRequest
+        {
+            Name = "Disabled paper",
+            PaperAccountId = 1,
+            ExchangeId = 1,
+            SymbolIds = [1],
+            Timeframes = ["5m"],
+            Mode = "HistoricalPaper",
+            FromUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            ToUtc = new DateTime(2026, 1, 31, 0, 0, 0, DateTimeKind.Utc),
+            RiskProfileId = 1,
+            StrategyIds = [99]
+        });
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("disabled", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        sessions.Verify(repo => repo.AddAsync(It.IsAny<PaperTradingSession>(), It.IsAny<CancellationToken>()), Times.Never);
+        tradingSessions.Verify(repo => repo.AddAsync(It.IsAny<TradingSession>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task Benchmark_ArchivedRequest_FailsBeforeQueueSubmission()
     {
         var archived = ArchivedEmaPullback(99);

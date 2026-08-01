@@ -21,6 +21,10 @@ internal sealed class StrategyParameterSetConfiguration : IEntityTypeConfigurati
         builder.Property(x => x.ValidationMetricsJson).HasColumnType("longtext");
         builder.Property(x => x.RobustnessScore).HasColumnType("decimal(28,12)");
         builder.Property(x => x.Source).HasConversion<string>().HasMaxLength(32);
+        builder.Property(x => x.QualificationStatus)
+            .HasConversion<string>()
+            .HasMaxLength(32)
+            .IsRequired();
         builder.HasIndex(x => new { x.StrategyCode, x.Timeframe });
         builder.HasIndex(x => new { x.StrategyCode, x.SymbolId, x.Timeframe });
     }

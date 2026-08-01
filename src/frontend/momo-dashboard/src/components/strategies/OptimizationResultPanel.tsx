@@ -60,7 +60,7 @@ export function OptimizationResultPanel({
     if (!saveContext) return;
     const validationTradeCount = set.validationMetrics?.tradeCount ?? 0;
     if (approve && (set.passStatus === 'Failed' || validationTradeCount === 0)) {
-      setError('This parameter set cannot be approved.');
+      setError('This parameter set cannot be approved for research.');
       return;
     }
 
@@ -316,12 +316,12 @@ function ParameterSetRow({
       <div className="mt-3 flex flex-wrap gap-2">
         <ActionButton label={saving ? 'Saving…' : 'Save'} onClick={onSave} disabled={disabled || saving} />
         <ActionButton
-          label={saving ? 'Saving…' : 'Save & Approve'}
+          label={saving ? 'Saving…' : 'Save & Approve for research'}
           onClick={onSaveApprove}
           disabled={disabled || saving || !canApprove}
         />
         {!canApprove ? (
-          <span className="self-center text-xs text-amber-300">Cannot approve failed or zero-trade set.</span>
+          <span className="self-center text-xs text-amber-300">Cannot approve failed or zero-trade set for research.</span>
         ) : null}
         {savedId ? (
           <>
@@ -398,7 +398,7 @@ function ValidationSaveActions({
       {failed || zeroTrades ? (
         <p className="text-sm text-amber-300">
           {failed
-            ? 'This parameter set failed validation and should not be approved.'
+            ? 'This parameter set failed validation and should not be approved for research.'
             : 'No trades were produced. Run optimization or adjust strategy settings before saving.'}
         </p>
       ) : null}
@@ -426,7 +426,7 @@ function ValidationSaveActions({
           <ActionButton label={saving ? 'Saving…' : 'Save parameter set'} onClick={() => void save(false)} disabled={disabled || saving} />
         )}
         <ActionButton
-          label={saving ? 'Saving…' : 'Save & Approve'}
+          label={saving ? 'Saving…' : 'Save & Approve for research'}
           onClick={() => void save(true)}
           disabled={disabled || saving || !canApprove}
         />

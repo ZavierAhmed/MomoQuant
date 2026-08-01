@@ -132,7 +132,12 @@ public sealed class StrategyParameterSetDto
     public string Source { get; init; } = "Manual";
     public long? OptimizationRunId { get; init; }
     public decimal? RobustnessScore { get; init; }
+    /// <summary>Human approval for controlled research use; this is not deployment qualification.</summary>
     public bool IsApproved { get; init; }
+    public string QualificationStatus { get; init; } = "ResearchOnly";
+    public string ApprovalScope { get; init; } = "Research";
+    public bool IsDeploymentQualified { get; init; }
+    public IReadOnlyList<string> QualificationBlockingReasons { get; init; } = [];
     public bool IsDefaultForStrategy { get; init; }
     public bool IsDefaultForSymbolTimeframe { get; init; }
     public DateTime CreatedAtUtc { get; init; }
