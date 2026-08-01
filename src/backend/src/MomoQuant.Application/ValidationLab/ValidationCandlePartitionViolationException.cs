@@ -16,6 +16,8 @@ public static class ValidationCandlePartitionDenialCodes
     public const string RunRangeMismatch = "RUN_RANGE_MISMATCH";
     public const string SymbolMismatch = "SYMBOL_MISMATCH";
     public const string TimeframeMismatch = "TIMEFRAME_MISMATCH";
+    public const string ExchangeMismatch = "EXCHANGE_MISMATCH";
+    public const string ValidationTrainingWriteForbidden = "VALIDATION_TRAINING_WRITE_FORBIDDEN";
     public const string PartitionRangeInvalid = "PARTITION_RANGE_INVALID";
     public const string CrossPartitionCompatibilityReadForbidden = "CROSS_PARTITION_COMPATIBILITY_READ_FORBIDDEN";
 

@@ -48,6 +48,33 @@ public interface IValidationSegmentCandleSource
     /// <summary>Compatibility range read — defaults purpose to <see cref="ValidationCandleAccessPurpose.RepositoryRange"/>.</summary>
     IReadOnlyList<Candle> GetRange(DateTime? fromUtc, DateTime? toUtcExclusive, string callerComponent);
 
+    void AuthorizeRepositoryAccess(ValidationRepositoryAccessRequest request) =>
+        throw new NotSupportedException("Repository access requires ValidationTrainingCandleScope.");
+    IReadOnlyList<Candle> GetLimitedEvaluationRange(ValidationRepositoryAccessRequest request, int limit) =>
+        throw new NotSupportedException("Repository access requires ValidationTrainingCandleScope.");
+    IReadOnlyList<Candle> GetRepositoryEvaluationRange(ValidationRepositoryAccessRequest request) =>
+        throw new NotSupportedException("Repository access requires ValidationTrainingCandleScope.");
+    Candle? GetLatestEvaluationCandle(ValidationRepositoryAccessRequest request) =>
+        throw new NotSupportedException("Repository access requires ValidationTrainingCandleScope.");
+    int GetCombinedCandleCount(ValidationRepositoryAccessRequest request) =>
+        throw new NotSupportedException("Repository access requires ValidationTrainingCandleScope.");
+    IReadOnlyList<Candle> GetExistingImmutableCandles(
+        ValidationRepositoryAccessRequest request,
+        IReadOnlyCollection<DateTime> openTimesUtc) =>
+        throw new NotSupportedException("Repository access requires ValidationTrainingCandleScope.");
+    Candle? GetByImmutableId(ValidationRepositoryAccessRequest request, long id) =>
+        throw new NotSupportedException("Repository access requires ValidationTrainingCandleScope.");
+    IReadOnlyList<Candle> GetRecentEvaluationCandles(
+        ValidationRepositoryAccessRequest request,
+        DateTime beforeOrAtOpenTimeUtc,
+        int count) =>
+        throw new NotSupportedException("Repository access requires ValidationTrainingCandleScope.");
+    void DenyRepositoryAccess(
+        ValidationRepositoryAccessRequest request,
+        string denialCode,
+        string denialReason) =>
+        throw new NotSupportedException("Repository access requires ValidationTrainingCandleScope.");
+
     /// <summary>
     /// v2 typed materialization request - the ONLY public dataset materialization interface.
     /// Legacy overload CreateStrategyLabDataset(StrategyLabRun, int, ValidationCandleAccessContext) 
@@ -742,6 +769,24 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         var to = Normalize(request.ToExclusiveUtc)!.Value;
         var context = ValidationCandleAccessContext.Create(request.CallerComponent, request.Purpose);
 
+        if (to < from)
+        {
+            var denial = $"Evaluation range end {to:O} is before range start {from:O}.";
+            RecordDenied(from, to, null, context, ValidationCandlePartitionDenialCodes.PartitionRangeInvalid, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                from,
+                to,
+                null,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.PartitionRangeInvalid,
+                denial,
+                request.CallerComponent);
+        }
+
         if (from < SegmentStartUtc)
         {
             var denial = $"Evaluation range start {from:O} is before EvaluationStart {SegmentStartUtc:O}.";
@@ -799,7 +844,7 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                 request.CallerComponent);
         }
 
-        if (to <= from)
+        if (to == from)
         {
             RecordAllowed(from, to, null, Array.Empty<Candle>(), context, "Evaluation");
             return Array.Empty<Candle>();
@@ -883,6 +928,24 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         var to = Normalize(toUtcExclusive) ?? SegmentEndExclusiveUtc;
         var context = ValidationCandleAccessContext.Create(callerComponent, ValidationCandleAccessPurpose.RepositoryRange);
 
+        if (to < from)
+        {
+            var denial = $"Range end {to:O} is before range start {from:O}.";
+            RecordDenied(from, to, null, context, ValidationCandlePartitionDenialCodes.PartitionRangeInvalid, denial);
+            throw new ValidationCandlePartitionViolationException(
+                ValidationExperimentId,
+                ScopeExecutionId,
+                ValidationBoundaryUtc,
+                from,
+                to,
+                null,
+                SegmentStartUtc,
+                SegmentEndExclusiveUtc,
+                ValidationCandlePartitionDenialCodes.PartitionRangeInvalid,
+                denial,
+                callerComponent);
+        }
+
         bool spansWarmup = from < SegmentStartUtc;
         bool spansEvaluation = to > SegmentStartUtc;
 
@@ -906,14 +969,320 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
 
         if (spansWarmup && !spansEvaluation)
         {
-            return GetWarmupBefore(
-                SegmentStartUtc,
-                Partition.RequiredWarmupCandleCount,
-                context);
+            var warmupStart = _evaluationStartIndex > 0
+                ? _all[0].OpenTimeUtc
+                : SegmentStartUtc;
+            if (from < warmupStart || to > SegmentStartUtc)
+            {
+                var denial =
+                    $"Warmup compatibility range [{from:O}, {to:O}) must remain inside immutable warmup [{warmupStart:O}, {SegmentStartUtc:O}).";
+                RecordDenied(from, to, null, context, ValidationCandlePartitionDenialCodes.PartitionRangeInvalid, denial);
+                throw new ValidationCandlePartitionViolationException(
+                    ValidationExperimentId,
+                    ScopeExecutionId,
+                    ValidationBoundaryUtc,
+                    from,
+                    to,
+                    null,
+                    SegmentStartUtc,
+                    SegmentEndExclusiveUtc,
+                    ValidationCandlePartitionDenialCodes.PartitionRangeInvalid,
+                    denial,
+                    callerComponent);
+            }
+
+            var warmup = _all.Take(_evaluationStartIndex)
+                .Where(c => c.OpenTimeUtc >= from && c.OpenTimeUtc < to)
+                .ToArray();
+            RecordAllowed(from, to, null, warmup, context, "Warmup");
+            return warmup;
         }
 
         return GetEvaluationRange(from, to, context);
     }
+
+    public void AuthorizeRepositoryAccess(ValidationRepositoryAccessRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.RequestSymbolId is long requestedSymbol
+            && (Partition.SymbolId <= 0 || requestedSymbol != Partition.SymbolId))
+        {
+            DenyRepositoryAccess(
+                request,
+                ValidationCandlePartitionDenialCodes.SymbolMismatch,
+                $"Repository symbol identity mismatch: expected={Partition.SymbolId}; actual={requestedSymbol}.");
+        }
+
+        if (request.RequestTimeframe is Timeframe requestedTimeframe)
+        {
+            if (!TimeframeParser.TryParse(Partition.Timeframe, out var expectedTimeframe)
+                || requestedTimeframe != expectedTimeframe)
+            {
+                var expected = TimeframeParser.TryParse(Partition.Timeframe, out var parsed)
+                    ? TimeframeParser.ToApiString(parsed)
+                    : Partition.Timeframe;
+                DenyRepositoryAccess(
+                    request,
+                    ValidationCandlePartitionDenialCodes.TimeframeMismatch,
+                    $"Repository timeframe identity mismatch: expected={expected}; actual={TimeframeParser.ToApiString(requestedTimeframe)}.");
+            }
+        }
+
+        if (request.RequestExchangeId is long requestedExchange)
+        {
+            var expectedExchange = _boundExchangeId ?? Partition.ExchangeId;
+            if (expectedExchange is not long expected || expected <= 0 || requestedExchange != expected)
+            {
+                DenyRepositoryAccess(
+                    request,
+                    ValidationCandlePartitionDenialCodes.ExchangeMismatch,
+                    $"Repository exchange identity mismatch: expected={expectedExchange?.ToString(CultureInfo.InvariantCulture) ?? "unbound"}; actual={requestedExchange}.");
+            }
+        }
+    }
+
+    public IReadOnlyList<Candle> GetLimitedEvaluationRange(
+        ValidationRepositoryAccessRequest request,
+        int limit)
+    {
+        AuthorizeRepositoryAccess(request);
+        if (limit < 0)
+        {
+            DenyRepositoryAccess(
+                request,
+                ValidationCandlePartitionDenialCodes.PartitionRangeInvalid,
+                $"Repository limit must be non-negative; actual={limit}.");
+        }
+
+        var (from, to) = ValidateRepositoryEvaluationRange(request);
+        var available = SliceFixedEvaluation(from, to);
+        var returned = limit == 0
+            ? Array.Empty<Candle>()
+            : available.Take(limit).ToArray();
+        var datasetPartition = from == SegmentStartUtc
+            && to == SegmentEndExclusiveUtc
+            && returned.Length == available.Count
+                ? "Evaluation"
+                : "EvaluationPartial";
+        RecordAllowed(
+            from,
+            to,
+            limit,
+            returned,
+            request.ToContext(),
+            datasetPartition,
+            request);
+        return returned;
+    }
+
+    public IReadOnlyList<Candle> GetRepositoryEvaluationRange(ValidationRepositoryAccessRequest request)
+    {
+        AuthorizeRepositoryAccess(request);
+        var (from, to) = ValidateRepositoryEvaluationRange(request);
+        var returned = SliceFixedEvaluation(from, to);
+        RecordAllowed(
+            from,
+            to,
+            request.RequestedCandleCount,
+            returned,
+            request.ToContext(),
+            ResolveEvaluationPartitionLabel(from, to),
+            request);
+        return returned;
+    }
+
+    public Candle? GetLatestEvaluationCandle(ValidationRepositoryAccessRequest request)
+    {
+        AuthorizeRepositoryAccess(request);
+        var latest = _all.Skip(_evaluationStartIndex).LastOrDefault();
+        IReadOnlyList<Candle> returned = latest is null ? Array.Empty<Candle>() : [latest];
+        var datasetPartition = returned.Count == _all.Length - _evaluationStartIndex
+            ? "Evaluation"
+            : "EvaluationPartial";
+        RecordAllowed(
+            SegmentStartUtc,
+            SegmentEndExclusiveUtc,
+            request.RequestedCandleCount,
+            returned,
+            request.ToContext(),
+            datasetPartition,
+            request);
+        return latest;
+    }
+
+    public int GetCombinedCandleCount(ValidationRepositoryAccessRequest request)
+    {
+        AuthorizeRepositoryAccess(request);
+        var returned = _all.ToArray();
+        RecordAllowed(
+            returned.Length > 0 ? returned[0].OpenTimeUtc : SegmentStartUtc,
+            SegmentEndExclusiveUtc,
+            returned.Length,
+            returned,
+            request.ToContext(),
+            "Combined",
+            request);
+        return returned.Length;
+    }
+
+    public IReadOnlyList<Candle> GetExistingImmutableCandles(
+        ValidationRepositoryAccessRequest request,
+        IReadOnlyCollection<DateTime> openTimesUtc)
+    {
+        ArgumentNullException.ThrowIfNull(openTimesUtc);
+        AuthorizeRepositoryAccess(request);
+        var requested = openTimesUtc
+            .Select(t => Normalize(t)!.Value)
+            .ToHashSet();
+        var returned = _all.Where(c => requested.Contains(c.OpenTimeUtc)).ToArray();
+        RecordAllowed(
+            Normalize(request.RequestedStartUtc),
+            Normalize(request.RequestedEndUtc),
+            openTimesUtc.Count,
+            returned,
+            request.ToContext(),
+            "Combined",
+            request);
+        return returned;
+    }
+
+    public Candle? GetByImmutableId(ValidationRepositoryAccessRequest request, long id)
+    {
+        AuthorizeRepositoryAccess(request);
+        var match = _all.FirstOrDefault(c => c.Id == id);
+        IReadOnlyList<Candle> returned = match is null ? Array.Empty<Candle>() : [match];
+        RecordAllowed(
+            match?.OpenTimeUtc,
+            match is null ? null : match.OpenTimeUtc.AddTicks(1),
+            1,
+            returned,
+            request.ToContext(),
+            "Combined",
+            request);
+        return match;
+    }
+
+    public IReadOnlyList<Candle> GetRecentEvaluationCandles(
+        ValidationRepositoryAccessRequest request,
+        DateTime beforeOrAtOpenTimeUtc,
+        int count)
+    {
+        AuthorizeRepositoryAccess(request);
+        var before = Normalize(beforeOrAtOpenTimeUtc)!.Value;
+        if (count < 0)
+        {
+            DenyRepositoryAccess(
+                request,
+                ValidationCandlePartitionDenialCodes.PartitionRangeInvalid,
+                $"Repository recent count must be non-negative; actual={count}.");
+        }
+
+        if (before < SegmentStartUtc)
+        {
+            DenyRepositoryAccess(
+                request,
+                ValidationCandlePartitionDenialCodes.EvaluationRequestBeforeEvaluationStart,
+                $"Repository recent timestamp {before:O} is before evaluation start {SegmentStartUtc:O}.");
+        }
+
+        if (before >= SegmentEndExclusiveUtc)
+        {
+            DenyRepositoryAccess(
+                request,
+                ValidationCandlePartitionDenialCodes.EvaluationRequestAfterEvaluationEnd,
+                $"Repository recent timestamp {before:O} is at or after evaluation end {SegmentEndExclusiveUtc:O}.");
+        }
+
+        var returned = count == 0
+            ? Array.Empty<Candle>()
+            : _all.Skip(_evaluationStartIndex)
+                .Where(c => c.OpenTimeUtc <= before)
+                .TakeLast(count)
+                .ToArray();
+        RecordAllowed(
+            SegmentStartUtc,
+            before,
+            count,
+            returned,
+            request.ToContext(),
+            "EvaluationPartial",
+            request);
+        return returned;
+    }
+
+    public void DenyRepositoryAccess(
+        ValidationRepositoryAccessRequest request,
+        string denialCode,
+        string denialReason)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var context = request.ToContext();
+        var requestedStart = Normalize(request.RequestedStartUtc);
+        var requestedEnd = Normalize(request.RequestedEndUtc);
+        RecordDenied(
+            requestedStart,
+            requestedEnd,
+            request.RequestedCandleCount,
+            context,
+            denialCode,
+            denialReason,
+            repositoryRequest: request);
+        throw new ValidationCandlePartitionViolationException(
+            ValidationExperimentId,
+            ScopeExecutionId,
+            ValidationBoundaryUtc,
+            requestedStart,
+            requestedEnd,
+            request.RequestedCandleCount,
+            SegmentStartUtc,
+            SegmentEndExclusiveUtc,
+            denialCode,
+            denialReason,
+            request.CallerComponent);
+    }
+
+    private (DateTime From, DateTime To) ValidateRepositoryEvaluationRange(
+        ValidationRepositoryAccessRequest request)
+    {
+        var from = Normalize(request.RequestedStartUtc) ?? SegmentStartUtc;
+        var to = Normalize(request.RequestedEndUtc) ?? SegmentEndExclusiveUtc;
+        if (to < from)
+        {
+            DenyRepositoryAccess(
+                request,
+                ValidationCandlePartitionDenialCodes.PartitionRangeInvalid,
+                $"Repository range end {to:O} is before start {from:O}.");
+        }
+
+        if (from < SegmentStartUtc)
+        {
+            DenyRepositoryAccess(
+                request,
+                ValidationCandlePartitionDenialCodes.EvaluationRequestBeforeEvaluationStart,
+                $"Repository range start {from:O} is before evaluation start {SegmentStartUtc:O}.");
+        }
+
+        if (to > SegmentEndExclusiveUtc || from > SegmentEndExclusiveUtc)
+        {
+            DenyRepositoryAccess(
+                request,
+                ValidationCandlePartitionDenialCodes.EvaluationRequestAfterEvaluationEnd,
+                $"Repository range [{from:O}, {to:O}) exceeds evaluation end {SegmentEndExclusiveUtc:O}.");
+        }
+
+        return (from, to);
+    }
+
+    private IReadOnlyList<Candle> SliceFixedEvaluation(DateTime from, DateTime to) =>
+        _all.Skip(_evaluationStartIndex)
+            .Where(c => c.OpenTimeUtc >= from && c.OpenTimeUtc < to)
+            .ToArray();
+
+    private string ResolveEvaluationPartitionLabel(DateTime from, DateTime to) =>
+        from == SegmentStartUtc && to == SegmentEndExclusiveUtc
+            ? "Evaluation"
+            : "EvaluationPartial";
 
     public StrategyLabDataset CreateStrategyLabDataset(ValidationDatasetMaterializationRequest request)
     {
@@ -1557,7 +1926,8 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         int? requestedCount,
         IReadOnlyList<Candle> returned,
         ValidationCandleAccessContext context,
-        string datasetPartition)
+        string datasetPartition,
+        ValidationRepositoryAccessRequest? repositoryRequest = null)
     {
         lock (_gate)
         {
@@ -1587,7 +1957,12 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                 CorrelationId = CorrelationId,
                 DatasetPartition = datasetPartition,
                 RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion,
-                AuditExecutionId = BoundAuditExecutionId
+                AuditExecutionId = BoundAuditExecutionId,
+                RequestSymbolId = repositoryRequest?.RequestSymbolId,
+                RequestExchangeId = repositoryRequest?.RequestExchangeId,
+                RequestTimeframeApi = repositoryRequest?.RequestTimeframe is Timeframe timeframe
+                    ? TimeframeParser.ToApiString(timeframe)
+                    : null
             });
         }
     }
@@ -1599,7 +1974,8 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         ValidationCandleAccessContext context,
         string denialCode,
         string reason,
-        string? datasetPartitionOverride = null)
+        string? datasetPartitionOverride = null,
+        ValidationRepositoryAccessRequest? repositoryRequest = null)
     {
         var partition = datasetPartitionOverride
             ?? ResolveDatasetPartitionForDenied(context.AccessPurpose, requestedStart);
@@ -1632,7 +2008,12 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
                 CorrelationId = CorrelationId,
                 DatasetPartition = partition,
                 RecorderVersion = ValidationCandleAccessRecorder.RecorderVersion,
-                AuditExecutionId = BoundAuditExecutionId
+                AuditExecutionId = BoundAuditExecutionId,
+                RequestSymbolId = repositoryRequest?.RequestSymbolId,
+                RequestExchangeId = repositoryRequest?.RequestExchangeId,
+                RequestTimeframeApi = repositoryRequest?.RequestTimeframe is Timeframe timeframe
+                    ? TimeframeParser.ToApiString(timeframe)
+                    : null
             });
         }
     }
@@ -1669,8 +2050,13 @@ public sealed class ValidationTrainingCandleScope : IValidationTrainingCandleSco
         };
     }
 
-    private static DateTime? Normalize(DateTime? value) =>
-        value is null ? null : DateTime.SpecifyKind(value.Value, DateTimeKind.Utc);
+    private static DateTime? Normalize(DateTime? value) => value?.Kind switch
+    {
+        null => null,
+        DateTimeKind.Utc => value.Value,
+        DateTimeKind.Local => value.Value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value.Value, DateTimeKind.Utc)
+    };
 
     private static DateTime Min(DateTime a, DateTime b) => a <= b ? a : b;
 

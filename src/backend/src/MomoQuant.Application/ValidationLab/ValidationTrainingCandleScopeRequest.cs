@@ -37,7 +37,10 @@ public enum ValidationCandleAccessPurpose
     HigherTimeframeAccess = 17,
 
     /// <summary>Factory bootstrap HTF load during scope construction (Milestone 23.1B1B).</summary>
-    FactoryBootstrapHtfLoad = 18
+    FactoryBootstrapHtfLoad = 18,
+
+    /// <summary>Denied candle-store mutation attempted during validation training.</summary>
+    RepositoryWrite = 19
 }
 
 /// <summary>Caller identity + access purpose for audited candle reads.</summary>
@@ -65,6 +68,25 @@ public sealed class ValidationCandleAccessContext
         var label = $"{CallerComponent}:{AccessPurpose}";
         return label.Length <= 128 ? label : label[..128];
     }
+}
+
+/// <summary>
+/// Immutable caller request metadata for an ambient repository operation. Only identity fields
+/// actually supplied by the repository method are populated and therefore authorized.
+/// </summary>
+public sealed class ValidationRepositoryAccessRequest
+{
+    public required string CallerComponent { get; init; }
+    public required ValidationCandleAccessPurpose Purpose { get; init; }
+    public long? RequestExchangeId { get; init; }
+    public long? RequestSymbolId { get; init; }
+    public Timeframe? RequestTimeframe { get; init; }
+    public DateTime? RequestedStartUtc { get; init; }
+    public DateTime? RequestedEndUtc { get; init; }
+    public int? RequestedCandleCount { get; init; }
+
+    public ValidationCandleAccessContext ToContext() =>
+        ValidationCandleAccessContext.Create(CallerComponent, Purpose);
 }
 
 /// <summary>v2 factory request — all fields required and validated before scope creation.</summary>

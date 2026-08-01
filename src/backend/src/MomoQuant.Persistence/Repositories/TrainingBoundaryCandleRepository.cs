@@ -80,11 +80,16 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
 
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
-            var range = scope.GetEvaluationRange(
-                fromUtc,
-                toUtc,
-                ValidationCandleAccessContext.Create(nameof(GetCandlesAsync), ValidationCandleAccessPurpose.RepositoryRange));
-            return limit > 0 ? range.Take(limit).ToList() : range;
+            return scope.GetLimitedEvaluationRange(
+                CreateRepositoryRequest(
+                    nameof(GetCandlesAsync),
+                    ValidationCandleAccessPurpose.RepositoryRange,
+                    symbolId: symbolId,
+                    timeframe: timeframe,
+                    requestedStartUtc: fromUtc,
+                    requestedEndUtc: toUtc,
+                    requestedCount: limit),
+                limit);
         }
 
         return await _inner.GetCandlesAsync(symbolId, timeframe, fromUtc, toUtc, limit, cancellationToken);
@@ -102,34 +107,47 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
 
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
-            var from = fromUtc is null ? scope.SegmentStartUtc : DateTime.SpecifyKind(fromUtc.Value, DateTimeKind.Utc);
-            var to = toUtc is null ? scope.SegmentEndExclusiveUtc : DateTime.SpecifyKind(toUtc.Value, DateTimeKind.Utc);
+            var from = fromUtc is null ? scope.SegmentStartUtc : NormalizeUtcInstant(fromUtc.Value);
+            var to = toUtc is null ? scope.SegmentEndExclusiveUtc : NormalizeUtcInstant(toUtc.Value);
+
+            var repositoryRequest = CreateRepositoryRequest(
+                nameof(GetCandlesChronologicalAsync),
+                ValidationCandleAccessPurpose.RepositoryRange,
+                symbolId: symbolId,
+                timeframe: timeframe,
+                requestedStartUtc: from,
+                requestedEndUtc: to,
+                requestedCount: warmUpCount);
+            scope.AuthorizeRepositoryAccess(repositoryRequest);
+
+            if (warmUpCount < 0
+                || warmUpCount > 0 && warmUpCount != scope.Partition.RequiredWarmupCandleCount)
+            {
+                scope.DenyRepositoryAccess(
+                    repositoryRequest,
+                    ValidationCandlePartitionDenialCodes.WarmupCountMismatch,
+                    $"GetCandlesChronologicalAsync warmup count mismatch: expected=0-or-{scope.Partition.RequiredWarmupCandleCount}; actual={warmUpCount}.");
+            }
 
             bool spansWarmup = from < scope.SegmentStartUtc;
             bool spansEvaluation = to > scope.SegmentStartUtc;
 
             if (spansWarmup && spansEvaluation)
             {
-                throw new ValidationCandlePartitionViolationException(
-                    scope.ValidationExperimentId,
-                    scope.ScopeExecutionId,
-                    scope.ValidationBoundaryUtc,
-                    from,
-                    to,
-                    null,
-                    scope.SegmentStartUtc,
-                    scope.SegmentEndExclusiveUtc,
+                scope.DenyRepositoryAccess(
+                    repositoryRequest,
                     ValidationCandlePartitionDenialCodes.CrossPartitionCompatibilityReadForbidden,
-                    $"GetCandlesChronologicalAsync range [{from:O}, {to:O}) spans both warmup and evaluation partitions.",
-                    nameof(GetCandlesChronologicalAsync));
+                    $"GetCandlesChronologicalAsync range [{from:O}, {to:O}) spans both warmup and evaluation partitions.");
             }
 
-            var eval = scope.GetEvaluationRange(
-                from,
-                to,
-                ValidationCandleAccessContext.Create(
-                    nameof(GetCandlesChronologicalAsync),
-                    ValidationCandleAccessPurpose.RepositoryRange));
+            var evaluationRequest = CreateRepositoryRequest(
+                nameof(GetCandlesChronologicalAsync),
+                ValidationCandleAccessPurpose.RepositoryRange,
+                symbolId: symbolId,
+                timeframe: timeframe,
+                requestedStartUtc: from,
+                requestedEndUtc: to);
+            var eval = scope.GetRepositoryEvaluationRange(evaluationRequest);
 
             if (warmUpCount <= 0 || eval.Count == 0 && fromUtc is null)
             {
@@ -143,13 +161,15 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
             {
                 var before = eval.Count > 0
                     ? eval[0].OpenTimeUtc
-                    : DateTime.SpecifyKind(fromUtc ?? scope.SegmentStartUtc, DateTimeKind.Utc);
+                    : NormalizeUtcInstant(fromUtc ?? scope.SegmentStartUtc);
                 var warm = scope.GetWarmupBefore(
-                    before,
-                    warmUpCount,
-                    ValidationCandleAccessContext.Create(
-                        nameof(GetCandlesChronologicalAsync),
-                        ValidationCandleAccessPurpose.WarmupBefore));
+                    new ValidationWarmupAccessRequest
+                    {
+                        BeforeOpenTimeUtc = before,
+                        Count = warmUpCount,
+                        Purpose = ValidationCandleAccessPurpose.WarmupBefore,
+                        CallerComponent = nameof(GetCandlesChronologicalAsync)
+                    });
                 return warm.Count == 0 ? eval : warm.Concat(eval).ToList();
             }
 
@@ -169,14 +189,12 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
 
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
-            var range = scope.GetEvaluationRange(
-                scope.SegmentStartUtc,
-                scope.SegmentEndExclusiveUtc,
-                ValidationCandleAccessContext.Create(
+            return Task.FromResult(scope.GetLatestEvaluationCandle(
+                CreateRepositoryRequest(
                     nameof(GetLatestCandleAsync),
-                    ValidationCandleAccessPurpose.RepositoryLookup));
-            var last = range.LastOrDefault();
-            return Task.FromResult(last);
+                    ValidationCandleAccessPurpose.RepositoryLookup,
+                    symbolId: symbolId,
+                    timeframe: timeframe)));
         }
 
         return _inner.GetLatestCandleAsync(symbolId, timeframe, cancellationToken);
@@ -191,13 +209,12 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
 
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
-            _ = scope.GetEvaluationRange(
-                scope.SegmentStartUtc,
-                scope.SegmentEndExclusiveUtc,
-                ValidationCandleAccessContext.Create(
+            return Task.FromResult(scope.GetCombinedCandleCount(
+                CreateRepositoryRequest(
                     nameof(CountCandlesAsync),
-                    ValidationCandleAccessPurpose.RepositoryCount));
-            return Task.FromResult(scope.Partition.TotalCandleCount);
+                    ValidationCandleAccessPurpose.RepositoryCount,
+                    symbolId: symbolId,
+                    timeframe: timeframe)));
         }
 
         return _inner.CountCandlesAsync(symbolId, timeframe, cancellationToken);
@@ -214,52 +231,75 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
 
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
-            foreach (var t in openTimesUtc)
-            {
-                if (DateTime.SpecifyKind(t, DateTimeKind.Utc) >= scope.ValidationBoundaryUtc)
-                {
-                    _ = scope.GetByOpenTimeUtc(
-                        t,
-                        ValidationCandleAccessContext.Create(
-                            nameof(GetExistingOpenTimesAsync),
-                            ValidationCandleAccessPurpose.ByOpenTime));
-                }
-            }
-
-            var allowed = openTimesUtc
-                .Select(t => DateTime.SpecifyKind(t, DateTimeKind.Utc))
-                .Where(t => t < scope.ValidationBoundaryUtc)
-                .ToHashSet();
-            return Task.FromResult(allowed);
+            ArgumentNullException.ThrowIfNull(openTimesUtc);
+            var normalized = openTimesUtc
+                .Select(NormalizeUtcInstant)
+                .ToArray();
+            var matches = scope.GetExistingImmutableCandles(
+                CreateRepositoryRequest(
+                    nameof(GetExistingOpenTimesAsync),
+                    ValidationCandleAccessPurpose.RepositoryLookup,
+                    exchangeId: exchangeId,
+                    symbolId: symbolId,
+                    timeframe: timeframe,
+                    requestedStartUtc: normalized.Length > 0 ? normalized.Min() : null,
+                    requestedEndUtc: normalized.Length > 0 ? normalized.Max() : null,
+                    requestedCount: normalized.Length),
+                normalized);
+            return Task.FromResult(matches.Select(c => c.OpenTimeUtc).ToHashSet());
         }
 
         return _inner.GetExistingOpenTimesAsync(exchangeId, symbolId, timeframe, openTimesUtc, cancellationToken);
     }
 
-    public Task AddRangeAsync(IReadOnlyCollection<Candle> candles, CancellationToken cancellationToken = default) =>
-        _inner.AddRangeAsync(candles, cancellationToken);
+    public Task AddRangeAsync(IReadOnlyCollection<Candle> candles, CancellationToken cancellationToken = default)
+    {
+        GuardUnscopedValidationTraining(nameof(AddRangeAsync));
+        if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
+        {
+            scope.DenyRepositoryAccess(
+                CreateRepositoryRequest(
+                    nameof(AddRangeAsync),
+                    ValidationCandleAccessPurpose.RepositoryWrite,
+                    requestedCount: candles?.Count),
+                ValidationCandlePartitionDenialCodes.ValidationTrainingWriteForbidden,
+                "Validation-training candle writes are forbidden: operation=AddRangeAsync.");
+        }
 
-    public Task SaveChangesAsync(CancellationToken cancellationToken = default) =>
-        _inner.SaveChangesAsync(cancellationToken);
+        return _inner.AddRangeAsync(
+            candles ?? throw new ArgumentNullException(nameof(candles)),
+            cancellationToken);
+    }
+
+    public Task SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        GuardUnscopedValidationTraining(nameof(SaveChangesAsync));
+        if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
+        {
+            scope.DenyRepositoryAccess(
+                CreateRepositoryRequest(nameof(SaveChangesAsync), ValidationCandleAccessPurpose.RepositoryWrite),
+                ValidationCandlePartitionDenialCodes.ValidationTrainingWriteForbidden,
+                "Validation-training candle writes are forbidden: operation=SaveChangesAsync.");
+        }
+
+        return _inner.SaveChangesAsync(cancellationToken);
+    }
 
     public async Task<Candle?> GetByIdAsync(long id, CancellationToken cancellationToken = default)
     {
         GuardUnscopedValidationTraining(nameof(GetByIdAsync));
 
-        var candle = await _inner.GetByIdAsync(id, cancellationToken);
-        if (candle is null)
-        {
-            return null;
-        }
-
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
-            return scope.GetByOpenTimeUtc(
-                candle.OpenTimeUtc,
-                ValidationCandleAccessContext.Create(nameof(GetByIdAsync), ValidationCandleAccessPurpose.ByOpenTime));
+            return scope.GetByImmutableId(
+                CreateRepositoryRequest(
+                    nameof(GetByIdAsync),
+                    ValidationCandleAccessPurpose.RepositoryLookup,
+                    requestedCount: 1),
+                id);
         }
 
-        return candle;
+        return await _inner.GetByIdAsync(id, cancellationToken);
     }
 
     public async Task<IReadOnlyList<Candle>> GetRecentCandlesAsync(
@@ -273,40 +313,18 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
 
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
-            var ts = DateTime.SpecifyKind(beforeOrAtOpenTimeUtc, DateTimeKind.Utc);
-            
-            if (ts >= scope.ValidationBoundaryUtc)
-            {
-                _ = scope.GetByOpenTimeUtc(
-                    ts,
-                    ValidationCandleAccessContext.Create(
-                        nameof(GetRecentCandlesAsync),
-                        ValidationCandleAccessPurpose.ByOpenTime));
-            }
-
-            if (ts >= scope.SegmentStartUtc && ts < scope.SegmentEndExclusiveUtc)
-            {
-                var evalRange = scope.GetEvaluationRange(
-                    scope.SegmentStartUtc,
-                    scope.SegmentEndExclusiveUtc,
-                    ValidationCandleAccessContext.Create(
-                        nameof(GetRecentCandlesAsync),
-                        ValidationCandleAccessPurpose.RepositoryRecent));
-                return evalRange.Where(c => c.OpenTimeUtc <= ts).TakeLast(count).ToList();
-            }
-
-            if (ts < scope.SegmentStartUtc)
-            {
-                var warmupRange = scope.GetWarmupBefore(
-                    scope.SegmentStartUtc,
-                    scope.Partition.RequiredWarmupCandleCount,
-                    ValidationCandleAccessContext.Create(
-                        nameof(GetRecentCandlesAsync),
-                        ValidationCandleAccessPurpose.RepositoryRecent));
-                return warmupRange.Where(c => c.OpenTimeUtc <= ts).TakeLast(count).ToList();
-            }
-
-            return Array.Empty<Candle>();
+            var ts = NormalizeUtcInstant(beforeOrAtOpenTimeUtc);
+            return scope.GetRecentEvaluationCandles(
+                CreateRepositoryRequest(
+                    nameof(GetRecentCandlesAsync),
+                    ValidationCandleAccessPurpose.RepositoryRecent,
+                    symbolId: symbolId,
+                    timeframe: timeframe,
+                    requestedStartUtc: scope.SegmentStartUtc,
+                    requestedEndUtc: ts,
+                    requestedCount: count),
+                ts,
+                count);
         }
 
         return await _inner.GetRecentCandlesAsync(symbolId, timeframe, beforeOrAtOpenTimeUtc, count, cancellationToken);
@@ -324,12 +342,15 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
 
         if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
-            var range = scope.GetEvaluationRange(
-                fromUtc,
-                toUtc,
-                ValidationCandleAccessContext.Create(
+            var range = scope.GetRepositoryEvaluationRange(
+                CreateRepositoryRequest(
                     nameof(GetOpenTimesInRangeAsync),
-                    ValidationCandleAccessPurpose.RepositoryRange));
+                    ValidationCandleAccessPurpose.RepositoryRange,
+                    exchangeId: exchangeId,
+                    symbolId: symbolId,
+                    timeframe: timeframe,
+                    requestedStartUtc: fromUtc,
+                    requestedEndUtc: toUtc));
             return range.Select(c => c.OpenTimeUtc).ToList();
         }
 
@@ -346,15 +367,18 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
     {
         GuardUnscopedValidationTraining(nameof(CountDuplicateKeysInRangeAsync));
 
-        if (ValidationTrainingCandleScopeAmbient.Current is not null)
+        if (ValidationTrainingCandleScopeAmbient.Current is { } scope)
         {
             // Training scope is immutable and duplicate-free by construction.
-            _ = ValidationTrainingCandleScopeAmbient.Current.GetEvaluationRange(
-                fromUtc,
-                toUtc,
-                ValidationCandleAccessContext.Create(
+            _ = scope.GetRepositoryEvaluationRange(
+                CreateRepositoryRequest(
                     nameof(CountDuplicateKeysInRangeAsync),
-                    ValidationCandleAccessPurpose.RepositoryRange));
+                    ValidationCandleAccessPurpose.RepositoryRange,
+                    exchangeId: exchangeId,
+                    symbolId: symbolId,
+                    timeframe: timeframe,
+                    requestedStartUtc: fromUtc,
+                    requestedEndUtc: toUtc));
             return Task.FromResult(0);
         }
 
@@ -386,4 +410,36 @@ public sealed class TrainingBoundaryCandleRepository : ICandleRepository, IUnsco
             callerComponent,
             $"Unscoped candle repository access via {callerComponent} is forbidden during ValidationTraining.");
     }
+
+    private static ValidationRepositoryAccessRequest CreateRepositoryRequest(
+        string callerComponent,
+        ValidationCandleAccessPurpose purpose,
+        long? exchangeId = null,
+        long? symbolId = null,
+        Timeframe? timeframe = null,
+        DateTime? requestedStartUtc = null,
+        DateTime? requestedEndUtc = null,
+        int? requestedCount = null) =>
+        new()
+        {
+            CallerComponent = callerComponent,
+            Purpose = purpose,
+            RequestExchangeId = exchangeId,
+            RequestSymbolId = symbolId,
+            RequestTimeframe = timeframe,
+            RequestedStartUtc = requestedStartUtc is null
+                ? null
+                : NormalizeUtcInstant(requestedStartUtc.Value),
+            RequestedEndUtc = requestedEndUtc is null
+                ? null
+                : NormalizeUtcInstant(requestedEndUtc.Value),
+            RequestedCandleCount = requestedCount
+        };
+
+    private static DateTime NormalizeUtcInstant(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+    };
 }
