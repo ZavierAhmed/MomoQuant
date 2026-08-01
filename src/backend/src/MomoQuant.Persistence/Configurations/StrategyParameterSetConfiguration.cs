@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using MomoQuant.Domain.Strategies;
+using MomoQuant.Domain.ValidationLab;
 
 namespace MomoQuant.Persistence.Configurations;
 
@@ -25,6 +26,29 @@ internal sealed class StrategyParameterSetConfiguration : IEntityTypeConfigurati
             .HasConversion<string>()
             .HasMaxLength(32)
             .IsRequired();
+        builder.Property(x => x.QualificationParameterFingerprint).HasMaxLength(64);
+        builder.Property(x => x.QualificationEvidenceVersion).HasMaxLength(64);
+        builder.HasIndex(x => x.QualificationSourceExperimentId).IsUnique();
+        builder.HasIndex(x => x.QualificationSourceTrialId).IsUnique();
+        builder.HasOne<ValidationExperiment>()
+            .WithMany()
+            .HasForeignKey(x => x.QualificationSourceExperimentId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ValidationParameterTrial>()
+            .WithMany()
+            .HasForeignKey(x => x.QualificationSourceTrialId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.ToTable(table => table.HasCheckConstraint(
+            "CK_StrategyParameterSets_DeploymentQualificationProvenance",
+            "`QualificationStatus` <> 'DeploymentQualified' OR ("
+            + "`Source` = 'ValidationLab' AND `IsApproved` = 1 AND "
+            + "`QualificationSourceExperimentId` IS NOT NULL AND "
+            + "`QualificationSourceTrialId` IS NOT NULL AND "
+            + "`QualificationParameterFingerprint` IS NOT NULL AND "
+            + "CHAR_LENGTH(`QualificationParameterFingerprint`) > 0 AND "
+            + "`QualificationEvidenceVersion` IS NOT NULL AND "
+            + "CHAR_LENGTH(`QualificationEvidenceVersion`) > 0 AND "
+            + "`QualifiedAtUtc` IS NOT NULL)"));
         builder.HasIndex(x => new { x.StrategyCode, x.Timeframe });
         builder.HasIndex(x => new { x.StrategyCode, x.SymbolId, x.Timeframe });
     }

@@ -138,6 +138,11 @@ public sealed class StrategyParameterSetDto
     public string ApprovalScope { get; init; } = "Research";
     public bool IsDeploymentQualified { get; init; }
     public IReadOnlyList<string> QualificationBlockingReasons { get; init; } = [];
+    public long? QualificationSourceExperimentId { get; init; }
+    public long? QualificationSourceTrialId { get; init; }
+    public string? QualificationParameterFingerprint { get; init; }
+    public string? QualificationEvidenceVersion { get; init; }
+    public DateTime? QualifiedAtUtc { get; init; }
     public bool IsDefaultForStrategy { get; init; }
     public bool IsDefaultForSymbolTimeframe { get; init; }
     public DateTime CreatedAtUtc { get; init; }

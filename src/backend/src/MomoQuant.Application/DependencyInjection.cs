@@ -209,6 +209,7 @@ public static class DependencyInjection
         services.AddSingleton<IValidationAuditPayloadSetHasher, ValidationAuditPayloadSetHasher>();
         services.AddScoped<IValidationAuditCompletenessVerifier, ValidationAuditCompletenessVerifier>();
         services.AddScoped<IValidationAuthoritativeAuditQualificationEvaluator, ValidationAuthoritativeAuditQualificationEvaluator>();
+        services.AddScoped<IValidationParameterSetPublicationService, ValidationParameterSetPublicationService>();
         services.AddScoped<IValidationAuditExecutionFactory, ValidationAuditExecutionService>();
         services.AddScoped<IValidationAuditExecutionSupersessionService, ValidationAuditExecutionSupersessionService>();
         services.AddScoped<IValidationAuditExecutionRecoveryService, ValidationAuditExecutionRecoveryService>();

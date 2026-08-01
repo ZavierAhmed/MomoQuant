@@ -130,7 +130,7 @@ public sealed class Milestone231B1C6AQualificationSemanticsTests
     }
 
     [Fact]
-    public void ProductionServices_DoNotAssignDeploymentQualified()
+    public void ProductionServices_HaveExactlyOneBoundedDeploymentQualifiedWriter()
     {
         var applicationRoot = Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "MomoQuant.Application"));
@@ -143,7 +143,11 @@ public sealed class Milestone231B1C6AQualificationSemanticsTests
             .Where(path => assignment.IsMatch(File.ReadAllText(path)))
             .ToList();
 
-        Assert.Empty(violations);
+        var violation = Assert.Single(violations);
+        Assert.EndsWith(
+            Path.Combine("ValidationLab", "ValidationParameterSetPublicationService.cs"),
+            violation,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static (StrategyParameterSetService Service, InMemoryStrategyParameterSetRepository Repository) CreateService()

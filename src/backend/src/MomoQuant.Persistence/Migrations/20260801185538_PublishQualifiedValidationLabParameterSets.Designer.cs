@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using MomoQuant.Persistence;
 
@@ -11,9 +12,11 @@ using MomoQuant.Persistence;
 namespace MomoQuant.Persistence.Migrations
 {
     [DbContext(typeof(MomoQuantDbContext))]
-    partial class MomoQuantDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260801185538_PublishQualifiedValidationLabParameterSets")]
+    partial class PublishQualifiedValidationLabParameterSets
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

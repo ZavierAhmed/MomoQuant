@@ -88,6 +88,11 @@ public sealed class StrategyParameterSetService : IStrategyParameterSetService
             return ServiceResult<StrategyParameterSetDto>.Fail("Parameter set was not found.");
         }
 
+        if (entity.QualificationStatus == ParameterSetQualificationStatus.DeploymentQualified)
+        {
+            return ServiceResult<StrategyParameterSetDto>.Ok(Map(entity));
+        }
+
         if (!string.IsNullOrWhiteSpace(entity.ValidationMetricsJson))
         {
             var metrics = JsonSerializer.Deserialize<StrategyPerformanceMetricsDto>(entity.ValidationMetricsJson, JsonOptions);
@@ -117,7 +122,9 @@ public sealed class StrategyParameterSetService : IStrategyParameterSetService
         if (!string.IsNullOrWhiteSpace(request.Source) &&
             Enum.TryParse<StrategyParameterSetSource>(request.Source, true, out var parsed))
         {
-            return parsed;
+            return parsed == StrategyParameterSetSource.ValidationLab
+                ? StrategyParameterSetSource.Manual
+                : parsed;
         }
 
         if (request.TargetOptimizationRunId.HasValue)
@@ -130,7 +137,7 @@ public sealed class StrategyParameterSetService : IStrategyParameterSetService
             : StrategyParameterSetSource.Manual;
     }
 
-    private static StrategyParameterSetDto Map(StrategyParameterSet entity)
+    internal static StrategyParameterSetDto Map(StrategyParameterSet entity)
     {
         var parameters = JsonSerializer.Deserialize<Dictionary<string, string>>(entity.ParametersJson, JsonOptions)
             ?? new Dictionary<string, string>();
@@ -150,6 +157,11 @@ public sealed class StrategyParameterSetService : IStrategyParameterSetService
             ApprovalScope = "Research",
             IsDeploymentQualified = entity.QualificationStatus == ParameterSetQualificationStatus.DeploymentQualified,
             QualificationBlockingReasons = GetQualificationBlockingReasons(entity.QualificationStatus),
+            QualificationSourceExperimentId = entity.QualificationSourceExperimentId,
+            QualificationSourceTrialId = entity.QualificationSourceTrialId,
+            QualificationParameterFingerprint = entity.QualificationParameterFingerprint,
+            QualificationEvidenceVersion = entity.QualificationEvidenceVersion,
+            QualifiedAtUtc = entity.QualifiedAtUtc,
             IsDefaultForStrategy = entity.IsDefaultForStrategy,
             IsDefaultForSymbolTimeframe = entity.IsDefaultForSymbolTimeframe,
             CreatedAtUtc = entity.CreatedAtUtc,

@@ -96,6 +96,7 @@ public static class DependencyInjection
         services.AddScoped<IValidationAuditExecutionRepository, ValidationAuditExecutionRepository>();
         services.AddScoped<IValidationAuditBatchRepository, ValidationAuditBatchRepository>();
         services.AddScoped<IValidationAuditUnitOfWork, ValidationAuditUnitOfWork>();
+        services.AddScoped<IValidationParameterSetPublicationStore, ValidationParameterSetPublicationStore>();
         services.AddScoped<IValidationTrainingDatabaseProbe, ValidationTrainingDatabaseProbe>();
         services.AddScoped<IResearchOperationStatusRepository, ResearchOperationStatusRepository>();
 

@@ -11,6 +11,7 @@ public interface IValidationParameterFingerprintService
     string FingerprintAlgorithmVersion { get; }
     string ComputeFingerprint(IReadOnlyDictionary<string, string> parameters);
     string ComputeFingerprintFromSnapshotJson(string snapshotJson);
+    ParameterFingerprintResult ComputeCanonicalFromSnapshotJson(string snapshotJson);
     bool IsEmptyContentFingerprint(string? fingerprint);
     FrozenSnapshotValidationStatus ValidateParameterSnapshot(
         string? snapshotJson,
@@ -55,9 +56,11 @@ public sealed class ValidationParameterFingerprintService : IValidationParameter
 
     public string ComputeFingerprintFromSnapshotJson(string snapshotJson)
     {
-        var dict = DeserializeParameters(snapshotJson);
-        return ComputeFingerprint(dict);
+        return ComputeCanonicalFromSnapshotJson(snapshotJson).ShortDisplayHash;
     }
+
+    public ParameterFingerprintResult ComputeCanonicalFromSnapshotJson(string snapshotJson) =>
+        ComputeCanonical(DeserializeParameters(snapshotJson));
 
     public bool IsEmptyContentFingerprint(string? fingerprint) =>
         string.Equals(fingerprint, EmptyContentFingerprint, StringComparison.OrdinalIgnoreCase);

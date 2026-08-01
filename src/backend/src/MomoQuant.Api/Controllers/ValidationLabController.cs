@@ -18,6 +18,7 @@ public sealed class ValidationLabController : ControllerBase
     private readonly IValidationLabService _service;
     private readonly IValidationLaboratoryReadinessService _readiness;
     private readonly IValidationLaboratoryCloseoutService _closeout;
+    private readonly IValidationParameterSetPublicationService _publication;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly MomoQuant.Application.Research.IResearchOperationStatusService _operationStatus;
 
@@ -25,14 +26,53 @@ public sealed class ValidationLabController : ControllerBase
         IValidationLabService service,
         IValidationLaboratoryReadinessService readiness,
         IValidationLaboratoryCloseoutService closeout,
+        IValidationParameterSetPublicationService publication,
         IServiceScopeFactory scopeFactory,
         MomoQuant.Application.Research.IResearchOperationStatusService operationStatus)
     {
         _service = service;
         _readiness = readiness;
         _closeout = closeout;
+        _publication = publication;
         _scopeFactory = scopeFactory;
         _operationStatus = operationStatus;
+    }
+
+    [HttpPost("experiments/{id:long}/publish-parameter-set")]
+    [Authorize(Policy = AuthorizationPolicies.AdminOnly)]
+    public async Task<ActionResult<ApiResponse<MomoQuant.Application.Optimization.Dtos.StrategyParameterSetDto>>>
+        PublishParameterSet(
+            long id,
+            [FromBody] PublishValidationParameterSetRequest request,
+            CancellationToken cancellationToken)
+    {
+        var result = await _publication.PublishAsync(id, request, cancellationToken);
+        if (result.Succeeded)
+        {
+            return Ok(ApiResponse<MomoQuant.Application.Optimization.Dtos.StrategyParameterSetDto>.Ok(
+                result.Data!,
+                "Validation Lab parameter set published with deployment qualification."));
+        }
+
+        var errors = new List<ApiError>
+        {
+            new()
+            {
+                Field = result.ErrorField ?? ValidationParameterSetPublicationCodes.ProvenanceConflict,
+                Message = result.ErrorMessage ?? "Validation Lab publication failed."
+            }
+        };
+        var response = ApiResponse<MomoQuant.Application.Optimization.Dtos.StrategyParameterSetDto>.Fail(
+            result.ErrorMessage ?? "Validation Lab publication failed.",
+            errors);
+
+        return result.ErrorField switch
+        {
+            ValidationParameterSetPublicationCodes.ExperimentNotFound => NotFound(response),
+            ValidationParameterSetPublicationCodes.ExistingCanonicalQualification
+                or ValidationParameterSetPublicationCodes.ProvenanceConflict => Conflict(response),
+            _ => BadRequest(response)
+        };
     }
 
     [HttpGet("readiness")]

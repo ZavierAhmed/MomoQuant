@@ -25,6 +25,11 @@ public class StrategyParameterSet : Entity
     /// <summary>Human approval for controlled research use; this is not deployment qualification.</summary>
     public bool IsApproved { get; set; }
     public ParameterSetQualificationStatus QualificationStatus { get; set; } = ParameterSetQualificationStatus.ResearchOnly;
+    public long? QualificationSourceExperimentId { get; set; }
+    public long? QualificationSourceTrialId { get; set; }
+    public string? QualificationParameterFingerprint { get; set; }
+    public string? QualificationEvidenceVersion { get; set; }
+    public DateTime? QualifiedAtUtc { get; set; }
     public bool IsDefaultForStrategy { get; set; }
     public bool IsDefaultForSymbolTimeframe { get; set; }
     public DateTime CreatedAtUtc { get; set; }

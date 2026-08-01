@@ -5,5 +5,6 @@ public enum StrategyParameterSetSource
     Manual = 0,
     Optimized = 1,
     Imported = 2,
-    TargetOptimized = 3
+    TargetOptimized = 3,
+    ValidationLab = 4
 }

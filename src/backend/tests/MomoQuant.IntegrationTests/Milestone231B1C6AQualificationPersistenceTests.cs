@@ -16,6 +16,7 @@ public sealed class Milestone231B1C6AQualificationPersistenceTests
 {
     private const string PreviousMigration = "20260726193537_M230E2C1_DurableAuditExecutions";
     private const string CurrentMigration = "20260801174916_AddParameterSetQualificationStatus";
+    private const string LatestMigration = "20260801185538_PublishQualifiedValidationLabParameterSets";
     private readonly DisposableIntegrationDatabaseFixture _fixture;
 
     public Milestone231B1C6AQualificationPersistenceTests(DisposableIntegrationDatabaseFixture fixture) =>
@@ -47,17 +48,21 @@ public sealed class Milestone231B1C6AQualificationPersistenceTests
             await migrator.MigrateAsync(CurrentMigration);
             db.ChangeTracker.Clear();
 
-            var upgraded = await db.StrategyParameterSets
-                .AsNoTracking()
-                .Where(row => row.Name.StartsWith("B1C6A historical"))
-                .OrderBy(row => row.Name)
-                .ToListAsync();
-
-            Assert.Equal(2, upgraded.Count);
-            Assert.All(upgraded, row =>
-                Assert.Equal(ParameterSetQualificationStatus.HistoricalNotEvaluated, row.QualificationStatus));
-            Assert.True(upgraded.Single(row => row.Name == "B1C6A historical approved").IsApproved);
-            Assert.False(upgraded.Single(row => row.Name == "B1C6A historical unapproved").IsApproved);
+            // The current EF model includes later B1C6B columns that intentionally do not exist
+            // at this historical migration boundary. Inspect only the B1C6A columns with raw SQL.
+            Assert.Equal(2, await ScalarLongAsync(db, """
+                SELECT COUNT(*) FROM StrategyParameterSets
+                WHERE Name LIKE 'B1C6A historical%'
+                  AND QualificationStatus = 'HistoricalNotEvaluated'
+                """));
+            Assert.Equal(1, await ScalarLongAsync(db, """
+                SELECT COUNT(*) FROM StrategyParameterSets
+                WHERE Name = 'B1C6A historical approved' AND IsApproved = 1
+                """));
+            Assert.Equal(1, await ScalarLongAsync(db, """
+                SELECT COUNT(*) FROM StrategyParameterSets
+                WHERE Name = 'B1C6A historical unapproved' AND IsApproved = 0
+                """));
 
             await migrator.MigrateAsync(PreviousMigration);
 
@@ -79,7 +84,7 @@ public sealed class Milestone231B1C6AQualificationPersistenceTests
         }
         finally
         {
-            await migrator.MigrateAsync(CurrentMigration);
+            await migrator.MigrateAsync(LatestMigration);
         }
     }
 
