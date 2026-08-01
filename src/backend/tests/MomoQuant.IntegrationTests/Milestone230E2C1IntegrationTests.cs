@@ -1,7 +1,10 @@
+using System.Collections.Concurrent;
+using System.Data.Common;
 using System.Diagnostics;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using MomoQuant.Application.Abstractions;
@@ -834,6 +837,104 @@ public sealed class Milestone230E2C1IntegrationTests : IClassFixture<MomoQuantWe
     }
 
     [Fact]
+    public async Task CreateAndAssignTrialAuthoritativeAsync_TwoSimultaneousTransactions_ExactlyOneSucceeds()
+    {
+        long experimentId = 0;
+        await using var seedScope = _factory.Services.CreateAsyncScope();
+        var seedDb = seedScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+
+        try
+        {
+            var (experiment, trial) = await E2C1AuditFixtures.CreateExperimentAndTrialAsync(seedDb, "create-race");
+            experimentId = experiment.Id;
+            var synchronization = new ConcurrentCreationCommandInterceptor();
+            var connectionString = seedDb.Database.GetConnectionString();
+            Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+            await using var provider = BuildConcurrentCreationProvider(connectionString!, synchronization);
+            await using var firstScope = provider.CreateAsyncScope();
+            await using var secondScope = provider.CreateAsyncScope();
+            var firstDb = firstScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            var secondDb = secondScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            Assert.NotSame(firstDb, secondDb);
+            Assert.NotSame(firstDb.Database.GetDbConnection(), secondDb.Database.GetDbConnection());
+
+            var firstTrial = await firstDb.ValidationParameterTrials.SingleAsync(t => t.Id == trial.Id);
+            var secondTrial = await secondDb.ValidationParameterTrials.SingleAsync(t => t.Id == trial.Id);
+            var firstExecution = E2C1AuditFixtures.NewExecution(experiment, firstTrial, attempt: 1);
+            var secondExecution = E2C1AuditFixtures.NewExecution(experiment, secondTrial, attempt: 2);
+            var firstRepository = firstScope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRepository>();
+            var secondRepository = secondScope.ServiceProvider.GetRequiredService<IValidationAuditExecutionRepository>();
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var firstAttempt = Task.Factory.StartNew(
+                    () => TryCreateAuthoritativeAsync(firstRepository, firstExecution, firstTrial, timeout.Token),
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default)
+                .Unwrap();
+            var secondAttempt = Task.Factory.StartNew(
+                    () => TryCreateAuthoritativeAsync(secondRepository, secondExecution, secondTrial, timeout.Token),
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default)
+                .Unwrap();
+            var attempts = await Task.WhenAll(firstAttempt, secondAttempt)
+                .WaitAsync(TimeSpan.FromSeconds(35));
+
+            var unexpectedFailures = attempts
+                .Where(result => result.Error is not null and not ValidationAuditExecutionException)
+                .ToArray();
+            Assert.Empty(unexpectedFailures);
+
+            // On the vulnerable implementation the interceptor releases both queries only after each
+            // transaction has durably observed zero active executions, so this assertion fails with two
+            // successful creations rather than relying on scheduler timing or probabilistic retries.
+            var winner = Assert.Single(attempts.Where(result => result.Created is not null));
+            var loser = Assert.Single(attempts.Where(result => result.Error is ValidationAuditExecutionException));
+            var rejection = Assert.IsType<ValidationAuditExecutionException>(loser.Error);
+            Assert.Equal("VALIDATION_AUDIT_MULTIPLE_ACTIVE_EXECUTIONS", rejection.ErrorCode);
+
+            await using var verificationScope = _factory.Services.CreateAsyncScope();
+            var verificationDb = verificationScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            var durableTrial = await verificationDb.ValidationParameterTrials.AsNoTracking()
+                .SingleAsync(t => t.Id == trial.Id);
+            var allExecutions = await verificationDb.ValidationAuditExecutions.AsNoTracking()
+                .Where(e => e.ValidationTrialId == trial.Id)
+                .ToListAsync();
+            var activeStatuses = new[]
+            {
+                ValidationAuditExecutionStatus.Created,
+                ValidationAuditExecutionStatus.InProgress,
+                ValidationAuditExecutionStatus.FlushManifested,
+                ValidationAuditExecutionStatus.EventsConfirmed,
+                ValidationAuditExecutionStatus.RecoveryRequired
+            };
+            var activeExecutions = allExecutions.Where(e => activeStatuses.Contains(e.Status)).ToArray();
+
+            var persistedExecution = Assert.Single(allExecutions);
+            var activeExecution = Assert.Single(activeExecutions);
+            Assert.Equal(winner.Execution.AuditExecutionId, persistedExecution.AuditExecutionId);
+            Assert.Equal(winner.Execution.AuditExecutionId, activeExecution.AuditExecutionId);
+            Assert.Equal(winner.Execution.AuditExecutionId, durableTrial.AuthoritativeAuditExecutionId);
+            Assert.Equal(winner.Execution.AttemptNumber, durableTrial.AuditAttemptNumber);
+            Assert.Equal(ValidationAuditCompletionStatus.InProgress, durableTrial.AuditCompletionStatus);
+            Assert.DoesNotContain(allExecutions, e => e.AuditExecutionId == loser.Execution.AuditExecutionId);
+
+            Assert.Equal(2, synchronization.LockReadCount);
+            Assert.Equal(2, synchronization.LockConnectionCount);
+            Assert.Equal(2, synchronization.ActiveReadsUsingLockTransactionCount);
+        }
+        finally
+        {
+            if (experimentId > 0)
+            {
+                await E2C1AuditFixtures.CleanupAsync(_factory, experimentId);
+            }
+        }
+    }
+
+    [Fact]
     public async Task TwoContexts_OnlyOneAuthoritativeExecution()
     {
         long experimentId = 0;
@@ -1527,6 +1628,233 @@ public sealed class Milestone230E2C1IntegrationTests : IClassFixture<MomoQuantWe
         await sp.GetRequiredService<IValidationAuditBatchRepository>().AddAsync(batch);
         await sp.GetRequiredService<IValidationCandleAccessAuditRepository>()
             .AddRangeIdempotentByAccessEventIdAsync([access]);
+    }
+
+    private static ServiceProvider BuildConcurrentCreationProvider(
+        string connectionString,
+        ConcurrentCreationCommandInterceptor synchronization)
+    {
+        IntegrationDatabaseSafety.AssertDisposableTestDatabase(connectionString);
+        var services = new ServiceCollection();
+        services.AddDbContext<MomoQuantDbContext>(options =>
+            options
+                .UseMySql(
+                    connectionString,
+                    ServerVersion.Parse(PersistenceConstants.MySqlServerVersion))
+                .AddInterceptors(synchronization));
+        services.AddScoped<IValidationAuditExecutionRepository, ValidationAuditExecutionRepository>();
+        return services.BuildServiceProvider();
+    }
+
+    private static async Task<ConcurrentCreationResult> TryCreateAuthoritativeAsync(
+        IValidationAuditExecutionRepository repository,
+        ValidationAuditExecution execution,
+        ValidationParameterTrial trial,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var created = await repository.CreateAndAssignTrialAuthoritativeAsync(
+                execution,
+                trial,
+                cancellationToken);
+            return new ConcurrentCreationResult(execution, created, null);
+        }
+        catch (Exception ex)
+        {
+            return new ConcurrentCreationResult(execution, null, ex);
+        }
+    }
+
+    private sealed record ConcurrentCreationResult(
+        ValidationAuditExecution Execution,
+        ValidationAuditExecution? Created,
+        Exception? Error);
+
+    private sealed class ConcurrentCreationCommandInterceptor : DbCommandInterceptor
+    {
+        private readonly TwoParticipantAsyncBarrier _activeReadBarrier = new();
+        private readonly TwoParticipantAsyncBarrier _lockAttemptBarrier = new();
+        private readonly ConcurrentDictionary<DbConnection, DbTransaction> _lockTransactions =
+            new(ReferenceEqualityComparer.Instance);
+        private int _activeReadsUsingLockTransactionCount;
+        private int _lockReadCount;
+
+        public int ActiveReadsUsingLockTransactionCount =>
+            Volatile.Read(ref _activeReadsUsingLockTransactionCount);
+
+        public int LockConnectionCount => _lockTransactions.Count;
+
+        public int LockReadCount => Volatile.Read(ref _lockReadCount);
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (IsTrialLockRead(command.CommandText))
+            {
+                var connection = command.Connection
+                    ?? throw new InvalidOperationException("The trial lock command has no connection.");
+                var transaction = command.Transaction
+                    ?? throw new InvalidOperationException("The trial lock command is outside a transaction.");
+                _lockTransactions[connection] = transaction;
+                Interlocked.Increment(ref _lockReadCount);
+
+                // Both repository calls have begun independent database transactions before either
+                // SELECT ... FOR UPDATE is allowed to reach MySQL. The winner then holds the row lock
+                // while the loser blocks, proving cross-connection serialization rather than an
+                // in-process scheduling effect.
+                await _lockAttemptBarrier.SignalAndWaitAsync(cancellationToken);
+            }
+            else if (IsActiveExecutionRead(command.CommandText)
+                     && Volatile.Read(ref _lockReadCount) > 0)
+            {
+                var connection = command.Connection
+                    ?? throw new InvalidOperationException("The active execution query has no connection.");
+                if (!_lockTransactions.TryGetValue(connection, out var lockTransaction)
+                    || !ReferenceEquals(lockTransaction, command.Transaction))
+                {
+                    throw new InvalidOperationException(
+                        "The active execution query did not use the transaction that acquired the trial lock.");
+                }
+
+                Interlocked.Increment(ref _activeReadsUsingLockTransactionCount);
+            }
+
+            return await base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        public override async ValueTask<DbDataReader> ReaderExecutedAsync(
+            DbCommand command,
+            CommandExecutedEventData eventData,
+            DbDataReader result,
+            CancellationToken cancellationToken = default)
+        {
+            var reader = await base.ReaderExecutedAsync(command, eventData, result, cancellationToken);
+            if (IsActiveExecutionRead(command.CommandText)
+                && Volatile.Read(ref _lockReadCount) == 0)
+            {
+                return new SynchronizingDbDataReader(reader, _activeReadBarrier, cancellationToken);
+            }
+
+            return reader;
+        }
+
+        private static bool IsTrialLockRead(string commandText) =>
+            commandText.Contains("ValidationParameterTrials", StringComparison.Ordinal)
+            && commandText.Contains("FOR UPDATE", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsActiveExecutionRead(string commandText) =>
+            commandText.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+            && commandText.Contains("FROM `ValidationAuditExecutions`", StringComparison.Ordinal)
+            && !commandText.Contains("FOR UPDATE", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class TwoParticipantAsyncBarrier
+    {
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _arrivalCount;
+
+        public async Task SignalAndWaitAsync(CancellationToken cancellationToken)
+        {
+            var arrival = Interlocked.Increment(ref _arrivalCount);
+            if (arrival == 2)
+            {
+                _release.TrySetResult();
+            }
+            else if (arrival > 2)
+            {
+                throw new InvalidOperationException("The two-participant database barrier was reused.");
+            }
+
+            await _release.Task.WaitAsync(cancellationToken);
+        }
+    }
+
+    private sealed class SynchronizingDbDataReader : DbDataReader
+    {
+        private readonly TwoParticipantAsyncBarrier _barrier;
+        private readonly CancellationToken _cancellationToken;
+        private readonly DbDataReader _inner;
+        private int _disposed;
+
+        public SynchronizingDbDataReader(
+            DbDataReader inner,
+            TwoParticipantAsyncBarrier barrier,
+            CancellationToken cancellationToken)
+        {
+            _inner = inner;
+            _barrier = barrier;
+            _cancellationToken = cancellationToken;
+        }
+
+        public override int Depth => _inner.Depth;
+        public override int FieldCount => _inner.FieldCount;
+        public override bool HasRows => _inner.HasRows;
+        public override bool IsClosed => _inner.IsClosed;
+        public override int RecordsAffected => _inner.RecordsAffected;
+        public override object this[int ordinal] => _inner[ordinal];
+        public override object this[string name] => _inner[name];
+
+        public override bool GetBoolean(int ordinal) => _inner.GetBoolean(ordinal);
+        public override byte GetByte(int ordinal) => _inner.GetByte(ordinal);
+        public override long GetBytes(int ordinal, long dataOffset, byte[]? buffer, int bufferOffset, int length) =>
+            _inner.GetBytes(ordinal, dataOffset, buffer, bufferOffset, length);
+        public override char GetChar(int ordinal) => _inner.GetChar(ordinal);
+        public override long GetChars(int ordinal, long dataOffset, char[]? buffer, int bufferOffset, int length) =>
+            _inner.GetChars(ordinal, dataOffset, buffer, bufferOffset, length);
+        public override string GetDataTypeName(int ordinal) => _inner.GetDataTypeName(ordinal);
+        public override DateTime GetDateTime(int ordinal) => _inner.GetDateTime(ordinal);
+        public override decimal GetDecimal(int ordinal) => _inner.GetDecimal(ordinal);
+        public override double GetDouble(int ordinal) => _inner.GetDouble(ordinal);
+        public override System.Collections.IEnumerator GetEnumerator() => _inner.GetEnumerator();
+        public override Type GetFieldType(int ordinal) => _inner.GetFieldType(ordinal);
+        public override float GetFloat(int ordinal) => _inner.GetFloat(ordinal);
+        public override Guid GetGuid(int ordinal) => _inner.GetGuid(ordinal);
+        public override short GetInt16(int ordinal) => _inner.GetInt16(ordinal);
+        public override int GetInt32(int ordinal) => _inner.GetInt32(ordinal);
+        public override long GetInt64(int ordinal) => _inner.GetInt64(ordinal);
+        public override string GetName(int ordinal) => _inner.GetName(ordinal);
+        public override int GetOrdinal(string name) => _inner.GetOrdinal(name);
+        public override string GetString(int ordinal) => _inner.GetString(ordinal);
+        public override object GetValue(int ordinal) => _inner.GetValue(ordinal);
+        public override int GetValues(object[] values) => _inner.GetValues(values);
+        public override bool IsDBNull(int ordinal) => _inner.IsDBNull(ordinal);
+        public override bool NextResult() => _inner.NextResult();
+        public override Task<bool> NextResultAsync(CancellationToken cancellationToken) =>
+            _inner.NextResultAsync(cancellationToken);
+        public override bool Read() => _inner.Read();
+        public override Task<bool> ReadAsync(CancellationToken cancellationToken) =>
+            _inner.ReadAsync(cancellationToken);
+
+        public override async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            // Release the physical MySQL connection before waiting. EF cannot return from ToListAsync
+            // until both zero-row readers have been consumed and disposed, so neither repository can
+            // insert before both repeatable-read snapshots are established.
+            await _inner.DisposeAsync();
+            await _barrier.SignalAndWaitAsync(_cancellationToken);
+            GC.SuppressFinalize(this);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                _inner.Dispose();
+                _barrier.SignalAndWaitAsync(_cancellationToken).GetAwaiter().GetResult();
+            }
+
+            base.Dispose(disposing);
+        }
     }
 }
 

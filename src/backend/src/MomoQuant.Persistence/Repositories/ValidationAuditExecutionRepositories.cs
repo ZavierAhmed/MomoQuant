@@ -80,8 +80,35 @@ public sealed class ValidationAuditExecutionRepository : IValidationAuditExecuti
         await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var lockedTrialIds = await _db.Database
+                .SqlQuery<long>($"""
+                    SELECT `Id` AS `Value`
+                    FROM `ValidationParameterTrials`
+                    WHERE `Id` = {trial.Id}
+                    FOR UPDATE
+                    """)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (lockedTrialIds.Count != 1)
+            {
+                throw new ValidationAuditExecutionException(
+                    "VALIDATION_AUDIT_TRIAL_MISSING",
+                    $"Validation trial {trial.Id} no longer exists.");
+            }
+
+            var durableTrial = _db.ValidationParameterTrials.Local
+                .SingleOrDefault(candidate => candidate.Id == trial.Id)
+                ?? trial;
+            if (_db.Entry(durableTrial).State == EntityState.Detached)
+            {
+                _db.ValidationParameterTrials.Attach(durableTrial);
+            }
+
+            await _db.Entry(durableTrial).ReloadAsync(cancellationToken).ConfigureAwait(false);
+
             var active = await _db.ValidationAuditExecutions
-                .Where(e => e.ValidationTrialId == trial.Id && ActiveStatuses.Contains(e.Status))
+                .Where(e => e.ValidationTrialId == durableTrial.Id && ActiveStatuses.Contains(e.Status))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -89,15 +116,15 @@ public sealed class ValidationAuditExecutionRepository : IValidationAuditExecuti
             {
                 throw new ValidationAuditExecutionException(
                     "VALIDATION_AUDIT_MULTIPLE_ACTIVE_EXECUTIONS",
-                    $"Trial {trial.Id} already has {active.Count} active audit execution(s).");
+                    $"Trial {durableTrial.Id} already has {active.Count} active audit execution(s).");
             }
 
             _db.ValidationAuditExecutions.Add(execution);
 
-            trial.AuthoritativeAuditExecutionId = execution.AuditExecutionId;
-            trial.AuditCompletionStatus = ValidationAuditCompletionStatus.InProgress;
-            trial.AuditAttemptNumber = execution.AttemptNumber;
-            _db.ValidationParameterTrials.Update(trial);
+            durableTrial.AuthoritativeAuditExecutionId = execution.AuditExecutionId;
+            durableTrial.AuditCompletionStatus = ValidationAuditCompletionStatus.InProgress;
+            durableTrial.AuditAttemptNumber = execution.AttemptNumber;
+            _db.ValidationParameterTrials.Update(durableTrial);
 
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
