@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { StrategyParameterSet } from '@/api/strategyResearchApi';
 import {
   DEPLOYMENT_SIMULATION_EXPLANATION,
+  PAPER_QUALIFICATION_VALUE_FALLBACK,
   RESEARCH_PAPER_EXPLANATION,
+  deploymentQualificationDisplayRows,
   deploymentPaperSelectionErrors,
   filterDeploymentQualifiedParameterSets,
   isDeploymentPaperSelectionComplete,
@@ -57,6 +59,16 @@ describe('parameter-set approval and qualification wording', () => {
     expect(RESEARCH_PAPER_EXPLANATION).toContain('experimentation');
     expect(DEPLOYMENT_SIMULATION_EXPLANATION).toContain('rechecks its evidence before every start or resume');
     expect(DEPLOYMENT_SIMULATION_EXPLANATION).toContain('no real orders');
+  });
+
+  it('uses an uncorrupted fallback for missing deployment qualification evidence', () => {
+    expect(PAPER_QUALIFICATION_VALUE_FALLBACK).toBe('Not available');
+    expect(PAPER_QUALIFICATION_VALUE_FALLBACK).not.toContain(
+      String.fromCharCode(0x00e2, 0x20ac, 0x201d),
+    );
+    const rows = deploymentQualificationDisplayRows({});
+    expect(rows).toHaveLength(8);
+    expect(rows.map((row) => row.value)).toEqual(Array(8).fill('Not available'));
   });
 
   it('requires the exact deployment-simulation selection before submission', () => {

@@ -6,6 +6,34 @@ export const RESEARCH_PAPER_EXPLANATION =
 export const DEPLOYMENT_SIMULATION_EXPLANATION =
   'Deployment simulation requires a Validation Lab deployment-qualified configuration and rechecks its evidence before every start or resume. It still places no real orders.';
 
+export const PAPER_QUALIFICATION_VALUE_FALLBACK = 'Not available';
+
+export type PaperQualificationDisplay = {
+  parameterSetId?: number | null;
+  boundStrategyId?: number | null;
+  boundSymbolId?: number | null;
+  boundTimeframe?: string | null;
+  qualificationSourceExperimentId?: number | null;
+  qualificationSourceTrialId?: number | null;
+  qualificationParameterFingerprint?: string | null;
+  qualificationEvidenceVersion?: string | null;
+};
+
+export function deploymentQualificationDisplayRows(
+  qualification: PaperQualificationDisplay,
+): Array<{ label: string; value: string }> {
+  return [
+    { label: 'Parameter set', value: String(qualification.parameterSetId ?? PAPER_QUALIFICATION_VALUE_FALLBACK) },
+    { label: 'Bound strategy', value: String(qualification.boundStrategyId ?? PAPER_QUALIFICATION_VALUE_FALLBACK) },
+    { label: 'Bound symbol', value: String(qualification.boundSymbolId ?? PAPER_QUALIFICATION_VALUE_FALLBACK) },
+    { label: 'Bound timeframe', value: qualification.boundTimeframe ?? PAPER_QUALIFICATION_VALUE_FALLBACK },
+    { label: 'Qualification experiment', value: String(qualification.qualificationSourceExperimentId ?? PAPER_QUALIFICATION_VALUE_FALLBACK) },
+    { label: 'Qualification trial', value: String(qualification.qualificationSourceTrialId ?? PAPER_QUALIFICATION_VALUE_FALLBACK) },
+    { label: 'Qualification fingerprint', value: qualification.qualificationParameterFingerprint ?? PAPER_QUALIFICATION_VALUE_FALLBACK },
+    { label: 'Evidence version', value: qualification.qualificationEvidenceVersion ?? PAPER_QUALIFICATION_VALUE_FALLBACK },
+  ];
+}
+
 export type DeploymentPaperSelection = {
   mode: string;
   strategyCount: number;

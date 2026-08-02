@@ -11,10 +11,30 @@ public sealed class PaperSessionRelationalCoordinator : IPaperSessionRelationalC
 
     public PaperSessionRelationalCoordinator(MomoQuantDbContext dbContext) => _dbContext = dbContext;
 
-    public Task<T> ExecuteCreationAsync<T>(
+    public async Task<T> ExecuteCreationAsync<T>(
         Func<CancellationToken, Task<T>> action,
-        CancellationToken cancellationToken = default) =>
-        ExecuteTransactionAsync(action, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+
+        if (_dbContext.Database.CurrentTransaction is not null)
+        {
+            _dbContext.ChangeTracker.Clear();
+            return await action(cancellationToken).ConfigureAwait(false);
+        }
+
+        await using var transaction = await _dbContext.Database
+            .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Pre-transaction validation may have tracked qualification evidence. Clear it only
+        // after the authoritative transaction begins so every verifier read reloads the durable
+        // row through this scoped context and takes the transaction's MySQL SERIALIZABLE locks.
+        _dbContext.ChangeTracker.Clear();
+        var result = await action(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return result;
+    }
 
     public async Task<T> ExecuteSerializedAsync<T>(
         long paperSessionId,
@@ -34,24 +54,6 @@ public sealed class PaperSessionRelationalCoordinator : IPaperSessionRelationalC
             .ConfigureAwait(false);
         var session = await LockSessionAsync(paperSessionId, cancellationToken).ConfigureAwait(false);
         var result = await action(session, cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return result;
-    }
-
-    private async Task<T> ExecuteTransactionAsync<T>(
-        Func<CancellationToken, Task<T>> action,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(action);
-        if (_dbContext.Database.CurrentTransaction is not null)
-        {
-            return await action(cancellationToken).ConfigureAwait(false);
-        }
-
-        await using var transaction = await _dbContext.Database
-            .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
-            .ConfigureAwait(false);
-        var result = await action(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return result;
     }

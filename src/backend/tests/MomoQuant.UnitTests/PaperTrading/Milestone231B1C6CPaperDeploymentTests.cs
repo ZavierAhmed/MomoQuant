@@ -9,6 +9,7 @@ using MomoQuant.Application.PaperTrading.Dtos;
 using MomoQuant.Application.Strategies;
 using MomoQuant.Application.ValidationLab;
 using MomoQuant.Domain.Enums;
+using MomoQuant.Domain.Exchanges;
 using MomoQuant.Domain.PaperTrading;
 using MomoQuant.Domain.Risk;
 using MomoQuant.Domain.Sessions;
@@ -421,6 +422,285 @@ public sealed class Milestone231B1C6CPaperUseClassGateTests
         Mock.Of<ICurrentUserService>(),
         Mock.Of<IAuditService>(),
         Mock.Of<IHigherTimeframeDatasetEnricher>());
+}
+
+public sealed class Milestone231B1C6CAtomicCreationGateTests
+{
+    [Fact]
+    public async Task CreateAsync_AuthoritativeVerificationFailure_PersistsNothingAndCreatesNoRuntimeState()
+    {
+        var verifier = new Mock<IPaperDeploymentQualificationVerifier>();
+        verifier.SetupSequence(item => item.VerifyAsync(
+                101, 10, 3, "15m", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Qualified("EARLY", "10", 201, 202))
+            .ReturnsAsync(PaperDeploymentQualificationResult.Fail(
+                PaperDeploymentQualificationCodes.FingerprintMismatch,
+                "Qualification changed before commit."));
+        var harness = CreateHarness(verifier.Object);
+
+        var result = await harness.Service.CreateAsync(DeploymentRequest());
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(PaperDeploymentQualificationCodes.FingerprintMismatch, result.ErrorField);
+        Assert.Equal(1, harness.Coordinator.CreationCalls);
+        verifier.Verify(item => item.VerifyAsync(
+            101, 10, 3, "15m", null, It.IsAny<CancellationToken>()), Times.Exactly(2));
+        harness.TradingSessions.Verify(item => item.AddAsync(
+            It.IsAny<TradingSession>(), It.IsAny<CancellationToken>()), Times.Never);
+        harness.PaperSessions.Verify(item => item.AddAsync(
+            It.IsAny<PaperTradingSession>(), It.IsAny<CancellationToken>()), Times.Never);
+        harness.Audit.Verify(item => item.LogAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<long?>(),
+            It.IsAny<long?>(),
+            It.IsAny<string?>(),
+            It.IsAny<string?>(),
+            It.IsAny<string?>(),
+            It.IsAny<string?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+        harness.StateStore.Verify(item => item.Set(
+            It.IsAny<long>(), It.IsAny<PaperSessionState>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateAsync_BindingAndRuntimeUseOnlyAuthoritativeTransactionalVerification()
+    {
+        var verifier = new Mock<IPaperDeploymentQualificationVerifier>();
+        verifier.SetupSequence(item => item.VerifyAsync(
+                101, 10, 3, "15m", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Qualified("EARLY", "10", 201, 202))
+            .ReturnsAsync(Qualified("FINAL", "20", 211, 212));
+        var harness = CreateHarness(verifier.Object);
+        PaperTradingSession? persisted = null;
+        PaperSessionState? runtime = null;
+        harness.PaperSessions.Setup(item => item.AddAsync(
+                It.IsAny<PaperTradingSession>(), It.IsAny<CancellationToken>()))
+            .Callback<PaperTradingSession, CancellationToken>((session, _) =>
+            {
+                Assert.True(harness.Coordinator.InCreation);
+                session.Id = 701;
+                persisted = session;
+            })
+            .Returns(Task.CompletedTask);
+        harness.StateStore.Setup(item => item.Set(701, It.IsAny<PaperSessionState>()))
+            .Callback<long, PaperSessionState>((_, state) =>
+            {
+                Assert.False(harness.Coordinator.InCreation);
+                runtime = state;
+            });
+
+        var result = await harness.Service.CreateAsync(DeploymentRequest());
+
+        Assert.True(result.Succeeded, result.ErrorMessage);
+        Assert.NotNull(persisted);
+        Assert.Equal("FINAL", persisted.QualificationParameterFingerprint);
+        Assert.Equal(211, persisted.QualificationSourceExperimentId);
+        Assert.Equal(212, persisted.QualificationSourceTrialId);
+        Assert.NotNull(runtime);
+        Assert.Equal("20", runtime.FrozenStrategyParameters![10]["lookback"]);
+        Assert.DoesNotContain("10", runtime.FrozenStrategyParameters[10].Values);
+        harness.Audit.Verify(item => item.LogAsync(
+            "PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED",
+            nameof(PaperTradingSession),
+            701,
+            5,
+            null,
+            It.Is<string>(json => json.Contains("FINAL") && !json.Contains("EARLY")),
+            null,
+            null,
+            It.IsAny<CancellationToken>()), Times.Once);
+        harness.Audit.Verify(item => item.LogAsync(
+            "PAPER_SESSION_CREATED",
+            nameof(PaperTradingSession),
+            701,
+            5,
+            null,
+            It.IsAny<string>(),
+            null,
+            null,
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    private static AtomicCreationHarness CreateHarness(IPaperDeploymentQualificationVerifier verifier)
+    {
+        var strategy = new Strategy
+        {
+            Id = 10,
+            Code = StrategyCode.PriceStructureBreakoutRetest,
+            Name = "PSBR",
+            Version = "1.1",
+            IsEnabled = true,
+            DeploymentQualificationEligible = true
+        };
+        var paperSessions = new Mock<IPaperTradingSessionRepository>();
+        paperSessions.Setup(item => item.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        var tradingSessions = new Mock<ITradingSessionRepository>();
+        tradingSessions.Setup(item => item.AddAsync(
+                It.IsAny<TradingSession>(), It.IsAny<CancellationToken>()))
+            .Callback<TradingSession, CancellationToken>((session, _) => session.Id = 700)
+            .Returns(Task.CompletedTask);
+        tradingSessions.Setup(item => item.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        var accounts = new Mock<IPaperAccountRepository>();
+        accounts.Setup(item => item.GetByIdAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PaperAccount
+            {
+                Id = 1,
+                Name = "Deployment account",
+                CurrentBalance = 10_000m,
+                CurrentEquity = 10_000m,
+                IsActive = true
+            });
+        var exchanges = new Mock<IExchangeRepository>();
+        exchanges.Setup(item => item.GetByIdAsync(2, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Exchange { Id = 2, Code = "BINANCE", Name = "Binance" });
+        var symbols = new Mock<ISymbolRepository>();
+        symbols.Setup(item => item.GetByIdAsync(3, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Symbol { Id = 3, ExchangeId = 2, SymbolName = "BTCUSDT" });
+        var risks = new Mock<IRiskProfileRepository>();
+        risks.Setup(item => item.GetByIdAsync(4, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RiskProfile { Id = 4, Name = "Deployment" });
+        var strategies = new Mock<IStrategyRepository>();
+        strategies.Setup(item => item.GetByIdAsync(10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(strategy);
+        strategies.Setup(item => item.GetAllAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([strategy]);
+        var plugin = new Mock<ITradingStrategy>();
+        plugin.SetupGet(item => item.Code).Returns(strategy.Code);
+        var registry = new Mock<IStrategyRegistry>();
+        registry.Setup(item => item.GetByCode(strategy.Code)).Returns(plugin.Object);
+        var riskRules = new Mock<IRiskRuleRepository>();
+        riskRules.Setup(item => item.GetByProfileIdAsync(4, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Array.Empty<RiskRule>());
+        var loader = new Mock<IBacktestDataLoader>();
+        loader.Setup(item => item.LoadSymbolTimeframeAsync(
+                2, 3, Timeframe.M15, It.IsAny<DateTime>(), It.IsAny<DateTime>(), 600,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BacktestDataset?)null);
+        var live = new Mock<ILiveMarketConnectionManager>();
+        live.SetupGet(item => item.IsAvailable).Returns(true);
+        var enricher = new Mock<IHigherTimeframeDatasetEnricher>();
+        enricher.Setup(item => item.EnrichForStrategiesAsync(
+                It.IsAny<BacktestDataset>(), It.IsAny<IReadOnlyList<PreparedStrategy>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BacktestDataset dataset, IReadOnlyList<PreparedStrategy> _, CancellationToken _) => dataset);
+        var stateStore = new Mock<IPaperStateStore>();
+        var audit = new Mock<IAuditService>();
+        audit.Setup(item => item.LogAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<long?>(),
+                It.IsAny<long?>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        var currentUser = new Mock<ICurrentUserService>();
+        currentUser.SetupGet(item => item.UserId).Returns(5);
+        var coordinator = new RecordingCoordinator();
+        var service = new PaperSessionService(
+            paperSessions.Object,
+            accounts.Object,
+            tradingSessions.Object,
+            exchanges.Object,
+            symbols.Object,
+            risks.Object,
+            strategies.Object,
+            registry.Object,
+            Mock.Of<IStrategyParameterSetRepository>(),
+            Mock.Of<IStrategyParameterProvider>(),
+            riskRules.Object,
+            loader.Object,
+            stateStore.Object,
+            live.Object,
+            Mock.Of<IMarketSituationService>(),
+            currentUser.Object,
+            audit.Object,
+            enricher.Object,
+            verifier,
+            coordinator);
+        return new AtomicCreationHarness(
+            service,
+            paperSessions,
+            tradingSessions,
+            stateStore,
+            audit,
+            coordinator);
+    }
+
+    private static CreatePaperSessionRequest DeploymentRequest() => new()
+    {
+        Name = "Atomic deployment",
+        PaperAccountId = 1,
+        ExchangeId = 2,
+        SymbolIds = [3],
+        Timeframes = ["15m"],
+        Mode = "LivePaper",
+        UseClass = "DeploymentSimulation",
+        RiskProfileId = 4,
+        StrategyIds = [10],
+        ParameterSetId = 101,
+        AllowAbnormalMarketPaperTrading = true
+    };
+
+    private static PaperDeploymentQualificationResult Qualified(
+        string fingerprint,
+        string lookback,
+        long experimentId,
+        long trialId) => new()
+    {
+        Succeeded = true,
+        ParameterSetId = 101,
+        StrategyId = 10,
+        SymbolId = 3,
+        Timeframe = "15m",
+        SourceExperimentId = experimentId,
+        SourceTrialId = trialId,
+        ParameterFingerprint = fingerprint,
+        EvidenceVersion = ValidationParameterSetPublicationService.EvidenceVersion,
+        VerifiedAtUtc = DateTime.UtcNow,
+        FrozenParameters = new Dictionary<string, string> { ["lookback"] = lookback }
+    };
+
+    private sealed record AtomicCreationHarness(
+        PaperSessionService Service,
+        Mock<IPaperTradingSessionRepository> PaperSessions,
+        Mock<ITradingSessionRepository> TradingSessions,
+        Mock<IPaperStateStore> StateStore,
+        Mock<IAuditService> Audit,
+        RecordingCoordinator Coordinator);
+
+    private sealed class RecordingCoordinator : IPaperSessionRelationalCoordinator
+    {
+        public int CreationCalls { get; private set; }
+        public bool InCreation { get; private set; }
+
+        public async Task<T> ExecuteCreationAsync<T>(
+            Func<CancellationToken, Task<T>> action,
+            CancellationToken cancellationToken = default)
+        {
+            CreationCalls++;
+            InCreation = true;
+            try
+            {
+                return await action(cancellationToken);
+            }
+            finally
+            {
+                InCreation = false;
+            }
+        }
+
+        public Task<T> ExecuteSerializedAsync<T>(
+            long paperSessionId,
+            Func<PaperTradingSession?, CancellationToken, Task<T>> action,
+            CancellationToken cancellationToken = default) =>
+            action(null, cancellationToken);
+    }
 }
 
 public sealed class Milestone231B1C6CDeploymentRuntimeGateTests

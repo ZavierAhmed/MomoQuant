@@ -151,9 +151,104 @@ public sealed class PaperSessionService : IPaperSessionService
         }
 
         var validated = validation.Data!;
-        var account = validated.Account!;
-        var now = DateTime.UtcNow;
+        if (validated.UseClass == PaperSessionUseClass.DeploymentSimulation)
+        {
+            return await CreateDeploymentSimulationAsync(request, validated, cancellationToken);
+        }
 
+        var session = await PersistCreationAsync(request, validated, qualification: null, cancellationToken);
+
+        var runtimeState = PaperMapper.CreateRuntimeState(
+            validated.Settings!,
+            session,
+            validated.Account!,
+            validated.Dataset!,
+            validated.Strategies!,
+            validated.RiskRules!,
+            validated.Symbol!,
+            validated.FrozenStrategyParameters);
+
+        _stateStore.Set(session.Id, runtimeState);
+
+        return ServiceResult<PaperSessionDto>.Ok(PaperMapper.MapSession(session));
+    }
+
+    private async Task<ServiceResult<PaperSessionDto>> CreateDeploymentSimulationAsync(
+        CreatePaperSessionRequest request,
+        ValidatedPaperRequest validated,
+        CancellationToken cancellationToken)
+    {
+        if (_relationalCoordinator is null)
+        {
+            return ServiceResult<PaperSessionDto>.Fail(
+                "The deployment-simulation persistence boundary is unavailable.",
+                PaperDeploymentQualificationCodes.BindingConflict);
+        }
+
+        if (_deploymentVerifier is null)
+        {
+            return ServiceResult<PaperSessionDto>.Fail(
+                "The deployment qualification verifier is unavailable.",
+                PaperDeploymentQualificationCodes.NotQualified);
+        }
+
+        var creation = await _relationalCoordinator.ExecuteCreationAsync(
+            async token =>
+            {
+                // The earlier validation result is deliberately not reused. This verification runs
+                // after the serializable relational boundary has begun and is the only result allowed
+                // to construct the durable binding, frozen runtime parameters, rows, and success audits.
+                var qualification = await _deploymentVerifier.VerifyAsync(
+                    request.ParameterSetId!.Value,
+                    request.StrategyIds[0],
+                    request.SymbolIds[0],
+                    request.Timeframes[0],
+                    cancellationToken: token);
+                if (!qualification.Succeeded)
+                {
+                    return ServiceResult<DeploymentCreation>.Fail(
+                        qualification.ErrorMessage ?? "Deployment qualification verification failed.",
+                        qualification.ErrorCode ?? PaperDeploymentQualificationCodes.NotQualified);
+                }
+
+                var frozenParameters = new Dictionary<long, IReadOnlyDictionary<string, string>>
+                {
+                    [qualification.StrategyId] = qualification.FrozenParameters
+                };
+                var session = await PersistCreationAsync(request, validated, qualification, token);
+                return ServiceResult<DeploymentCreation>.Ok(new DeploymentCreation(session, frozenParameters));
+            },
+            cancellationToken);
+
+        if (!creation.Succeeded)
+        {
+            return ServiceResult<PaperSessionDto>.Fail(creation.ErrorMessage!, creation.ErrorField);
+        }
+
+        // ExecuteCreationAsync returns only after commit, so no non-durable runtime state can escape
+        // a failed or rolled-back authoritative verification/creation transaction.
+        var created = creation.Data!;
+        var runtimeState = PaperMapper.CreateRuntimeState(
+            validated.Settings!,
+            created.Session,
+            validated.Account!,
+            validated.Dataset!,
+            validated.Strategies!,
+            validated.RiskRules!,
+            validated.Symbol!,
+            created.FrozenStrategyParameters);
+
+        _stateStore.Set(created.Session.Id, runtimeState);
+        return ServiceResult<PaperSessionDto>.Ok(PaperMapper.MapSession(created.Session));
+    }
+
+    private async Task<PaperTradingSession> PersistCreationAsync(
+        CreatePaperSessionRequest request,
+        ValidatedPaperRequest validated,
+        PaperDeploymentQualificationResult? qualification,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
         var tradingSession = new TradingSession
         {
             Name = $"Paper: {request.Name}",
@@ -161,11 +256,10 @@ public sealed class PaperSessionService : IPaperSessionService
             Status = TradingSessionStatus.Created,
             ExchangeId = request.ExchangeId,
             StartedByUserId = _currentUserService.UserId ?? 0,
-            InitialBalance = account.CurrentBalance,
+            InitialBalance = validated.Account!.CurrentBalance,
             CreatedAtUtc = now,
             UpdatedAtUtc = now
         };
-
         var session = new PaperTradingSession
         {
             Name = request.Name.Trim(),
@@ -175,14 +269,14 @@ public sealed class PaperSessionService : IPaperSessionService
             Mode = validated.Mode,
             UseClass = validated.UseClass,
             ParameterSetId = request.ParameterSetId,
-            BoundStrategyId = validated.DeploymentQualification?.StrategyId,
-            BoundSymbolId = validated.DeploymentQualification?.SymbolId,
-            BoundTimeframe = validated.DeploymentQualification?.Timeframe,
-            QualificationSourceExperimentId = validated.DeploymentQualification?.SourceExperimentId,
-            QualificationSourceTrialId = validated.DeploymentQualification?.SourceTrialId,
-            QualificationParameterFingerprint = validated.DeploymentQualification?.ParameterFingerprint,
-            QualificationEvidenceVersion = validated.DeploymentQualification?.EvidenceVersion,
-            QualificationVerifiedAtUtc = validated.DeploymentQualification?.VerifiedAtUtc,
+            BoundStrategyId = qualification?.StrategyId,
+            BoundSymbolId = qualification?.SymbolId,
+            BoundTimeframe = qualification?.Timeframe,
+            QualificationSourceExperimentId = qualification?.SourceExperimentId,
+            QualificationSourceTrialId = qualification?.SourceTrialId,
+            QualificationParameterFingerprint = qualification?.ParameterFingerprint,
+            QualificationEvidenceVersion = qualification?.EvidenceVersion,
+            QualificationVerifiedAtUtc = qualification?.VerifiedAtUtc,
             ExchangeId = request.ExchangeId,
             RiskProfileId = request.RiskProfileId,
             ExecutionMode = validated.ExecutionMode,
@@ -197,65 +291,27 @@ public sealed class PaperSessionService : IPaperSessionService
             UpdatedAtUtc = now
         };
 
-        async Task PersistAsync(CancellationToken token)
+        await _tradingSessionRepository.AddAsync(tradingSession, cancellationToken);
+        await _tradingSessionRepository.SaveChangesAsync(cancellationToken);
+        session.TradingSessionId = tradingSession.Id;
+        await _sessionRepository.AddAsync(session, cancellationToken);
+        await _sessionRepository.SaveChangesAsync(cancellationToken);
+
+        if (qualification is not null)
         {
-            await _tradingSessionRepository.AddAsync(tradingSession, token);
-            await _tradingSessionRepository.SaveChangesAsync(token);
-            session.TradingSessionId = tradingSession.Id;
-            await _sessionRepository.AddAsync(session, token);
-            await _sessionRepository.SaveChangesAsync(token);
-
-            if (validated.DeploymentQualification is not null)
-            {
-                await LogDeploymentVerificationAsync(session, "Create", validated.DeploymentQualification, token);
-            }
-
-            await _auditService.LogAsync(
-                "PAPER_SESSION_CREATED",
-                nameof(PaperTradingSession),
-                session.Id,
-                _currentUserService.UserId,
-                newValueJson: JsonSerializer.Serialize(
-                    new { request.Name, request.PaperAccountId, request.Mode, request.UseClass },
-                    JsonOptions),
-                cancellationToken: token);
+            await LogDeploymentVerificationAsync(session, "Create", qualification, cancellationToken);
         }
 
-        if (validated.UseClass == PaperSessionUseClass.DeploymentSimulation)
-        {
-            if (_relationalCoordinator is null)
-            {
-                return ServiceResult<PaperSessionDto>.Fail(
-                    "The deployment-simulation persistence boundary is unavailable.",
-                    PaperDeploymentQualificationCodes.BindingConflict);
-            }
-
-            await _relationalCoordinator.ExecuteCreationAsync(
-                async token =>
-                {
-                    await PersistAsync(token);
-                    return true;
-                },
-                cancellationToken);
-        }
-        else
-        {
-            await PersistAsync(cancellationToken);
-        }
-
-        var runtimeState = PaperMapper.CreateRuntimeState(
-            validated.Settings!,
-            session,
-            account,
-            validated.Dataset!,
-            validated.Strategies!,
-            validated.RiskRules!,
-            validated.Symbol!,
-            validated.FrozenStrategyParameters);
-
-        _stateStore.Set(session.Id, runtimeState);
-
-        return ServiceResult<PaperSessionDto>.Ok(PaperMapper.MapSession(session));
+        await _auditService.LogAsync(
+            "PAPER_SESSION_CREATED",
+            nameof(PaperTradingSession),
+            session.Id,
+            _currentUserService.UserId,
+            newValueJson: JsonSerializer.Serialize(
+                new { request.Name, request.PaperAccountId, request.Mode, request.UseClass },
+                JsonOptions),
+            cancellationToken: cancellationToken);
+        return session;
     }
 
     public async Task<ServiceResult<PaperSessionDto>> GetByIdAsync(long id, CancellationToken cancellationToken = default)
@@ -555,7 +611,6 @@ public sealed class PaperSessionService : IPaperSessionService
         };
 
         IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>>? frozenStrategyParameters = null;
-        PaperDeploymentQualificationResult? deploymentQualification = null;
         if (useClass == PaperSessionUseClass.DeploymentSimulation)
         {
             if (_deploymentVerifier is null)
@@ -565,23 +620,18 @@ public sealed class PaperSessionService : IPaperSessionService
                     PaperDeploymentQualificationCodes.NotQualified);
             }
 
-            deploymentQualification = await _deploymentVerifier.VerifyAsync(
+            var earlyQualification = await _deploymentVerifier.VerifyAsync(
                 request.ParameterSetId!.Value,
                 request.StrategyIds[0],
                 request.SymbolIds[0],
                 request.Timeframes[0],
                 cancellationToken: cancellationToken);
-            if (!deploymentQualification.Succeeded)
+            if (!earlyQualification.Succeeded)
             {
                 return ServiceResult<ValidatedPaperRequest>.Fail(
-                    deploymentQualification.ErrorMessage ?? "Deployment qualification verification failed.",
-                    deploymentQualification.ErrorCode ?? PaperDeploymentQualificationCodes.NotQualified);
+                    earlyQualification.ErrorMessage ?? "Deployment qualification verification failed.",
+                    earlyQualification.ErrorCode ?? PaperDeploymentQualificationCodes.NotQualified);
             }
-
-            frozenStrategyParameters = new Dictionary<long, IReadOnlyDictionary<string, string>>
-            {
-                [deploymentQualification.StrategyId] = deploymentQualification.FrozenParameters
-            };
         }
         else if (request.ParameterSetId is long parameterSetId)
         {
@@ -648,8 +698,7 @@ public sealed class PaperSessionService : IPaperSessionService
             Strategies = strategies,
             RiskRules = riskRules,
             Settings = settings,
-            FrozenStrategyParameters = frozenStrategyParameters,
-            DeploymentQualification = deploymentQualification
+            FrozenStrategyParameters = frozenStrategyParameters
         });
     }
 
@@ -711,6 +760,9 @@ public sealed class PaperSessionService : IPaperSessionService
         public IReadOnlyList<Domain.Risk.RiskRule>? RiskRules { get; init; }
         public PaperSessionSettings? Settings { get; init; }
         public IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>>? FrozenStrategyParameters { get; init; }
-        public PaperDeploymentQualificationResult? DeploymentQualification { get; init; }
     }
+
+    private sealed record DeploymentCreation(
+        PaperTradingSession Session,
+        IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>> FrozenStrategyParameters);
 }

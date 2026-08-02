@@ -22,6 +22,7 @@ import { usePaperSessionPolling } from '@/hooks/useSessionPolling';
 import { parseApiClientError } from '@/utils/apiError';
 import { ApiErrorAlert } from '@/components/common/ApiErrorAlert';
 import type { LivePaperChartData, PaperSessionStatus } from '@/api/domainTypes';
+import { deploymentQualificationDisplayRows } from '@/components/strategies/parameterSetQualification';
 
 export function PaperSessionDetailPage() {
   const { id } = useParams();
@@ -236,14 +237,7 @@ export function PaperSessionDetailPage() {
                     { label: 'Paper use', value: session.data.isDeploymentSimulation ? 'Deployment simulation' : 'Research paper trading' },
                     ...(session.data.isDeploymentSimulation
                       ? [
-                          { label: 'Parameter set', value: String(session.data.parameterSetId ?? 'â€”') },
-                          { label: 'Bound strategy', value: String(session.data.boundStrategyId ?? 'â€”') },
-                          { label: 'Bound symbol', value: String(session.data.boundSymbolId ?? 'â€”') },
-                          { label: 'Bound timeframe', value: session.data.boundTimeframe ?? 'â€”' },
-                          { label: 'Qualification experiment', value: String(session.data.qualificationSourceExperimentId ?? 'â€”') },
-                          { label: 'Qualification trial', value: String(session.data.qualificationSourceTrialId ?? 'â€”') },
-                          { label: 'Qualification fingerprint', value: session.data.qualificationParameterFingerprint ?? 'â€”' },
-                          { label: 'Evidence version', value: session.data.qualificationEvidenceVersion ?? 'â€”' },
+                          ...deploymentQualificationDisplayRows(session.data),
                           { label: 'Last verification', value: formatKvDate(session.data.qualificationVerifiedAtUtc) },
                         ]
                       : []),

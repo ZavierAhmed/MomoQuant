@@ -119,6 +119,260 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Create_EvidenceInvalidatedAfterEarlyCheck_FailsAuthoritativeTransactionWithoutPartialState()
+    {
+        var prepared = await PrepareDeploymentCreationAsync("create-invalidated-before-transaction");
+        try
+        {
+            await using var creationScope = _fixture.Factory.Services.CreateAsyncScope();
+            var services = creationScope.ServiceProvider;
+            var creationDb = services.GetRequiredService<MomoQuantDbContext>();
+            var auditWatermark = await creationDb.AuditLogs
+                .Select(row => (long?)row.Id)
+                .MaxAsync() ?? 0;
+            var earlyVerified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var continueCreation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var verifier = new CoordinatedVerifier(
+                services.GetRequiredService<IPaperDeploymentQualificationVerifier>(),
+                async (invocation, result) =>
+                {
+                    if (invocation == 1)
+                    {
+                        Assert.True(result.Succeeded, result.ErrorMessage);
+                        earlyVerified.SetResult();
+                        await continueCreation.Task;
+                    }
+                });
+            var stateStore = new RecordingStateStore();
+            var service = BuildCreateService(
+                services,
+                new DeterministicLiveMarketManager(),
+                new FixedCurrentUser(prepared.UserId),
+                verifier,
+                stateStore);
+            var creationTask = service.CreateAsync(prepared.Request);
+            await earlyVerified.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await using (var mutationScope = _fixture.Factory.Services.CreateAsyncScope())
+            {
+                var mutationDb = mutationScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+                var changed = await mutationDb.ValidationExperiments
+                    .Where(row => row.Id == prepared.Publication.ExperimentId)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(
+                        row => row.Status,
+                        ValidationExperimentStatus.Failed));
+                Assert.Equal(1, changed);
+            }
+
+            continueCreation.SetResult();
+            var result = await creationTask.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.False(result.Succeeded);
+            Assert.Equal(PaperDeploymentQualificationCodes.ExperimentInvalid, result.ErrorField);
+            Assert.Equal(2, verifier.InvocationCount);
+            Assert.Equal(0, stateStore.SetCalls);
+            await using var assertionScope = _fixture.Factory.Services.CreateAsyncScope();
+            var db = assertionScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            Assert.False(await db.PaperTradingSessions.AnyAsync(row =>
+                row.PaperAccountId == prepared.PaperAccountId));
+            Assert.False(await db.TradingSessions.AnyAsync(row =>
+                row.Name == $"Paper: {prepared.Request.Name}"));
+            Assert.False(await db.AuditLogs.AnyAsync(row =>
+                row.Id > auditWatermark
+                && (row.Action == "PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED"
+                    || row.Action == "PAPER_SESSION_CREATED")));
+        }
+        finally
+        {
+            await CleanupPreparedCreationAsync(prepared);
+        }
+    }
+
+    [Fact]
+    public async Task Create_AuthoritativeReadLocksEvidenceUntilCommit_AndPersistsTransactionalSnapshot()
+    {
+        var prepared = await PrepareDeploymentCreationAsync("create-locks-authoritative-evidence");
+        try
+        {
+            await using var creationScope = _fixture.Factory.Services.CreateAsyncScope();
+            var services = creationScope.ServiceProvider;
+            var authoritativeRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var continueCreation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var verifier = new CoordinatedVerifier(
+                services.GetRequiredService<IPaperDeploymentQualificationVerifier>(),
+                async (invocation, result) =>
+                {
+                    if (invocation == 2)
+                    {
+                        Assert.True(result.Succeeded, result.ErrorMessage);
+                        authoritativeRead.SetResult();
+                        await continueCreation.Task;
+                    }
+                });
+            var stateStore = new RecordingStateStore();
+            var service = BuildCreateService(
+                services,
+                new DeterministicLiveMarketManager(),
+                new FixedCurrentUser(prepared.UserId),
+                verifier,
+                stateStore);
+            var creationTask = service.CreateAsync(prepared.Request);
+            await authoritativeRead.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            var mutationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var mutationTask = Task.Run(async () =>
+            {
+                await using var mutationScope = _fixture.Factory.Services.CreateAsyncScope();
+                var mutationDb = mutationScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+                mutationStarted.SetResult();
+                return await mutationDb.StrategyParameterSets
+                    .Where(row => row.Id == prepared.ParameterSetId)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(
+                        row => row.ParametersJson,
+                        "{\"lookback\":\"999\",\"minimumStrength\":\"0.9\"}"));
+            });
+            await mutationStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.Delay(500);
+            Assert.False(mutationTask.IsCompleted);
+
+            continueCreation.SetResult();
+            var result = await creationTask.WaitAsync(TimeSpan.FromSeconds(30));
+            Assert.True(result.Succeeded, $"{result.ErrorField}: {result.ErrorMessage}");
+            Assert.Equal(1, await mutationTask.WaitAsync(TimeSpan.FromSeconds(30)));
+
+            await using var assertionScope = _fixture.Factory.Services.CreateAsyncScope();
+            var db = assertionScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            var session = await db.PaperTradingSessions.AsNoTracking()
+                .SingleAsync(row => row.Id == result.Data!.Id);
+            Assert.Equal(prepared.Publication.Fingerprint, session.QualificationParameterFingerprint);
+            Assert.Equal(prepared.Publication.ExperimentId, session.QualificationSourceExperimentId);
+            Assert.Equal(prepared.Publication.TrialId, session.QualificationSourceTrialId);
+            Assert.Equal(1, stateStore.SetCalls);
+            Assert.NotNull(stateStore.LastState);
+            Assert.Equal("20", stateStore.LastState!.FrozenStrategyParameters![prepared.StrategyId]["lookback"]);
+            Assert.Equal("0.5", stateStore.LastState.FrozenStrategyParameters[prepared.StrategyId]["minimumStrength"]);
+            var audits = await db.AuditLogs.AsNoTracking()
+                .Where(row => row.EntityType == nameof(PaperTradingSession)
+                    && row.EntityId == session.Id
+                    && (row.Action == "PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED"
+                        || row.Action == "PAPER_SESSION_CREATED"))
+                .ToListAsync();
+            Assert.Equal(2, audits.Count);
+        }
+        finally
+        {
+            var paperSessionId = await FindPaperSessionIdAsync(prepared.PaperAccountId);
+            if (paperSessionId is long id)
+            {
+                await CleanupDeploymentSessionAsync(new SeededDeploymentSession(
+                    prepared.Publication,
+                    prepared.ParameterSetId,
+                    prepared.StrategyId,
+                    prepared.SymbolId,
+                    prepared.Timeframe,
+                    id,
+                    prepared.PaperAccountId,
+                    prepared.UserId));
+            }
+            else
+            {
+                await CleanupPreparedCreationAsync(prepared);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Create_ResearchSession_RemainsOutsideDeploymentQualificationGate()
+    {
+        long accountId = 0;
+        long paperSessionId = 0;
+        long symbolId = 0;
+        try
+        {
+            await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+            var services = scope.ServiceProvider;
+            var db = services.GetRequiredService<MomoQuantDbContext>();
+            var account = CreatePaperAccount("research-unchanged");
+            db.PaperAccounts.Add(account);
+            await db.SaveChangesAsync();
+            accountId = account.Id;
+            var exchange = await db.Exchanges.AsNoTracking().FirstAsync();
+            var symbol = new Symbol
+            {
+                ExchangeId = exchange.Id,
+                SymbolName = $"RSH{Guid.NewGuid():N}"[..15],
+                BaseAsset = "B1C6C",
+                QuoteAsset = "USDT",
+                ContractType = ContractType.Perpetual,
+                IsActive = true,
+                CreatedAtUtc = DateTime.UtcNow
+            };
+            db.Symbols.Add(symbol);
+            await db.SaveChangesAsync();
+            symbolId = symbol.Id;
+            var risk = await db.RiskProfiles.AsNoTracking().FirstAsync();
+            var userId = await db.Users.AsNoTracking().Select(row => row.Id).FirstAsync();
+            var strategy = await db.Strategies.AsNoTracking().SingleAsync(row =>
+                row.Code == StrategyCode.PriceStructureBreakoutRetest);
+            var verifier = new CoordinatedVerifier(
+                services.GetRequiredService<IPaperDeploymentQualificationVerifier>(),
+                (_, _) => Task.CompletedTask);
+            var service = BuildCreateService(
+                services,
+                new DeterministicLiveMarketManager(),
+                new FixedCurrentUser(userId),
+                verifier);
+
+            var result = await service.CreateAsync(new CreatePaperSessionRequest
+            {
+                Name = $"B1C6C research unchanged {Guid.NewGuid():N}",
+                PaperAccountId = account.Id,
+                ExchangeId = exchange.Id,
+                SymbolIds = [symbol.Id],
+                Timeframes = ["15m"],
+                Mode = "LivePaper",
+                RiskProfileId = risk.Id,
+                StrategyIds = [strategy.Id],
+                AllowAbnormalMarketPaperTrading = true
+            });
+
+            Assert.True(result.Succeeded, result.ErrorMessage);
+            paperSessionId = result.Data!.Id;
+            Assert.Equal(0, verifier.InvocationCount);
+            var session = await db.PaperTradingSessions.AsNoTracking()
+                .SingleAsync(row => row.Id == paperSessionId);
+            Assert.Equal(PaperSessionUseClass.Research, session.UseClass);
+            Assert.Null(session.BoundStrategyId);
+            Assert.Null(session.QualificationParameterFingerprint);
+            Assert.False(await db.AuditLogs.AnyAsync(row =>
+                row.EntityType == nameof(PaperTradingSession)
+                && row.EntityId == paperSessionId
+                && row.Action == "PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED"));
+            Assert.True(await db.AuditLogs.AnyAsync(row =>
+                row.EntityType == nameof(PaperTradingSession)
+                && row.EntityId == paperSessionId
+                && row.Action == "PAPER_SESSION_CREATED"));
+        }
+        finally
+        {
+            if (paperSessionId > 0)
+            {
+                await CleanupResearchSessionAsync(paperSessionId, accountId, symbolId);
+            }
+            else if (accountId > 0)
+            {
+                await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+                await db.PaperAccounts.Where(row => row.Id == accountId).ExecuteDeleteAsync();
+                if (symbolId > 0)
+                {
+                    await db.Symbols.Where(row => row.Id == symbolId).ExecuteDeleteAsync();
+                }
+            }
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -334,8 +588,40 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
 
     private async Task<SeededDeploymentSession> SeedDeploymentSessionAsync(string suffix)
     {
+        var prepared = await PrepareDeploymentCreationAsync(suffix);
+        try
+        {
+            await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+            var services = scope.ServiceProvider;
+            var service = BuildCreateService(
+                services,
+                new DeterministicLiveMarketManager(),
+                new FixedCurrentUser(prepared.UserId));
+            var result = await service.CreateAsync(prepared.Request);
+            Assert.True(result.Succeeded, $"{result.ErrorField}: {result.ErrorMessage}");
+            Assert.True(result.Data!.IsDeploymentSimulation);
+            return new SeededDeploymentSession(
+                prepared.Publication,
+                prepared.ParameterSetId,
+                prepared.StrategyId,
+                prepared.SymbolId,
+                prepared.Timeframe,
+                result.Data.Id,
+                prepared.PaperAccountId,
+                prepared.UserId);
+        }
+        catch
+        {
+            await CleanupPreparedCreationAsync(prepared);
+            throw;
+        }
+    }
+
+    private async Task<PreparedDeploymentCreation> PrepareDeploymentCreationAsync(string suffix)
+    {
         var publicationFixture = new Milestone231B1C6BPublicationIntegrationTests(_fixture);
         var publication = await publicationFixture.SeedQualifiedExperimentAsync($"b1c6c-{suffix}");
+        long accountId = 0;
         try
         {
             await using var scope = _fixture.Factory.Services.CreateAsyncScope();
@@ -343,7 +629,6 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
             var publish = await services.GetRequiredService<IValidationParameterSetPublicationService>()
                 .PublishAsync(publication.ExperimentId, new());
             Assert.True(publish.Succeeded, publish.ErrorMessage);
-            var parameterSetId = publish.Data!.Id;
             var db = services.GetRequiredService<MomoQuantDbContext>();
             var exchange = await db.Exchanges.SingleAsync(row => row.Id == 1);
             var symbol = await db.Symbols.SingleOrDefaultAsync(row => row.Id == publication.SymbolId);
@@ -366,17 +651,14 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
             var account = CreatePaperAccount(suffix);
             db.PaperAccounts.Add(account);
             await db.SaveChangesAsync();
+            accountId = account.Id;
             var risk = await db.RiskProfiles.AsNoTracking().FirstAsync();
             var userId = await db.Users.AsNoTracking().Select(row => row.Id).FirstAsync();
             var strategy = await db.Strategies.AsNoTracking().SingleAsync(row =>
                 row.Code == StrategyCode.PriceStructureBreakoutRetest);
-            var service = BuildCreateService(
-                services,
-                new DeterministicLiveMarketManager(),
-                new FixedCurrentUser(userId));
-            var result = await service.CreateAsync(new CreatePaperSessionRequest
+            var request = new CreatePaperSessionRequest
             {
-                Name = $"B1C6C {suffix}",
+                Name = $"B1C6C {suffix} {Guid.NewGuid():N}",
                 PaperAccountId = account.Id,
                 ExchangeId = exchange.Id,
                 SymbolIds = [symbol.Id],
@@ -385,23 +667,28 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
                 UseClass = "DeploymentSimulation",
                 RiskProfileId = risk.Id,
                 StrategyIds = [strategy.Id],
-                ParameterSetId = parameterSetId,
+                ParameterSetId = publish.Data!.Id,
                 AllowAbnormalMarketPaperTrading = true
-            });
-            Assert.True(result.Succeeded, $"{result.ErrorField}: {result.ErrorMessage}");
-            Assert.True(result.Data!.IsDeploymentSimulation);
-            return new SeededDeploymentSession(
+            };
+            return new PreparedDeploymentCreation(
                 publication,
-                parameterSetId,
+                publish.Data.Id,
                 strategy.Id,
                 symbol.Id,
                 publication.Timeframe,
-                result.Data.Id,
                 account.Id,
-                userId);
+                userId,
+                request);
         }
         catch
         {
+            if (accountId > 0)
+            {
+                await using var cleanupScope = _fixture.Factory.Services.CreateAsyncScope();
+                var cleanupDb = cleanupScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+                await cleanupDb.PaperAccounts.Where(row => row.Id == accountId).ExecuteDeleteAsync();
+            }
+
             await publicationFixture.CleanupAsync([publication]);
             throw;
         }
@@ -410,7 +697,9 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
     private static PaperSessionService BuildCreateService(
         IServiceProvider services,
         ILiveMarketConnectionManager live,
-        ICurrentUserService currentUser) => new(
+        ICurrentUserService currentUser,
+        IPaperDeploymentQualificationVerifier? verifier = null,
+        IPaperStateStore? stateStore = null) => new(
         services.GetRequiredService<IPaperTradingSessionRepository>(),
         services.GetRequiredService<IPaperAccountRepository>(),
         services.GetRequiredService<ITradingSessionRepository>(),
@@ -423,13 +712,13 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
         services.GetRequiredService<IStrategyParameterProvider>(),
         services.GetRequiredService<IRiskRuleRepository>(),
         services.GetRequiredService<IBacktestDataLoader>(),
-        services.GetRequiredService<IPaperStateStore>(),
+        stateStore ?? services.GetRequiredService<IPaperStateStore>(),
         live,
         services.GetRequiredService<IMarketSituationService>(),
         currentUser,
         services.GetRequiredService<IAuditService>(),
         services.GetRequiredService<IHigherTimeframeDatasetEnricher>(),
-        services.GetRequiredService<IPaperDeploymentQualificationVerifier>(),
+        verifier ?? services.GetRequiredService<IPaperDeploymentQualificationVerifier>(),
         services.GetRequiredService<IPaperSessionRelationalCoordinator>());
 
     private static PaperSessionControlService BuildControlService(
@@ -471,6 +760,70 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
         await publicationFixture.CleanupAsync([seeded.Publication]);
     }
 
+    private async Task CleanupPreparedCreationAsync(PreparedDeploymentCreation prepared)
+    {
+        var paperSessionId = await FindPaperSessionIdAsync(prepared.PaperAccountId);
+        if (paperSessionId is long id)
+        {
+            await CleanupDeploymentSessionAsync(new SeededDeploymentSession(
+                prepared.Publication,
+                prepared.ParameterSetId,
+                prepared.StrategyId,
+                prepared.SymbolId,
+                prepared.Timeframe,
+                id,
+                prepared.PaperAccountId,
+                prepared.UserId));
+            return;
+        }
+
+        await using (var scope = _fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            var tradingIds = await db.TradingSessions
+                .Where(row => row.Name == $"Paper: {prepared.Request.Name}")
+                .Select(row => row.Id)
+                .ToListAsync();
+            if (tradingIds.Count > 0)
+            {
+                await db.TradingSessions.Where(row => tradingIds.Contains(row.Id)).ExecuteDeleteAsync();
+            }
+
+            await db.PaperAccounts.Where(row => row.Id == prepared.PaperAccountId).ExecuteDeleteAsync();
+        }
+
+        var publicationFixture = new Milestone231B1C6BPublicationIntegrationTests(_fixture);
+        await publicationFixture.CleanupAsync([prepared.Publication]);
+    }
+
+    private async Task<long?> FindPaperSessionIdAsync(long paperAccountId)
+    {
+        await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        return await db.PaperTradingSessions
+            .Where(row => row.PaperAccountId == paperAccountId)
+            .Select(row => (long?)row.Id)
+            .SingleOrDefaultAsync();
+    }
+
+    private async Task CleanupResearchSessionAsync(long paperSessionId, long paperAccountId, long symbolId)
+    {
+        await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        services.GetRequiredService<IPaperStateStore>().Remove(paperSessionId);
+        var db = services.GetRequiredService<MomoQuantDbContext>();
+        var tradingSessionId = await db.PaperTradingSessions
+            .Where(row => row.Id == paperSessionId)
+            .Select(row => row.TradingSessionId)
+            .SingleAsync();
+        await db.AuditLogs.Where(row => row.EntityType == nameof(PaperTradingSession)
+            && row.EntityId == paperSessionId).ExecuteDeleteAsync();
+        await db.PaperTradingSessions.Where(row => row.Id == paperSessionId).ExecuteDeleteAsync();
+        await db.TradingSessions.Where(row => row.Id == tradingSessionId).ExecuteDeleteAsync();
+        await db.PaperAccounts.Where(row => row.Id == paperAccountId).ExecuteDeleteAsync();
+        await db.Symbols.Where(row => row.Id == symbolId).ExecuteDeleteAsync();
+    }
+
     private static PaperAccount CreatePaperAccount(string suffix) => new()
     {
         Name = $"B1C6C {suffix} {Guid.NewGuid():N}",
@@ -503,6 +856,73 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
         long PaperSessionId,
         long PaperAccountId,
         long UserId);
+
+    private sealed record PreparedDeploymentCreation(
+        Milestone231B1C6BPublicationIntegrationTests.SeededPublication Publication,
+        long ParameterSetId,
+        long StrategyId,
+        long SymbolId,
+        string Timeframe,
+        long PaperAccountId,
+        long UserId,
+        CreatePaperSessionRequest Request);
+
+    private sealed class CoordinatedVerifier(
+        IPaperDeploymentQualificationVerifier inner,
+        Func<int, PaperDeploymentQualificationResult, Task> afterVerification)
+        : IPaperDeploymentQualificationVerifier
+    {
+        private int _invocationCount;
+        public int InvocationCount => Volatile.Read(ref _invocationCount);
+
+        public async Task<PaperDeploymentQualificationResult> VerifyAsync(
+            long parameterSetId,
+            long strategyId,
+            long symbolId,
+            string timeframe,
+            PaperDeploymentStoredBinding? storedBinding = null,
+            CancellationToken cancellationToken = default)
+        {
+            var result = await inner.VerifyAsync(
+                parameterSetId,
+                strategyId,
+                symbolId,
+                timeframe,
+                storedBinding,
+                cancellationToken);
+            var invocation = Interlocked.Increment(ref _invocationCount);
+            await afterVerification(invocation, result);
+            return result;
+        }
+    }
+
+    private sealed class RecordingStateStore : IPaperStateStore
+    {
+        private int _setCalls;
+        public int SetCalls => Volatile.Read(ref _setCalls);
+        public PaperSessionState? LastState { get; private set; }
+
+        public bool TryGet(long sessionId, out PaperSessionState? state)
+        {
+            state = LastState?.Session.Id == sessionId ? LastState : null;
+            return state is not null;
+        }
+
+        public void Set(long sessionId, PaperSessionState state)
+        {
+            Assert.Equal(sessionId, state.Session.Id);
+            LastState = state;
+            Interlocked.Increment(ref _setCalls);
+        }
+
+        public void Remove(long sessionId)
+        {
+            if (LastState?.Session.Id == sessionId)
+            {
+                LastState = null;
+            }
+        }
+    }
 
     private sealed class FixedCurrentUser(long userId) : ICurrentUserService
     {
