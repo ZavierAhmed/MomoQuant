@@ -28,6 +28,7 @@ public sealed class Milestone231B1C6BPublicationIntegrationTests
 {
     private const string PreviousMigration = "20260801174916_AddParameterSetQualificationStatus";
     private const string CurrentMigration = "20260801185538_PublishQualifiedValidationLabParameterSets";
+    private const string B1C6CSuccessorMigration = "20260801232441_GatePaperDeploymentSimulation";
     private readonly DisposableIntegrationDatabaseFixture _fixture;
 
     public Milestone231B1C6BPublicationIntegrationTests(DisposableIntegrationDatabaseFixture fixture) =>
@@ -263,7 +264,9 @@ public sealed class Milestone231B1C6BPublicationIntegrationTests
             Assert.Equal(3819, FindMySqlException(exception)?.Number);
             db.ChangeTracker.Clear();
 
-            Assert.Empty(await db.Database.GetPendingMigrationsAsync());
+            Assert.Equal(
+                [B1C6CSuccessorMigration],
+                await db.Database.GetPendingMigrationsAsync());
             Assert.Equal(5, await ScalarLongAsync(db, """
                 SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'StrategyParameterSets'
@@ -303,7 +306,7 @@ public sealed class Milestone231B1C6BPublicationIntegrationTests
         }
     }
 
-    private async Task<SeededPublication> SeedQualifiedExperimentAsync(
+    internal async Task<SeededPublication> SeedQualifiedExperimentAsync(
         string suffix,
         bool resetCanonical = true)
     {
@@ -432,7 +435,7 @@ public sealed class Milestone231B1C6BPublicationIntegrationTests
             fingerprint);
     }
 
-    private async Task CleanupAsync(IReadOnlyList<SeededPublication> seeded)
+    internal async Task CleanupAsync(IReadOnlyList<SeededPublication> seeded)
     {
         await using var scope = _fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
@@ -503,7 +506,7 @@ public sealed class Milestone231B1C6BPublicationIntegrationTests
         return Convert.ToInt64(await command.ExecuteScalarAsync());
     }
 
-    private sealed record SeededPublication(
+    internal sealed record SeededPublication(
         long ExperimentId,
         long TrialId,
         Guid ExecutionId,

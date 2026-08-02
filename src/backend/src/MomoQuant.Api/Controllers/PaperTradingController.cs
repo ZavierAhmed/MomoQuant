@@ -132,7 +132,11 @@ public sealed class PaperTradingController : ApiControllerBase
         var result = await _sessionService.CreateAsync(request, cancellationToken);
         if (!result.Succeeded || result.Data is null)
         {
-            return FailResponse(result.ErrorMessage ?? "Failed to create paper session.", StatusCodes.Status400BadRequest);
+            var message = result.ErrorMessage ?? "Failed to create paper session.";
+            return FailResponse(
+                message,
+                StatusCodes.Status400BadRequest,
+                BuildServiceErrors(result.ErrorField, message));
         }
 
         return OkResponse(result.Data);
@@ -284,11 +288,20 @@ public sealed class PaperTradingController : ApiControllerBase
         var result = await action(id, cancellationToken);
         if (!result.Succeeded || result.Data is null)
         {
-            return FailResponse(result.ErrorMessage ?? "Paper session control action failed.", StatusCodes.Status400BadRequest);
+            var message = result.ErrorMessage ?? "Paper session control action failed.";
+            return FailResponse(
+                message,
+                StatusCodes.Status400BadRequest,
+                BuildServiceErrors(result.ErrorField, message));
         }
 
         return OkResponse(result.Data);
     }
+
+    private static IReadOnlyList<ApiError>? BuildServiceErrors(string? code, string message) =>
+        string.IsNullOrWhiteSpace(code)
+            ? null
+            : [new ApiError { Field = code, Message = message }];
 
     private async Task<IActionResult> ExecuteListAsync<T>(
         long id,

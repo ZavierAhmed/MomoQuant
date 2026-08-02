@@ -165,6 +165,7 @@ public static class DependencyInjection
         services.AddScoped<IPaperExecutionProvider, PaperExecutionProvider>();
         services.AddScoped<IPaperTradingEngine, PaperTradingEngine>();
         services.AddScoped<IPaperPersistenceService, PaperPersistenceService>();
+        services.AddScoped<IPaperDeploymentQualificationVerifier, PaperDeploymentQualificationVerifier>();
         services.AddScoped<IPaperAccountService, PaperAccountService>();
         services.AddScoped<IPaperSessionService, PaperSessionService>();
         services.AddScoped<IPaperSessionControlService, PaperSessionControlService>();

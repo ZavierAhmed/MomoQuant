@@ -682,6 +682,17 @@ export interface PaperSession {
   paperAccountId: number;
   status: string;
   mode: string;
+  useClass: 'Research' | 'DeploymentSimulation' | string;
+  parameterSetId?: number | null;
+  boundStrategyId?: number | null;
+  boundSymbolId?: number | null;
+  boundTimeframe?: string | null;
+  qualificationSourceExperimentId?: number | null;
+  qualificationSourceTrialId?: number | null;
+  qualificationParameterFingerprint?: string | null;
+  qualificationEvidenceVersion?: string | null;
+  qualificationVerifiedAtUtc?: string | null;
+  isDeploymentSimulation: boolean;
   exchangeId: number;
   riskProfileId: number;
   executionMode: string;

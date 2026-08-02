@@ -50,6 +50,8 @@ public sealed class PaperSessionService : IPaperSessionService
     private readonly ICurrentUserService _currentUserService;
     private readonly IAuditService _auditService;
     private readonly IHigherTimeframeDatasetEnricher _higherTimeframeDatasetEnricher;
+    private readonly IPaperDeploymentQualificationVerifier? _deploymentVerifier;
+    private readonly IPaperSessionRelationalCoordinator? _relationalCoordinator;
 
     public PaperSessionService(
         IPaperTradingSessionRepository sessionRepository,
@@ -70,6 +72,51 @@ public sealed class PaperSessionService : IPaperSessionService
         ICurrentUserService currentUserService,
         IAuditService auditService,
         IHigherTimeframeDatasetEnricher higherTimeframeDatasetEnricher)
+        : this(
+            sessionRepository,
+            accountRepository,
+            tradingSessionRepository,
+            exchangeRepository,
+            symbolRepository,
+            riskProfileRepository,
+            strategyRepository,
+            strategyRegistry,
+            parameterSetRepository,
+            parameterProvider,
+            riskRuleRepository,
+            dataLoader,
+            stateStore,
+            liveMarketConnectionManager,
+            marketSituationService,
+            currentUserService,
+            auditService,
+            higherTimeframeDatasetEnricher,
+            null,
+            null)
+    {
+    }
+
+    public PaperSessionService(
+        IPaperTradingSessionRepository sessionRepository,
+        IPaperAccountRepository accountRepository,
+        ITradingSessionRepository tradingSessionRepository,
+        IExchangeRepository exchangeRepository,
+        ISymbolRepository symbolRepository,
+        IRiskProfileRepository riskProfileRepository,
+        IStrategyRepository strategyRepository,
+        IStrategyRegistry strategyRegistry,
+        IStrategyParameterSetRepository parameterSetRepository,
+        IStrategyParameterProvider parameterProvider,
+        IRiskRuleRepository riskRuleRepository,
+        IBacktestDataLoader dataLoader,
+        IPaperStateStore stateStore,
+        ILiveMarketConnectionManager liveMarketConnectionManager,
+        IMarketSituationService marketSituationService,
+        ICurrentUserService currentUserService,
+        IAuditService auditService,
+        IHigherTimeframeDatasetEnricher higherTimeframeDatasetEnricher,
+        IPaperDeploymentQualificationVerifier? deploymentVerifier,
+        IPaperSessionRelationalCoordinator? relationalCoordinator)
     {
         _sessionRepository = sessionRepository;
         _accountRepository = accountRepository;
@@ -89,6 +136,8 @@ public sealed class PaperSessionService : IPaperSessionService
         _currentUserService = currentUserService;
         _auditService = auditService;
         _higherTimeframeDatasetEnricher = higherTimeframeDatasetEnricher;
+        _deploymentVerifier = deploymentVerifier;
+        _relationalCoordinator = relationalCoordinator;
     }
 
     public async Task<ServiceResult<PaperSessionDto>> CreateAsync(
@@ -117,16 +166,23 @@ public sealed class PaperSessionService : IPaperSessionService
             UpdatedAtUtc = now
         };
 
-        await _tradingSessionRepository.AddAsync(tradingSession, cancellationToken);
-        await _tradingSessionRepository.SaveChangesAsync(cancellationToken);
-
         var session = new PaperTradingSession
         {
             Name = request.Name.Trim(),
             PaperAccountId = request.PaperAccountId,
-            TradingSessionId = tradingSession.Id,
+            TradingSessionId = 0,
             Status = PaperSessionStatus.Created,
             Mode = validated.Mode,
+            UseClass = validated.UseClass,
+            ParameterSetId = request.ParameterSetId,
+            BoundStrategyId = validated.DeploymentQualification?.StrategyId,
+            BoundSymbolId = validated.DeploymentQualification?.SymbolId,
+            BoundTimeframe = validated.DeploymentQualification?.Timeframe,
+            QualificationSourceExperimentId = validated.DeploymentQualification?.SourceExperimentId,
+            QualificationSourceTrialId = validated.DeploymentQualification?.SourceTrialId,
+            QualificationParameterFingerprint = validated.DeploymentQualification?.ParameterFingerprint,
+            QualificationEvidenceVersion = validated.DeploymentQualification?.EvidenceVersion,
+            QualificationVerifiedAtUtc = validated.DeploymentQualification?.VerifiedAtUtc,
             ExchangeId = request.ExchangeId,
             RiskProfileId = request.RiskProfileId,
             ExecutionMode = validated.ExecutionMode,
@@ -141,8 +197,51 @@ public sealed class PaperSessionService : IPaperSessionService
             UpdatedAtUtc = now
         };
 
-        await _sessionRepository.AddAsync(session, cancellationToken);
-        await _sessionRepository.SaveChangesAsync(cancellationToken);
+        async Task PersistAsync(CancellationToken token)
+        {
+            await _tradingSessionRepository.AddAsync(tradingSession, token);
+            await _tradingSessionRepository.SaveChangesAsync(token);
+            session.TradingSessionId = tradingSession.Id;
+            await _sessionRepository.AddAsync(session, token);
+            await _sessionRepository.SaveChangesAsync(token);
+
+            if (validated.DeploymentQualification is not null)
+            {
+                await LogDeploymentVerificationAsync(session, "Create", validated.DeploymentQualification, token);
+            }
+
+            await _auditService.LogAsync(
+                "PAPER_SESSION_CREATED",
+                nameof(PaperTradingSession),
+                session.Id,
+                _currentUserService.UserId,
+                newValueJson: JsonSerializer.Serialize(
+                    new { request.Name, request.PaperAccountId, request.Mode, request.UseClass },
+                    JsonOptions),
+                cancellationToken: token);
+        }
+
+        if (validated.UseClass == PaperSessionUseClass.DeploymentSimulation)
+        {
+            if (_relationalCoordinator is null)
+            {
+                return ServiceResult<PaperSessionDto>.Fail(
+                    "The deployment-simulation persistence boundary is unavailable.",
+                    PaperDeploymentQualificationCodes.BindingConflict);
+            }
+
+            await _relationalCoordinator.ExecuteCreationAsync(
+                async token =>
+                {
+                    await PersistAsync(token);
+                    return true;
+                },
+                cancellationToken);
+        }
+        else
+        {
+            await PersistAsync(cancellationToken);
+        }
 
         var runtimeState = PaperMapper.CreateRuntimeState(
             validated.Settings!,
@@ -155,14 +254,6 @@ public sealed class PaperSessionService : IPaperSessionService
             validated.FrozenStrategyParameters);
 
         _stateStore.Set(session.Id, runtimeState);
-
-        await _auditService.LogAsync(
-            "PAPER_SESSION_CREATED",
-            nameof(PaperTradingSession),
-            session.Id,
-            _currentUserService.UserId,
-            newValueJson: JsonSerializer.Serialize(new { request.Name, request.PaperAccountId, request.Mode }, JsonOptions),
-            cancellationToken: cancellationToken);
 
         return ServiceResult<PaperSessionDto>.Ok(PaperMapper.MapSession(session));
     }
@@ -201,6 +292,39 @@ public sealed class PaperSessionService : IPaperSessionService
         if (!PaperMapper.TryParseMode(request.Mode, out var mode))
         {
             return ServiceResult<ValidatedPaperRequest>.Fail("Paper trading mode is invalid.", "mode");
+        }
+
+        if (!PaperMapper.TryParseUseClass(request.UseClass, out var useClass))
+        {
+            return ServiceResult<ValidatedPaperRequest>.Fail(
+                "Paper session use class is invalid.",
+                PaperDeploymentQualificationCodes.UseClassInvalid);
+        }
+
+        if (useClass == PaperSessionUseClass.DeploymentSimulation)
+        {
+            if (mode != PaperTradingMode.LivePaper)
+            {
+                return ServiceResult<ValidatedPaperRequest>.Fail(
+                    "Deployment simulation requires LivePaper market data.",
+                    PaperDeploymentQualificationCodes.LiveModeRequired);
+            }
+
+            if (request.StrategyIds is null || request.StrategyIds.Count != 1
+                || request.SymbolIds is null || request.SymbolIds.Count != 1
+                || request.Timeframes is null || request.Timeframes.Count != 1)
+            {
+                return ServiceResult<ValidatedPaperRequest>.Fail(
+                    "Deployment simulation requires exactly one strategy, one symbol, and one timeframe.",
+                    PaperDeploymentQualificationCodes.SingleScopeRequired);
+            }
+
+            if (request.ParameterSetId is null)
+            {
+                return ServiceResult<ValidatedPaperRequest>.Fail(
+                    "Deployment simulation requires an explicit deployment-qualified parameter set.",
+                    PaperDeploymentQualificationCodes.ParameterSetRequired);
+            }
         }
 
         if (mode == PaperTradingMode.LivePaper)
@@ -317,21 +441,29 @@ public sealed class PaperSessionService : IPaperSessionService
             var strategy = await _strategyRepository.GetByIdAsync(strategyId, cancellationToken);
             if (strategy is null)
             {
-                return ServiceResult<ValidatedPaperRequest>.Fail($"Strategy {strategyId} was not found.", "strategyIds");
+                return ServiceResult<ValidatedPaperRequest>.Fail(
+                    $"Strategy {strategyId} was not found.",
+                    useClass == PaperSessionUseClass.DeploymentSimulation
+                        ? PaperDeploymentQualificationCodes.StrategyIneligible
+                        : "strategyIds");
             }
 
             if (!CanonicalStrategyPortfolio.CanCreateNewRun(strategy.Code))
             {
                 return ServiceResult<ValidatedPaperRequest>.Fail(
                     CanonicalStrategyPortfolio.ArchivedCannotUseMessage(strategy.Code.ToCode()),
-                    "strategyIds");
+                    useClass == PaperSessionUseClass.DeploymentSimulation
+                        ? PaperDeploymentQualificationCodes.StrategyIneligible
+                        : "strategyIds");
             }
 
             if (!strategy.IsEnabled)
             {
                 return ServiceResult<ValidatedPaperRequest>.Fail(
                     $"Strategy {strategy.Code.ToCode()} is disabled. Enable it before using it.",
-                    "strategyIds");
+                    useClass == PaperSessionUseClass.DeploymentSimulation
+                        ? PaperDeploymentQualificationCodes.StrategyIneligible
+                        : "strategyIds");
             }
         }
 
@@ -423,7 +555,35 @@ public sealed class PaperSessionService : IPaperSessionService
         };
 
         IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>>? frozenStrategyParameters = null;
-        if (request.ParameterSetId is long parameterSetId)
+        PaperDeploymentQualificationResult? deploymentQualification = null;
+        if (useClass == PaperSessionUseClass.DeploymentSimulation)
+        {
+            if (_deploymentVerifier is null)
+            {
+                return ServiceResult<ValidatedPaperRequest>.Fail(
+                    "The deployment qualification verifier is unavailable.",
+                    PaperDeploymentQualificationCodes.NotQualified);
+            }
+
+            deploymentQualification = await _deploymentVerifier.VerifyAsync(
+                request.ParameterSetId!.Value,
+                request.StrategyIds[0],
+                request.SymbolIds[0],
+                request.Timeframes[0],
+                cancellationToken: cancellationToken);
+            if (!deploymentQualification.Succeeded)
+            {
+                return ServiceResult<ValidatedPaperRequest>.Fail(
+                    deploymentQualification.ErrorMessage ?? "Deployment qualification verification failed.",
+                    deploymentQualification.ErrorCode ?? PaperDeploymentQualificationCodes.NotQualified);
+            }
+
+            frozenStrategyParameters = new Dictionary<long, IReadOnlyDictionary<string, string>>
+            {
+                [deploymentQualification.StrategyId] = deploymentQualification.FrozenParameters
+            };
+        }
+        else if (request.ParameterSetId is long parameterSetId)
         {
             var parameterSet = await _parameterSetRepository.GetByIdAsync(parameterSetId, cancellationToken);
             if (parameterSet is null)
@@ -480,6 +640,7 @@ public sealed class PaperSessionService : IPaperSessionService
         return ServiceResult<ValidatedPaperRequest>.Ok(new ValidatedPaperRequest
         {
             Mode = mode,
+            UseClass = useClass,
             ExecutionMode = executionMode,
             Account = account,
             Symbol = symbol,
@@ -487,7 +648,8 @@ public sealed class PaperSessionService : IPaperSessionService
             Strategies = strategies,
             RiskRules = riskRules,
             Settings = settings,
-            FrozenStrategyParameters = frozenStrategyParameters
+            FrozenStrategyParameters = frozenStrategyParameters,
+            DeploymentQualification = deploymentQualification
         });
     }
 
@@ -511,9 +673,36 @@ public sealed class PaperSessionService : IPaperSessionService
         return prepared;
     }
 
+    private Task LogDeploymentVerificationAsync(
+        PaperTradingSession session,
+        string phase,
+        PaperDeploymentQualificationResult verification,
+        CancellationToken cancellationToken) =>
+        _auditService.LogAsync(
+            "PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED",
+            nameof(PaperTradingSession),
+            session.Id,
+            _currentUserService.UserId,
+            newValueJson: JsonSerializer.Serialize(new
+            {
+                paperSessionId = session.Id,
+                phase,
+                parameterSetId = verification.ParameterSetId,
+                strategyId = verification.StrategyId,
+                symbolId = verification.SymbolId,
+                timeframe = verification.Timeframe,
+                experimentId = verification.SourceExperimentId,
+                trialId = verification.SourceTrialId,
+                parameterFingerprint = verification.ParameterFingerprint,
+                evidenceVersion = verification.EvidenceVersion,
+                verifiedAtUtc = verification.VerifiedAtUtc
+            }, JsonOptions),
+            cancellationToken: cancellationToken);
+
     private sealed class ValidatedPaperRequest
     {
         public PaperTradingMode Mode { get; init; }
+        public PaperSessionUseClass UseClass { get; init; }
         public ExecutionMode ExecutionMode { get; init; }
         public PaperAccount? Account { get; init; }
         public Domain.Exchanges.Symbol? Symbol { get; init; }
@@ -522,5 +711,6 @@ public sealed class PaperSessionService : IPaperSessionService
         public IReadOnlyList<Domain.Risk.RiskRule>? RiskRules { get; init; }
         public PaperSessionSettings? Settings { get; init; }
         public IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>>? FrozenStrategyParameters { get; init; }
+        public PaperDeploymentQualificationResult? DeploymentQualification { get; init; }
     }
 }

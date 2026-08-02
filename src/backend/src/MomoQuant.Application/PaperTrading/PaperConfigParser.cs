@@ -32,6 +32,11 @@ public static class PaperConfigParser
 
     public static IReadOnlyList<long> ResolveSymbolIds(PaperTradingSession session, PaperSessionState? state)
     {
+        if (session.UseClass == PaperSessionUseClass.DeploymentSimulation)
+        {
+            return session.BoundSymbolId is long symbolId ? [symbolId] : [];
+        }
+
         if (state is not null)
         {
             return state.Settings.SymbolIds;
@@ -42,6 +47,13 @@ public static class PaperConfigParser
 
     public static IReadOnlyList<Timeframe> ResolveTimeframes(PaperTradingSession session, PaperSessionState? state)
     {
+        if (session.UseClass == PaperSessionUseClass.DeploymentSimulation)
+        {
+            return TimeframeParser.TryParse(session.BoundTimeframe, out var boundTimeframe)
+                ? [boundTimeframe]
+                : [];
+        }
+
         if (state is not null)
         {
             return state.Settings.Timeframes;

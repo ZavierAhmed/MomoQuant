@@ -65,6 +65,7 @@ public static class DependencyInjection
         services.AddScoped<IPaperAccountRepository, PaperAccountRepository>();
         services.AddScoped<IPaperAccountSnapshotRepository, PaperAccountSnapshotRepository>();
         services.AddScoped<IPaperTradingSessionRepository, PaperTradingSessionRepository>();
+        services.AddScoped<IPaperSessionRelationalCoordinator, PaperSessionRelationalCoordinator>();
         services.AddScoped<IPositionRepository, PositionRepository>();
         services.AddScoped<IReportDataRepository, ReportDataRepository>();
         services.AddScoped<IAuditLogRepository, AuditLogRepository>();

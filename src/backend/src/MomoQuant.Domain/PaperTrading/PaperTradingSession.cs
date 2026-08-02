@@ -10,6 +10,16 @@ public class PaperTradingSession : AuditableEntity
     public long TradingSessionId { get; set; }
     public PaperSessionStatus Status { get; set; } = PaperSessionStatus.Created;
     public PaperTradingMode Mode { get; set; } = PaperTradingMode.HistoricalPaper;
+    public PaperSessionUseClass UseClass { get; set; } = PaperSessionUseClass.Research;
+    public long? ParameterSetId { get; set; }
+    public long? BoundStrategyId { get; set; }
+    public long? BoundSymbolId { get; set; }
+    public string? BoundTimeframe { get; set; }
+    public long? QualificationSourceExperimentId { get; set; }
+    public long? QualificationSourceTrialId { get; set; }
+    public string? QualificationParameterFingerprint { get; set; }
+    public string? QualificationEvidenceVersion { get; set; }
+    public DateTime? QualificationVerifiedAtUtc { get; set; }
     public long ExchangeId { get; set; }
     public long RiskProfileId { get; set; }
     public ExecutionMode ExecutionMode { get; set; } = ExecutionMode.MarketFill;

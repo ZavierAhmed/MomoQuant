@@ -4,6 +4,7 @@ import { useAsync } from '@/hooks/useAsync';
 import { strategyResearchApi } from '@/api/strategyResearchApi';
 import { formatDate } from '@/components/common/utils';
 import {
+  filterDeploymentQualifiedParameterSets,
   parameterSetApprovalLabel,
   parameterSetQualificationExplanation,
   parameterSetQualificationLabel,
@@ -17,6 +18,7 @@ type Props = {
   onChange: (parameterSetId: number | '') => void;
   disabled?: boolean;
   requiredForLivePaper?: boolean;
+  deploymentQualifiedOnly?: boolean;
   error?: string;
   onRunValidation?: () => void;
   onRunOptimization?: () => void;
@@ -30,6 +32,7 @@ export function StrategyParameterSetSelector({
   onChange,
   disabled,
   requiredForLivePaper,
+  deploymentQualifiedOnly,
   error,
   onRunValidation,
   onRunOptimization,
@@ -50,13 +53,13 @@ export function StrategyParameterSetSelector({
       return new Date(right.createdAtUtc).getTime() - new Date(left.createdAtUtc).getTime();
     });
 
-    return sets.map((set) => ({
+    return filterDeploymentQualifiedParameterSets(sets, Boolean(deploymentQualifiedOnly)).map((set) => ({
       value: set.id,
       label: `${set.name} — ${parameterSetApprovalLabel(set)} — ${parameterSetQualificationLabel(set)}${
         set.robustnessScore != null ? ` — Robustness ${set.robustnessScore.toFixed(1)}` : ''
       }`,
     }));
-  }, [parameterSets.data]);
+  }, [deploymentQualifiedOnly, parameterSets.data]);
 
   if (!strategyCode) {
     return null;
@@ -75,7 +78,9 @@ export function StrategyParameterSetSelector({
         disabled={disabled}
         error={error}
         hint={
-          requiredForLivePaper
+          deploymentQualifiedOnly
+            ? 'Deployment simulation requires a Validation Lab deployment-qualified configuration. Research-only and historical sets are not eligible.'
+            : requiredForLivePaper
             ? 'LivePaper is a simulated research workflow and accepts a research-approved parameter set. Research approval is not deployment qualification.'
             : hasSavedSets
               ? 'Reuse a saved parameter set for research, or keep strategy defaults.'
@@ -109,7 +114,13 @@ export function StrategyParameterSetSelector({
   );
 }
 
-export function ParameterSetMeta({ parameterSetId }: { parameterSetId?: number | '' }) {
+export function ParameterSetMeta({
+  parameterSetId,
+  showDeploymentEvidence = false,
+}: {
+  parameterSetId?: number | '';
+  showDeploymentEvidence?: boolean;
+}) {
   const detail = useAsync(
     () =>
       parameterSetId
@@ -127,6 +138,17 @@ export function ParameterSetMeta({ parameterSetId }: { parameterSetId?: number |
         {parameterSetQualificationLabel(detail.data)} — saved {formatDate(detail.data.createdAtUtc)}
       </p>
       <p className="text-slate-500">{parameterSetQualificationExplanation(detail.data)}</p>
+      {showDeploymentEvidence ? (
+        <div className="rounded border border-slate-800 p-2 text-slate-400">
+          <p>Experiment: {detail.data.qualificationSourceExperimentId ?? 'Missing'}</p>
+          <p>Trial: {detail.data.qualificationSourceTrialId ?? 'Missing'}</p>
+          <p>Fingerprint: {detail.data.qualificationParameterFingerprint ?? 'Missing'}</p>
+          <p>Evidence: {detail.data.qualificationEvidenceVersion ?? 'Missing'}</p>
+          <p>Published qualification: {formatDate(detail.data.qualifiedAtUtc)}</p>
+          <p>Last runtime verification: pending session creation; subsequent checks appear on the session.</p>
+          <p>Runtime evidence is rechecked when the session is created, started, or resumed.</p>
+        </div>
+      ) : null}
     </div>
   );
 }

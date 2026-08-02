@@ -162,6 +162,11 @@ export function PaperSessionDetailPage() {
         Back to paper trading
       </Link>
       <SimulationBanner message="Paper trading is simulated. No real exchange orders are placed." />
+      {session.data?.isDeploymentSimulation ? (
+        <div className="mb-4 rounded-lg border border-emerald-900/60 bg-emerald-950/20 p-3 text-sm text-emerald-100">
+          Deployment simulation uses a Validation Lab deployment-qualified configuration and rechecks durable evidence before every start or resume. It is still simulated and places no real orders.
+        </div>
+      ) : null}
       <ApiErrorAlert message={actionError} />
 
       {session.loading && !session.data ? <LoadingState /> : null}
@@ -228,6 +233,20 @@ export function PaperSessionDetailPage() {
                   items={[
                     { label: 'Status', value: statusData?.status ?? session.data.status },
                     { label: 'Mode', value: statusData?.mode ?? session.data.mode },
+                    { label: 'Paper use', value: session.data.isDeploymentSimulation ? 'Deployment simulation' : 'Research paper trading' },
+                    ...(session.data.isDeploymentSimulation
+                      ? [
+                          { label: 'Parameter set', value: String(session.data.parameterSetId ?? 'â€”') },
+                          { label: 'Bound strategy', value: String(session.data.boundStrategyId ?? 'â€”') },
+                          { label: 'Bound symbol', value: String(session.data.boundSymbolId ?? 'â€”') },
+                          { label: 'Bound timeframe', value: session.data.boundTimeframe ?? 'â€”' },
+                          { label: 'Qualification experiment', value: String(session.data.qualificationSourceExperimentId ?? 'â€”') },
+                          { label: 'Qualification trial', value: String(session.data.qualificationSourceTrialId ?? 'â€”') },
+                          { label: 'Qualification fingerprint', value: session.data.qualificationParameterFingerprint ?? 'â€”' },
+                          { label: 'Evidence version', value: session.data.qualificationEvidenceVersion ?? 'â€”' },
+                          { label: 'Last verification', value: formatKvDate(session.data.qualificationVerifiedAtUtc) },
+                        ]
+                      : []),
                     isLivePaper
                       ? {
                           label: 'Progress',

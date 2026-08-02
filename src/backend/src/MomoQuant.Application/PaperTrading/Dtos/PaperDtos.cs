@@ -57,6 +57,7 @@ public sealed class CreatePaperSessionRequest
     public required IReadOnlyList<long> SymbolIds { get; init; }
     public required IReadOnlyList<string> Timeframes { get; init; }
     public string Mode { get; init; } = "HistoricalPaper";
+    public string UseClass { get; init; } = "Research";
     public DateTime? FromUtc { get; init; }
     public DateTime? ToUtc { get; init; }
     public long RiskProfileId { get; init; }
@@ -80,6 +81,17 @@ public sealed class PaperSessionDto
     public long PaperAccountId { get; init; }
     public required string Status { get; init; }
     public required string Mode { get; init; }
+    public required string UseClass { get; init; }
+    public long? ParameterSetId { get; init; }
+    public long? BoundStrategyId { get; init; }
+    public long? BoundSymbolId { get; init; }
+    public string? BoundTimeframe { get; init; }
+    public long? QualificationSourceExperimentId { get; init; }
+    public long? QualificationSourceTrialId { get; init; }
+    public string? QualificationParameterFingerprint { get; init; }
+    public string? QualificationEvidenceVersion { get; init; }
+    public DateTime? QualificationVerifiedAtUtc { get; init; }
+    public bool IsDeploymentSimulation { get; init; }
     public long ExchangeId { get; init; }
     public long RiskProfileId { get; init; }
     public required string ExecutionMode { get; init; }

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Common;
 using MomoQuant.Application.LiveMarket;
@@ -34,6 +35,8 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
     private readonly ILiveMarketBootstrapService _bootstrapService;
     private readonly ICurrentUserService _currentUserService;
     private readonly IAuditService _auditService;
+    private readonly IPaperDeploymentQualificationVerifier? _deploymentVerifier;
+    private readonly IPaperSessionRelationalCoordinator? _relationalCoordinator;
 
     public PaperSessionControlService(
         IPaperTradingSessionRepository sessionRepository,
@@ -45,6 +48,33 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
         ILiveMarketBootstrapService bootstrapService,
         ICurrentUserService currentUserService,
         IAuditService auditService)
+        : this(
+            sessionRepository,
+            tradingSessionRepository,
+            stateStore,
+            paperEngine,
+            persistenceService,
+            liveMarketConnectionManager,
+            bootstrapService,
+            currentUserService,
+            auditService,
+            null,
+            null)
+    {
+    }
+
+    public PaperSessionControlService(
+        IPaperTradingSessionRepository sessionRepository,
+        ITradingSessionRepository tradingSessionRepository,
+        IPaperStateStore stateStore,
+        IPaperTradingEngine paperEngine,
+        IPaperPersistenceService persistenceService,
+        ILiveMarketConnectionManager liveMarketConnectionManager,
+        ILiveMarketBootstrapService bootstrapService,
+        ICurrentUserService currentUserService,
+        IAuditService auditService,
+        IPaperDeploymentQualificationVerifier? deploymentVerifier,
+        IPaperSessionRelationalCoordinator? relationalCoordinator)
     {
         _sessionRepository = sessionRepository;
         _tradingSessionRepository = tradingSessionRepository;
@@ -55,6 +85,8 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
         _bootstrapService = bootstrapService;
         _currentUserService = currentUserService;
         _auditService = auditService;
+        _deploymentVerifier = deploymentVerifier;
+        _relationalCoordinator = relationalCoordinator;
     }
 
     public async Task<ServiceResult<PaperSessionControlResponse>> StartAsync(
@@ -70,6 +102,15 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
         if (session.Status is not PaperSessionStatus.Created and not PaperSessionStatus.Paused)
         {
             return ServiceResult<PaperSessionControlResponse>.Fail($"Paper session cannot start from status {session.Status}.", "status");
+        }
+
+        if (session.UseClass == PaperSessionUseClass.DeploymentSimulation)
+        {
+            return await ExecuteDeploymentBeginAsync(
+                sessionId,
+                session.Status,
+                "Start",
+                cancellationToken);
         }
 
         if (!_stateStore.TryGet(sessionId, out var state) || state is null)
@@ -120,6 +161,15 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
         if (session.Status != PaperSessionStatus.Paused)
         {
             return ServiceResult<PaperSessionControlResponse>.Fail("Only paused paper sessions can be resumed.", "status");
+        }
+
+        if (session.UseClass == PaperSessionUseClass.DeploymentSimulation)
+        {
+            return await ExecuteDeploymentBeginAsync(
+                sessionId,
+                PaperSessionStatus.Paused,
+                "Resume",
+                cancellationToken);
         }
 
         if (!_stateStore.TryGet(sessionId, out var state) || state is null)
@@ -314,6 +364,142 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
 
         return ServiceResult<PaperSessionControlResponse>.Ok(BuildResponse(session));
     }
+
+    private async Task<ServiceResult<PaperSessionControlResponse>> ExecuteDeploymentBeginAsync(
+        long sessionId,
+        PaperSessionStatus requiredStatus,
+        string phase,
+        CancellationToken cancellationToken)
+    {
+        if (_deploymentVerifier is null || _relationalCoordinator is null)
+        {
+            return ServiceResult<PaperSessionControlResponse>.Fail(
+                "Deployment-simulation runtime verification is unavailable.",
+                PaperDeploymentQualificationCodes.NotQualified);
+        }
+
+        return await _relationalCoordinator.ExecuteSerializedAsync(
+            sessionId,
+            async (session, token) =>
+            {
+                if (session is null)
+                {
+                    return ServiceResult<PaperSessionControlResponse>.Fail("Paper session was not found.");
+                }
+
+                if (session.UseClass != PaperSessionUseClass.DeploymentSimulation)
+                {
+                    return ServiceResult<PaperSessionControlResponse>.Fail(
+                        "The durable paper-session use class changed during runtime control.",
+                        PaperDeploymentQualificationCodes.BindingConflict);
+                }
+
+                if (session.Status != requiredStatus)
+                {
+                    return ServiceResult<PaperSessionControlResponse>.Fail(
+                        $"Paper session cannot {phase.ToLowerInvariant()} from status {session.Status}.",
+                        "status");
+                }
+
+                if (!_stateStore.TryGet(sessionId, out var state) || state is null)
+                {
+                    return ServiceResult<PaperSessionControlResponse>.Fail(
+                        "Paper runtime state was not found. Recreate the session.");
+                }
+
+                var binding = BuildStoredBinding(session);
+                if (binding is null)
+                {
+                    return ServiceResult<PaperSessionControlResponse>.Fail(
+                        "The durable deployment-simulation binding is incomplete.",
+                        PaperDeploymentQualificationCodes.BindingConflict);
+                }
+
+                var verification = await _deploymentVerifier.VerifyAsync(
+                    binding.ParameterSetId,
+                    binding.StrategyId,
+                    binding.SymbolId,
+                    binding.Timeframe,
+                    binding,
+                    token);
+                if (!verification.Succeeded)
+                {
+                    return ServiceResult<PaperSessionControlResponse>.Fail(
+                        verification.ErrorMessage ?? "Deployment qualification verification failed.",
+                        verification.ErrorCode ?? PaperDeploymentQualificationCodes.NotQualified);
+                }
+
+                state.FrozenStrategyParameters = new Dictionary<long, IReadOnlyDictionary<string, string>>
+                {
+                    [verification.StrategyId] = verification.FrozenParameters
+                };
+                session.QualificationVerifiedAtUtc = verification.VerifiedAtUtc;
+                session.UpdatedAtUtc = verification.VerifiedAtUtc;
+                await _sessionRepository.UpdateAsync(session, token);
+                await _sessionRepository.SaveChangesAsync(token);
+                await LogDeploymentVerificationAsync(session, phase, verification, token);
+
+                var readiness = await EnsureLivePaperReadyAsync(session, state, token);
+                if (!readiness.Succeeded)
+                {
+                    return readiness;
+                }
+
+                return await BeginRunningAsync(session, state, token);
+            },
+            cancellationToken);
+    }
+
+    private static PaperDeploymentStoredBinding? BuildStoredBinding(PaperTradingSession session)
+    {
+        if (session.ParameterSetId is null
+            || session.BoundStrategyId is null
+            || session.BoundSymbolId is null
+            || string.IsNullOrWhiteSpace(session.BoundTimeframe)
+            || session.QualificationSourceExperimentId is null
+            || session.QualificationSourceTrialId is null
+            || string.IsNullOrWhiteSpace(session.QualificationParameterFingerprint)
+            || string.IsNullOrWhiteSpace(session.QualificationEvidenceVersion))
+        {
+            return null;
+        }
+
+        return new PaperDeploymentStoredBinding(
+            session.ParameterSetId.Value,
+            session.BoundStrategyId.Value,
+            session.BoundSymbolId.Value,
+            session.BoundTimeframe,
+            session.QualificationSourceExperimentId.Value,
+            session.QualificationSourceTrialId.Value,
+            session.QualificationParameterFingerprint,
+            session.QualificationEvidenceVersion);
+    }
+
+    private Task LogDeploymentVerificationAsync(
+        PaperTradingSession session,
+        string phase,
+        PaperDeploymentQualificationResult verification,
+        CancellationToken cancellationToken) =>
+        _auditService.LogAsync(
+            "PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED",
+            nameof(PaperTradingSession),
+            session.Id,
+            _currentUserService.UserId,
+            newValueJson: JsonSerializer.Serialize(new
+            {
+                paperSessionId = session.Id,
+                phase,
+                parameterSetId = verification.ParameterSetId,
+                strategyId = verification.StrategyId,
+                symbolId = verification.SymbolId,
+                timeframe = verification.Timeframe,
+                experimentId = verification.SourceExperimentId,
+                trialId = verification.SourceTrialId,
+                parameterFingerprint = verification.ParameterFingerprint,
+                evidenceVersion = verification.EvidenceVersion,
+                verifiedAtUtc = verification.VerifiedAtUtc
+            }),
+            cancellationToken: cancellationToken);
 
     private async Task<ServiceResult<PaperSessionControlResponse>> BeginRunningAsync(
         PaperTradingSession session,

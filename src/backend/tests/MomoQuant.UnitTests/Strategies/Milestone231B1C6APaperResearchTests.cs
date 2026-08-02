@@ -151,6 +151,11 @@ public sealed class Milestone231B1C6APaperResearchTests
 
         Assert.True(result.Succeeded, result.ErrorMessage);
         Assert.Equal("LivePaper", result.Data!.Mode);
+        Assert.Equal("Research", result.Data.UseClass);
+        Assert.Equal(parameterSetId, result.Data.ParameterSetId);
+        Assert.False(result.Data.IsDeploymentSimulation);
+        Assert.Null(result.Data.BoundStrategyId);
+        Assert.Null(result.Data.QualificationParameterFingerprint);
         parameterSets.Verify(repository => repository.GetByIdAsync(parameterSetId, It.IsAny<CancellationToken>()), Times.Once);
         parameterProvider.Verify(provider => provider.GetParametersFromSetAsync(parameterSetId, It.IsAny<CancellationToken>()), Times.Once);
         sessions.Verify(repository => repository.AddAsync(It.IsAny<PaperTradingSession>(), It.IsAny<CancellationToken>()), Times.Once);

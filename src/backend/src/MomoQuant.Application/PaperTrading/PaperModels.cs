@@ -33,7 +33,7 @@ public sealed class PaperSessionState
     public BacktestDataset Dataset { get; set; } = null!;
     public required IReadOnlyList<PreparedStrategy> Strategies { get; init; }
     public required IReadOnlyList<RiskRule> RiskRules { get; init; }
-    public IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>>? FrozenStrategyParameters { get; init; }
+    public IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>>? FrozenStrategyParameters { get; set; }
     public int NextEvaluationIndex { get; set; }
     public bool StopRequested { get; set; }
     public long? LastProcessedCandleId { get; set; }

@@ -35,6 +35,12 @@ import {
   type TimeframeMode,
 } from '@/components/strategies/StrategyAwareTimeframeSelector';
 import { ParameterSetMeta, StrategyParameterSetSelector } from '@/components/strategies/StrategyParameterSetSelector';
+import {
+  DEPLOYMENT_SIMULATION_EXPLANATION,
+  RESEARCH_PAPER_EXPLANATION,
+  deploymentPaperSelectionErrors,
+  isDeploymentPaperSelectionComplete,
+} from '@/components/strategies/parameterSetQualification';
 
 export function PaperTradingPage() {
   const { canEdit } = useRole();
@@ -58,6 +64,7 @@ export function PaperTradingPage() {
     exchangeId: '' as number | '',
     symbolIds: [] as number[],
     mode: 'HistoricalPaper',
+    useClass: 'Research' as 'Research' | 'DeploymentSimulation',
     fromUtc: '',
     toUtc: '',
     riskProfileId: '' as number | '',
@@ -81,6 +88,16 @@ export function PaperTradingPage() {
   );
   const { showDisabledStrategies, setShowDisabledStrategies } = useShowDisabledStrategies();
   const sessions = useAsync(() => paperTradingApi.listSessions({ page: 1, pageSize: 50 }), []);
+  const isDeploymentSimulation = sessionForm.useClass === 'DeploymentSimulation';
+  const deploymentSelection = {
+    mode: sessionForm.mode,
+    strategyCount: sessionForm.strategyIds.length,
+    symbolCount: sessionForm.symbolIds.length,
+    timeframeCount: resolvedTimeframes.length,
+    parameterSetId,
+  };
+  const deploymentRequirementsMet = !isDeploymentSimulation
+    || isDeploymentPaperSelectionComplete(deploymentSelection);
 
   async function createAccount() {
     if (!canEdit) return;
@@ -107,6 +124,9 @@ export function PaperTradingPage() {
     if (!resolvedTimeframes.length) errors.timeframes = 'Select at least one timeframe.';
     if (!sessionForm.riskProfileId) errors.riskProfileId = 'Risk profile is required.';
     if (!sessionForm.strategyIds.length) errors.strategyIds = 'Select at least one strategy.';
+    if (isDeploymentSimulation) {
+      Object.assign(errors, deploymentPaperSelectionErrors(deploymentSelection));
+    }
     Object.assign(errors, validateHistoricalPaperDates(sessionForm.mode, sessionForm.fromUtc, sessionForm.toUtc));
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
@@ -160,6 +180,7 @@ export function PaperTradingPage() {
         symbolIds: requireNumberArray(sessionForm.symbolIds, 'Symbols'),
         timeframes: requireStringArray(resolvedTimeframes, 'Timeframes'),
         mode: sessionForm.mode,
+        useClass: sessionForm.useClass,
         fromUtc: range.fromUtc,
         toUtc: range.toUtc,
         riskProfileId: requireNumber(sessionForm.riskProfileId, 'Risk profile'),
@@ -250,10 +271,38 @@ export function PaperTradingPage() {
           </FormPanel>
 
           <FormPanel title="Create Paper Session" description="Configure a simulated session.">
+            <div className="mb-4 space-y-3 rounded-lg border border-slate-800 p-4 text-sm text-slate-300">
+              <SelectField
+                label="Paper use"
+                value={sessionForm.useClass}
+                onChange={(value) => {
+                  const useClass = value === 'DeploymentSimulation' ? 'DeploymentSimulation' : 'Research';
+                  setParameterSetId('');
+                  setSessionForm((current) => ({
+                    ...current,
+                    useClass,
+                    mode: useClass === 'DeploymentSimulation' ? 'LivePaper' : current.mode,
+                  }));
+                }}
+                options={[
+                  { label: 'Research paper trading', value: 'Research' },
+                  { label: 'Deployment simulation', value: 'DeploymentSimulation' },
+                ]}
+              />
+              <p>{RESEARCH_PAPER_EXPLANATION}</p>
+              <p>{DEPLOYMENT_SIMULATION_EXPLANATION}</p>
+            </div>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               <TextField label="Session Name" value={sessionForm.name} onChange={(v) => setSessionForm((c) => ({ ...c, name: v }))} required error={formErrors.name} />
               <SelectField label="Paper Account" value={sessionForm.paperAccountId} onChange={(v) => setSessionForm((c) => ({ ...c, paperAccountId: v }))} options={reference.paperAccountOptions} required error={formErrors.paperAccountId} />
-              <SelectField label="Paper Mode" value={sessionForm.mode} onChange={(v) => setSessionForm((c) => ({ ...c, mode: v || 'HistoricalPaper' }))} options={PAPER_MODE_OPTIONS} />
+              <SelectField
+                label="Paper Mode"
+                value={sessionForm.mode}
+                onChange={(v) => setSessionForm((c) => ({ ...c, mode: v || 'HistoricalPaper' }))}
+                options={PAPER_MODE_OPTIONS}
+                disabled={isDeploymentSimulation}
+                error={formErrors.mode}
+              />
               <ExchangeSymbolSelector
                 selectedExchangeId={sessionForm.exchangeId}
                 selectedSymbolIds={sessionForm.symbolIds}
@@ -279,8 +328,10 @@ export function PaperTradingPage() {
                 selectedParameterSetId={parameterSetId}
                 onChange={setParameterSetId}
                 requiredForLivePaper={sessionForm.mode === 'LivePaper'}
+                deploymentQualifiedOnly={isDeploymentSimulation}
+                error={formErrors.parameterSetId}
               />
-              <ParameterSetMeta parameterSetId={parameterSetId} />
+              <ParameterSetMeta parameterSetId={parameterSetId} showDeploymentEvidence={isDeploymentSimulation} />
               <SelectField label="Risk Profile" value={sessionForm.riskProfileId} onChange={(v) => setSessionForm((c) => ({ ...c, riskProfileId: v }))} options={reference.riskProfileOptions} required error={formErrors.riskProfileId} />
               <CheckboxField label="Show disabled strategies" checked={showDisabledStrategies} onChange={setShowDisabledStrategies} />
               <SelectField label="Execution Mode" value={sessionForm.executionMode} onChange={(v) => setSessionForm((c) => ({ ...c, executionMode: v || 'MarketFill' }))} options={EXECUTION_MODE_OPTIONS} />
@@ -345,7 +396,14 @@ export function PaperTradingPage() {
               </div>
             ) : null}
             <FormActions>
-              <button type="button" onClick={() => void createSession()} className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-950">Create Session</button>
+              <button
+                type="button"
+                onClick={() => void createSession()}
+                disabled={!deploymentRequirementsMet}
+                className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Create Session
+              </button>
               <button type="button" onClick={() => void askAiAdvisor()} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200">
                 {advisorLoading ? 'Asking AI…' : 'Ask AI Setup Advisor'}
               </button>
@@ -392,6 +450,8 @@ export function PaperTradingPage() {
             { key: 'name', header: 'Name', render: (row) => row.name },
             { key: 'account', header: 'Account', render: (row) => paperAccountLabel(reference.paperAccounts, row.paperAccountId) },
             { key: 'mode', header: 'Mode', render: (row) => row.mode },
+            { key: 'useClass', header: 'Use', render: (row) => row.isDeploymentSimulation ? 'Deployment simulation' : 'Research' },
+            { key: 'qualification', header: 'Qualification', render: (row) => row.isDeploymentSimulation ? `Verified ${formatDate(row.qualificationVerifiedAtUtc)}` : 'Research approval' },
             { key: 'status', header: 'Status', render: (row) => <StatusPill status={String(row.status)} /> },
             { key: 'exchange', header: 'Exchange', render: (row) => exchangeLabel(reference.exchanges, row.exchangeId) },
             { key: 'started', header: 'Started At', render: (row) => formatDate(row.startedAtUtc) },

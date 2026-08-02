@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { StrategyParameterSet } from '@/api/strategyResearchApi';
 import {
+  DEPLOYMENT_SIMULATION_EXPLANATION,
+  RESEARCH_PAPER_EXPLANATION,
+  deploymentPaperSelectionErrors,
+  filterDeploymentQualifiedParameterSets,
+  isDeploymentPaperSelectionComplete,
   parameterSetApprovalLabel,
   parameterSetQualificationExplanation,
   parameterSetQualificationLabel,
@@ -46,5 +51,47 @@ describe('parameter-set approval and qualification wording', () => {
 
   it('does not describe an unapproved set as research approved', () => {
     expect(parameterSetApprovalLabel(parameterSet({ isApproved: false }))).toBe('Not research approved');
+  });
+
+  it('keeps research and deployment simulation distinct and explains that no real orders are placed', () => {
+    expect(RESEARCH_PAPER_EXPLANATION).toContain('experimentation');
+    expect(DEPLOYMENT_SIMULATION_EXPLANATION).toContain('rechecks its evidence before every start or resume');
+    expect(DEPLOYMENT_SIMULATION_EXPLANATION).toContain('no real orders');
+  });
+
+  it('requires the exact deployment-simulation selection before submission', () => {
+    const incomplete = deploymentPaperSelectionErrors({
+      mode: 'HistoricalPaper',
+      strategyCount: 2,
+      symbolCount: 0,
+      timeframeCount: 2,
+      parameterSetId: '',
+    });
+    expect(Object.keys(incomplete)).toEqual(['mode', 'strategyIds', 'symbolIds', 'timeframes', 'parameterSetId']);
+    expect(isDeploymentPaperSelectionComplete({
+      mode: 'LivePaper',
+      strategyCount: 1,
+      symbolCount: 1,
+      timeframeCount: 1,
+      parameterSetId: 42,
+    })).toBe(true);
+  });
+
+  it('excludes research-only and historical sets from deployment selection', () => {
+    const qualified = parameterSet({
+      id: 2,
+      name: 'Published set',
+      qualificationStatus: 'DeploymentQualified',
+      isDeploymentQualified: true,
+      qualificationBlockingReasons: [],
+    });
+    const historical = parameterSet({
+      id: 3,
+      qualificationStatus: 'HistoricalNotEvaluated',
+      qualificationBlockingReasons: ['PARAMETER_SET_HISTORICAL_NOT_EVALUATED'],
+    });
+
+    expect(filterDeploymentQualifiedParameterSets([parameterSet(), qualified, historical], true)).toEqual([qualified]);
+    expect(filterDeploymentQualifiedParameterSets([parameterSet(), qualified, historical], false)).toHaveLength(3);
   });
 });

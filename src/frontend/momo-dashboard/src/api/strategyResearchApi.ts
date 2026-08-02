@@ -151,6 +151,11 @@ export interface StrategyParameterSet {
   approvalScope: 'Research' | string;
   isDeploymentQualified: boolean;
   qualificationBlockingReasons: string[];
+  qualificationSourceExperimentId?: number | null;
+  qualificationSourceTrialId?: number | null;
+  qualificationParameterFingerprint?: string | null;
+  qualificationEvidenceVersion?: string | null;
+  qualifiedAtUtc?: string | null;
   createdAtUtc: string;
   approvedAtUtc?: string;
 }

@@ -51,6 +51,17 @@ public static class PaperMapper
         PaperAccountId = session.PaperAccountId,
         Status = session.Status.ToString(),
         Mode = session.Mode.ToString(),
+        UseClass = session.UseClass.ToString(),
+        ParameterSetId = session.ParameterSetId,
+        BoundStrategyId = session.BoundStrategyId,
+        BoundSymbolId = session.BoundSymbolId,
+        BoundTimeframe = session.BoundTimeframe,
+        QualificationSourceExperimentId = session.QualificationSourceExperimentId,
+        QualificationSourceTrialId = session.QualificationSourceTrialId,
+        QualificationParameterFingerprint = session.QualificationParameterFingerprint,
+        QualificationEvidenceVersion = session.QualificationEvidenceVersion,
+        QualificationVerifiedAtUtc = session.QualificationVerifiedAtUtc,
+        IsDeploymentSimulation = session.UseClass == PaperSessionUseClass.DeploymentSimulation,
         ExchangeId = session.ExchangeId,
         RiskProfileId = session.RiskProfileId,
         ExecutionMode = session.ExecutionMode.ToString(),
@@ -78,6 +89,25 @@ public static class PaperMapper
         }
 
         mode = default;
+        return false;
+    }
+
+    public static bool TryParseUseClass(string? input, out PaperSessionUseClass useClass)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            useClass = PaperSessionUseClass.Research;
+            return true;
+        }
+
+        if (Enum.GetNames<PaperSessionUseClass>()
+            .Any(name => string.Equals(name, input, StringComparison.OrdinalIgnoreCase)))
+        {
+            useClass = Enum.Parse<PaperSessionUseClass>(input, ignoreCase: true);
+            return true;
+        }
+
+        useClass = default;
         return false;
     }
 

@@ -44,6 +44,21 @@ public interface IPaperTradingSessionRepository
     Task SaveChangesAsync(CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// Relational boundary for atomic deployment-session creation and serialized runtime transitions.
+/// </summary>
+public interface IPaperSessionRelationalCoordinator
+{
+    Task<T> ExecuteCreationAsync<T>(
+        Func<CancellationToken, Task<T>> action,
+        CancellationToken cancellationToken = default);
+
+    Task<T> ExecuteSerializedAsync<T>(
+        long paperSessionId,
+        Func<PaperTradingSession?, CancellationToken, Task<T>> action,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IPositionRepository
 {
     Task<IReadOnlyList<Domain.Trades.Position>> GetByTradingSessionIdAsync(long tradingSessionId, CancellationToken cancellationToken = default);
