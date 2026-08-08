@@ -32,7 +32,7 @@ public sealed class SkLivePaperController : ApiControllerBase
     }
 
     [HttpGet("sessions")]
-    public async Task<IActionResult> ListSessions([FromQuery] int limit = 50, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> ListSessions([FromQuery] int limit = SkLivePaperQueryLimits.SessionsDefault, CancellationToken cancellationToken = default)
     {
         var result = await _service.ListSessionsAsync(limit, cancellationToken);
         return OkResponse(result.Data!);
@@ -71,7 +71,7 @@ public sealed class SkLivePaperController : ApiControllerBase
         FromResult(await _service.ManualCloseTradeAsync(id, tradeId, cancellationToken));
 
     [HttpGet("sessions/{id:long}/candidates")]
-    public async Task<IActionResult> GetCandidates(long id, [FromQuery] int limit = 100, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> GetCandidates(long id, [FromQuery] int limit = SkLivePaperQueryLimits.CandidatesDefault, CancellationToken cancellationToken = default)
     {
         var result = await _service.GetCandidatesAsync(id, limit, cancellationToken);
         return OkResponse(result.Data!);
@@ -85,7 +85,7 @@ public sealed class SkLivePaperController : ApiControllerBase
     }
 
     [HttpGet("sessions/{id:long}/events")]
-    public async Task<IActionResult> GetEvents(long id, [FromQuery] int limit = 200, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> GetEvents(long id, [FromQuery] int limit = SkLivePaperQueryLimits.EventsDefault, CancellationToken cancellationToken = default)
     {
         var result = await _service.GetEventsAsync(id, limit, cancellationToken);
         return OkResponse(result.Data!);

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.StrategyLab;
 using MomoQuant.Application.StrategyLab.Risk;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.StrategyLab;
@@ -19,12 +20,15 @@ public sealed class StrategyLabRunRepository : IStrategyLabRunRepository
     public Task<StrategyLabRun?> GetByIdAsync(long id, CancellationToken cancellationToken = default) =>
         _dbContext.StrategyLabRuns.FirstOrDefaultAsync(run => run.Id == id, cancellationToken);
 
-    public async Task<IReadOnlyList<StrategyLabRun>> GetByStrategyCodeAsync(string strategyCode, int limit, CancellationToken cancellationToken = default) =>
-        await _dbContext.StrategyLabRuns
+    public async Task<IReadOnlyList<StrategyLabRun>> GetByStrategyCodeAsync(string strategyCode, int limit, CancellationToken cancellationToken = default)
+    {
+        var normalizedLimit = StrategyLabQueryLimits.NormalizeRunsByStrategy(limit);
+        return await _dbContext.StrategyLabRuns
             .Where(run => run.StrategyCode == strategyCode)
             .OrderByDescending(run => run.CreatedAtUtc)
-            .Take(limit)
+            .Take(normalizedLimit)
             .ToListAsync(cancellationToken);
+    }
 
     public async Task AddAsync(StrategyLabRun run, CancellationToken cancellationToken = default)
     {
@@ -38,11 +42,14 @@ public sealed class StrategyLabRunRepository : IStrategyLabRunRepository
         await _dbContext.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<StrategyLabRun>> GetRecentAsync(int limit, CancellationToken cancellationToken = default) =>
-        await _dbContext.StrategyLabRuns
+    public async Task<IReadOnlyList<StrategyLabRun>> GetRecentAsync(int limit, CancellationToken cancellationToken = default)
+    {
+        var normalizedLimit = StrategyLabQueryLimits.NormalizeRecentRuns(limit);
+        return await _dbContext.StrategyLabRuns
             .OrderByDescending(run => run.CreatedAtUtc)
-            .Take(limit)
+            .Take(normalizedLimit)
             .ToListAsync(cancellationToken);
+    }
 
     public async Task<IReadOnlyList<StrategyLabRun>> GetByNamePrefixAsync(
         string namePrefix,

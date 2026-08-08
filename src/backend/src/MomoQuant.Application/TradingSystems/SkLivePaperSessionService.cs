@@ -155,7 +155,9 @@ public sealed class SkLivePaperSessionService : ISkLivePaperSessionService
 
     public async Task<ServiceResult<IReadOnlyList<SkLivePaperSessionSummaryDto>>> ListSessionsAsync(int limit, CancellationToken cancellationToken = default)
     {
-        var sessions = await _sessionRepository.GetRecentAsync(limit, cancellationToken);
+        var sessions = await _sessionRepository.GetRecentAsync(
+            SkLivePaperQueryLimits.NormalizeSessions(limit),
+            cancellationToken);
         var summaries = new List<SkLivePaperSessionSummaryDto>();
         foreach (var session in sessions)
         {
@@ -380,7 +382,10 @@ public sealed class SkLivePaperSessionService : ISkLivePaperSessionService
 
     public async Task<ServiceResult<IReadOnlyList<SkLivePaperCandidateDto>>> GetCandidatesAsync(long sessionId, int limit, CancellationToken cancellationToken = default)
     {
-        var items = await _candidateRepository.GetBySessionAsync(sessionId, limit, cancellationToken);
+        var items = await _candidateRepository.GetBySessionAsync(
+            sessionId,
+            SkLivePaperQueryLimits.NormalizeCandidates(limit),
+            cancellationToken);
         return ServiceResult<IReadOnlyList<SkLivePaperCandidateDto>>.Ok(items.Select(MapCandidate).ToList());
     }
 
@@ -392,7 +397,10 @@ public sealed class SkLivePaperSessionService : ISkLivePaperSessionService
 
     public async Task<ServiceResult<IReadOnlyList<SkLivePaperEventDto>>> GetEventsAsync(long sessionId, int limit, CancellationToken cancellationToken = default)
     {
-        var items = await _eventRepository.GetBySessionAsync(sessionId, limit, cancellationToken);
+        var items = await _eventRepository.GetBySessionAsync(
+            sessionId,
+            SkLivePaperQueryLimits.NormalizeEvents(limit),
+            cancellationToken);
         return ServiceResult<IReadOnlyList<SkLivePaperEventDto>>.Ok(items.Select(e => new SkLivePaperEventDto
         {
             Id = e.Id,

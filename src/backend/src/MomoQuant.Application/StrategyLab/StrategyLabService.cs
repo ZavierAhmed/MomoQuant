@@ -38,8 +38,8 @@ public interface IStrategyLabService
         long runId,
         long otherRunId,
         CancellationToken cancellationToken = default);
-    Task<ServiceResult<IReadOnlyList<StrategyLabRunDto>>> GetRunsByStrategyAsync(string strategyCode, int limit = 20, CancellationToken cancellationToken = default);
-    Task<ServiceResult<IReadOnlyList<StrategyLabRunDto>>> GetRecentRunsAsync(int limit = 50, CancellationToken cancellationToken = default);
+    Task<ServiceResult<IReadOnlyList<StrategyLabRunDto>>> GetRunsByStrategyAsync(string strategyCode, int limit = StrategyLabQueryLimits.RunsByStrategyDefault, CancellationToken cancellationToken = default);
+    Task<ServiceResult<IReadOnlyList<StrategyLabRunDto>>> GetRecentRunsAsync(int limit = StrategyLabQueryLimits.RecentRunsDefault, CancellationToken cancellationToken = default);
     Task<ServiceResult<CreateStrategyLabRunRequest>> GetRerunConfigAsync(long id, CancellationToken cancellationToken = default);
     Task<ServiceResult<IReadOnlyList<SyntheticTestResultDto>>> RunSyntheticTestsAsync(string strategyCode, CancellationToken cancellationToken = default);
     Task<ServiceResult<StrategyHealthDto>> GetStrategyHealthAsync(string strategyCode, CancellationToken cancellationToken = default);
@@ -610,16 +610,21 @@ public sealed class StrategyLabService : IStrategyLabService
             StrategyLabRiskAnalysisCalculator.Compare(runA, candidatesA, runB, candidatesB));
     }
 
-    public async Task<ServiceResult<IReadOnlyList<StrategyLabRunDto>>> GetRunsByStrategyAsync(string strategyCode, int limit = 20, CancellationToken cancellationToken = default)
+    public async Task<ServiceResult<IReadOnlyList<StrategyLabRunDto>>> GetRunsByStrategyAsync(string strategyCode, int limit = StrategyLabQueryLimits.RunsByStrategyDefault, CancellationToken cancellationToken = default)
     {
-        var runs = await _runRepository.GetByStrategyCodeAsync(strategyCode, limit, cancellationToken);
+        var runs = await _runRepository.GetByStrategyCodeAsync(
+            strategyCode,
+            StrategyLabQueryLimits.NormalizeRunsByStrategy(limit),
+            cancellationToken);
         var currentVersion = await GetCurrentVersionAsync(strategyCode, cancellationToken);
         return ServiceResult<IReadOnlyList<StrategyLabRunDto>>.Ok(runs.Select(r => MapRun(r, currentVersion)).ToList());
     }
 
-    public async Task<ServiceResult<IReadOnlyList<StrategyLabRunDto>>> GetRecentRunsAsync(int limit = 50, CancellationToken cancellationToken = default)
+    public async Task<ServiceResult<IReadOnlyList<StrategyLabRunDto>>> GetRecentRunsAsync(int limit = StrategyLabQueryLimits.RecentRunsDefault, CancellationToken cancellationToken = default)
     {
-        var runs = await _runRepository.GetRecentAsync(limit, cancellationToken);
+        var runs = await _runRepository.GetRecentAsync(
+            StrategyLabQueryLimits.NormalizeRecentRuns(limit),
+            cancellationToken);
         return ServiceResult<IReadOnlyList<StrategyLabRunDto>>.Ok(runs.Select(r => MapRun(r, r.StrategyVersion)).ToList());
     }
 

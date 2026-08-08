@@ -81,4 +81,63 @@ public class SkLivePaperSessionServiceTests
             m => m.SubscribeAsync(It.IsAny<LiveMarketSubscribeRequest>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
+
+    [Fact]
+    public async Task Milestone231B1C6D1Limit_ListSessionsAsync_NormalizesBeforeForwardingAndPreservesCancellation()
+    {
+        var cancellation = new CancellationTokenSource();
+        _sessionRepository.Setup(r => r.GetRecentAsync(200, cancellation.Token))
+            .ReturnsAsync([new SkLivePaperSession { Id = 17 }]);
+        _tradeRepository.Setup(r => r.GetBySessionAsync(17, cancellation.Token))
+            .ReturnsAsync([]);
+
+        var result = await BuildService().ListSessionsAsync(int.MaxValue, cancellation.Token);
+
+        Assert.True(result.Succeeded);
+        Assert.Single(result.Data!);
+        _sessionRepository.Verify(r => r.GetRecentAsync(200, cancellation.Token), Times.Once);
+        _sessionRepository.Verify(r => r.GetRecentAsync(int.MaxValue, It.IsAny<CancellationToken>()), Times.Never);
+
+        _sessionRepository.Setup(r => r.GetRecentAsync(50, cancellation.Token)).ReturnsAsync([]);
+        await BuildService().ListSessionsAsync(0, cancellation.Token);
+        _sessionRepository.Verify(r => r.GetRecentAsync(50, cancellation.Token), Times.Once);
+    }
+
+    [Fact]
+    public async Task Milestone231B1C6D1Limit_GetCandidatesAsync_NormalizesBeforeForwardingAndPreservesSessionId()
+    {
+        var cancellation = new CancellationTokenSource();
+        _candidateRepository.Setup(r => r.GetBySessionAsync(23, 500, cancellation.Token))
+            .ReturnsAsync([new SkLivePaperCandidate { Id = 1, SessionId = 23 }]);
+
+        var result = await BuildService().GetCandidatesAsync(23, int.MaxValue, cancellation.Token);
+
+        Assert.True(result.Succeeded);
+        Assert.Single(result.Data!);
+        _candidateRepository.Verify(r => r.GetBySessionAsync(23, 500, cancellation.Token), Times.Once);
+        _candidateRepository.Verify(r => r.GetBySessionAsync(23, int.MaxValue, It.IsAny<CancellationToken>()), Times.Never);
+
+        _candidateRepository.Setup(r => r.GetBySessionAsync(23, 100, cancellation.Token)).ReturnsAsync([]);
+        await BuildService().GetCandidatesAsync(23, -1, cancellation.Token);
+        _candidateRepository.Verify(r => r.GetBySessionAsync(23, 100, cancellation.Token), Times.Once);
+    }
+
+    [Fact]
+    public async Task Milestone231B1C6D1Limit_GetEventsAsync_NormalizesBeforeForwardingAndPreservesSessionId()
+    {
+        var cancellation = new CancellationTokenSource();
+        _eventRepository.Setup(r => r.GetBySessionAsync(29, 1000, cancellation.Token))
+            .ReturnsAsync([new SkLivePaperEvent { Id = 1, SessionId = 29 }]);
+
+        var result = await BuildService().GetEventsAsync(29, int.MaxValue, cancellation.Token);
+
+        Assert.True(result.Succeeded);
+        Assert.Single(result.Data!);
+        _eventRepository.Verify(r => r.GetBySessionAsync(29, 1000, cancellation.Token), Times.Once);
+        _eventRepository.Verify(r => r.GetBySessionAsync(29, int.MaxValue, It.IsAny<CancellationToken>()), Times.Never);
+
+        _eventRepository.Setup(r => r.GetBySessionAsync(29, 200, cancellation.Token)).ReturnsAsync([]);
+        await BuildService().GetEventsAsync(29, 0, cancellation.Token);
+        _eventRepository.Verify(r => r.GetBySessionAsync(29, 200, cancellation.Token), Times.Once);
+    }
 }

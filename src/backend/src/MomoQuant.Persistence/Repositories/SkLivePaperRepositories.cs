@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.TradingSystems;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.TradingSystems;
 
@@ -14,11 +15,14 @@ public sealed class SkLivePaperSessionRepository : ISkLivePaperSessionRepository
     public Task<SkLivePaperSession?> GetByIdAsync(long id, CancellationToken cancellationToken = default) =>
         _dbContext.SkLivePaperSessions.FirstOrDefaultAsync(s => s.Id == id, cancellationToken);
 
-    public async Task<IReadOnlyList<SkLivePaperSession>> GetRecentAsync(int limit, CancellationToken cancellationToken = default) =>
-        await _dbContext.SkLivePaperSessions
+    public async Task<IReadOnlyList<SkLivePaperSession>> GetRecentAsync(int limit, CancellationToken cancellationToken = default)
+    {
+        var normalizedLimit = SkLivePaperQueryLimits.NormalizeSessions(limit);
+        return await _dbContext.SkLivePaperSessions
             .OrderByDescending(s => s.CreatedAtUtc)
-            .Take(limit <= 0 ? 50 : limit)
+            .Take(normalizedLimit)
             .ToListAsync(cancellationToken);
+    }
 
     public async Task<IReadOnlyList<long>> GetRunningSessionIdsAsync(CancellationToken cancellationToken = default) =>
         await _dbContext.SkLivePaperSessions
@@ -47,12 +51,15 @@ public sealed class SkLivePaperCandidateRepository : ISkLivePaperCandidateReposi
 
     public SkLivePaperCandidateRepository(MomoQuantDbContext dbContext) => _dbContext = dbContext;
 
-    public async Task<IReadOnlyList<SkLivePaperCandidate>> GetBySessionAsync(long sessionId, int limit, CancellationToken cancellationToken = default) =>
-        await _dbContext.SkLivePaperCandidates
+    public async Task<IReadOnlyList<SkLivePaperCandidate>> GetBySessionAsync(long sessionId, int limit, CancellationToken cancellationToken = default)
+    {
+        var normalizedLimit = SkLivePaperQueryLimits.NormalizeCandidates(limit);
+        return await _dbContext.SkLivePaperCandidates
             .Where(c => c.SessionId == sessionId)
             .OrderByDescending(c => c.CreatedAtUtc)
-            .Take(limit <= 0 ? 100 : limit)
+            .Take(normalizedLimit)
             .ToListAsync(cancellationToken);
+    }
 
     public Task<SkLivePaperCandidate?> GetByKeyAsync(long sessionId, string candidateKey, CancellationToken cancellationToken = default) =>
         _dbContext.SkLivePaperCandidates
@@ -118,12 +125,15 @@ public sealed class SkLivePaperEventRepository : ISkLivePaperEventRepository
 
     public SkLivePaperEventRepository(MomoQuantDbContext dbContext) => _dbContext = dbContext;
 
-    public async Task<IReadOnlyList<SkLivePaperEvent>> GetBySessionAsync(long sessionId, int limit, CancellationToken cancellationToken = default) =>
-        await _dbContext.SkLivePaperEvents
+    public async Task<IReadOnlyList<SkLivePaperEvent>> GetBySessionAsync(long sessionId, int limit, CancellationToken cancellationToken = default)
+    {
+        var normalizedLimit = SkLivePaperQueryLimits.NormalizeEvents(limit);
+        return await _dbContext.SkLivePaperEvents
             .Where(e => e.SessionId == sessionId)
             .OrderByDescending(e => e.CreatedAtUtc)
-            .Take(limit <= 0 ? 200 : limit)
+            .Take(normalizedLimit)
             .ToListAsync(cancellationToken);
+    }
 
     public async Task AddAsync(SkLivePaperEvent evt, CancellationToken cancellationToken = default) =>
         await _dbContext.SkLivePaperEvents.AddAsync(evt, cancellationToken);

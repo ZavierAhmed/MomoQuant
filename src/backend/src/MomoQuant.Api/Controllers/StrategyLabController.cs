@@ -38,7 +38,7 @@ public sealed class StrategyLabController : ControllerBase
 
     [HttpGet("runs")]
     public async Task<ActionResult<ApiResponse<IReadOnlyList<StrategyLabRunDto>>>> GetRuns(
-        [FromQuery] int limit = 50,
+        [FromQuery] int limit = StrategyLabQueryLimits.RecentRunsDefault,
         CancellationToken cancellationToken = default)
     {
         var result = await _service.GetRecentRunsAsync(limit, cancellationToken);
@@ -165,7 +165,7 @@ public sealed class StrategyLabController : ControllerBase
     [HttpGet("runs/by-strategy/{strategyCode}")]
     public async Task<ActionResult<ApiResponse<IReadOnlyList<StrategyLabRunDto>>>> GetRunsByStrategy(
         string strategyCode,
-        [FromQuery] int limit = 20,
+        [FromQuery] int limit = StrategyLabQueryLimits.RunsByStrategyDefault,
         CancellationToken cancellationToken = default)
     {
         var result = await _service.GetRunsByStrategyAsync(strategyCode, limit, cancellationToken);
