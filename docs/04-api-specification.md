@@ -1,346 +1,173 @@
-# MOMO Quant
+# MOMO Quant — Part 4: Repository-Aligned API Specification
 
-## Part 4 — API Specification
+**Status:** As-built contract plus explicitly separated future scope
+**Authoritative snapshot:** `c8ba9e87a83b5c19ad574ef7f98f3e5340bd56a2`
+**Repository:** `ZavierAhmed/MomoQuant`
 
-**Version:** 1.0 Draft  
-**Backend:** .NET 8 Web API  
-**Frontend:** React Dashboard  
-**Realtime:** SignalR  
-**API Style:** REST + SignalR events
+## 1. Purpose and authority
 
----
+This document describes the API that is implemented at the pinned SHA. Production route attributes, DTOs, shared contracts, authorization policies, frontend clients, tests, and the internal Python service outrank older design drafts. The exhaustive route table is in `docs/04-api-route-inventory.md`.
 
-## 1. API Principles
+## 2. Contract status terminology
 
-APIs must be predictable, versioned, consistent, safe by default, auditable, expandable, and easy for the React dashboard to consume. The frontend sends commands and reads state. Trading decisions remain inside the backend.
+**Implemented** means executable code and a route attribute exist. **Implemented alias** means a second route reaches the same action. **Partial**, **missing**, **deferred**, and **decision required** are future/gap classifications only; they are not current contracts.
 
-Base path:
+## 3. Base paths and exceptions
 
-```text
-/api/v1
-```
+Most .NET routes are under `/api/v1` . Exceptions are public `/api/health` and SignalR `/hubs/live-market`. The internal FastAPI service has its own `/health` and `/api/v1/ai/*` paths. The dashboard base URL defaults to `https://localhost:7295/api/v1` .
 
-Standard success response:
+## 4. Authentication
 
-```json
-{ "success": true, "message": "Request completed successfully.", "data": {} }
-```
+Login is `POST /api/v1/auth/login` and returns a flat login DTO containing `accessToken` , `expiresAtUtc` , `userId` , `fullName` , `email` , and `role` . `GET /api/v1/auth/me` requires the current JWT. Logout is JWT-only client/session acknowledgement at `POST /api/v1/auth/logout`; no server-side token revocation store is claimed.
 
-Standard error response:
+## 5. Authorization policies
 
-```json
-{ "success": false, "message": "Validation failed.", "errors": [{ "field": "symbol", "message": "Symbol is required." }] }
-```
+The implemented policies are `AdminOnly` , `AdminOrTrader` , `ResearchRead` , and `ResearchExecute` . Ordinary `[Authorize]` remains distinct from policy checks. Anonymous actions are explicit (login/logout, public health, development hosting-security, and Strategy Lab health); see the inventory for action-level detail.
 
-List endpoints support page, pageSize, sortBy, sortDirection, and search.
+## 6. Standard REST envelope
 
----
+Successful .NET responses normally serialize `{ success, message, data }` via `ApiResponse<T>` . Failures use `{ success: false, message, errors[] }` . There is no universal top-level `code` or `traceId` in the shared contract. Export downloads and public health are non-envelope exceptions; SignalR and Python have their own payloads.
 
-## 2. Authentication APIs
+## 7. Error representation and stable codes
 
-```http
-POST /api/v1/auth/login
-GET  /api/v1/auth/me
-POST /api/v1/auth/logout
-```
+Controllers map service failures to HTTP results and `ApiError` entries where applicable. Stable safety codes used by the accepted audit/qualification architecture are `AUDIT_EVIDENCE_INVALID` , `AUDIT_EVIDENCE_UNAVAILABLE` , and `PAPER_RUNTIME_ACTIVATION_FAILED` .
 
-Login returns accessToken, expiresAtUtc, and user profile.
+## 8. Pagination
 
----
+The shared contract is `PagedRequest` (page, pageSize, sortBy, sortDirection, search) and `PagedResult<T>` (items, page, pageSize, totalCount, totalPages). Only endpoints that actually accept those types are paginated. Some endpoints use a bounded `limit`; many detail/list endpoints are unpaged. The count property is `totalCount`.
 
-## 3. User Management APIs
+## 9. UTC, financial values, and enum serialization
 
-Admin-only:
+API time values are UTC where named `*Utc` . Timeframes use canonical strings `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `4h`, `1d`, `1w` . Decimal/financial values remain DTO-defined; clients must not infer precision from documentation.
 
-```http
-GET  /api/v1/users
-GET  /api/v1/users/{id}
-POST /api/v1/users
-PUT  /api/v1/users/{id}
-POST /api/v1/users/{id}/disable
-```
+## 10. Public health
 
----
+NaN is anonymous and returns the health controller payload directly. It is not versioned and is distinct from authenticated monitoring endpoints.
 
-## 4. Exchange, API Keys, Symbols
+## 11. Exchanges and Binance Futures symbol management
 
-Exchange APIs:
+Exchange CRUD, connection testing, and exchange-symbol reads are under `/api/v1/exchanges` . Binance discovery and add-symbol operations are under `/api/v1/exchanges/binance-futures` and are Admin-only.
 
-```http
-GET  /api/v1/exchanges
-POST /api/v1/exchanges
-PUT  /api/v1/exchanges/{id}
-POST /api/v1/exchanges/{id}/test-connection
-```
+## 12. Symbols
 
-API key vault, admin-only and never returns raw secrets:
+Symbol list/detail, sync, and active-status update are under `/api/v1/symbols` . The list uses `PagedRequest`; sync/status are mutation operations.
 
-```http
-GET  /api/v1/api-keys
-POST /api/v1/api-keys
-POST /api/v1/api-keys/{id}/disable
-```
+## 13. Market data and indicators
 
-Symbol APIs:
+Market data candles, imports, settings, quality and snapshots are under `/api/v1/market-data` . Indicator snapshot/recalculation is under `/api/v1/indicators` . Market-situation analysis is `/api/v1/market-situation/current` .
 
-```http
-GET  /api/v1/symbols
-POST /api/v1/symbols/sync
-PUT  /api/v1/symbols/{id}/status
-```
+## 14. Strategies and canonical portfolio
 
----
+Strategy catalog, data requirements, parameters and evaluation are under `/api/v1/strategies` . New operational and research work may use only:
 
-## 5. Market Data and Indicators
+- `MOMO_ADAPTIVE_MTF_TREND_BREAKOUT`
+- `PRICE_STRUCTURE_BREAKOUT_RETEST`
+- `MOMO_VOLATILITY_RANGE_REVERSION`
 
-```http
-GET  /api/v1/market-data/candles
-POST /api/v1/market-data/candles/import
-GET  /api/v1/market-data/imports/{importId}
-GET  /api/v1/market-data/snapshot
+Archived records may remain in storage/catalog history but are not active choices.
 
-GET  /api/v1/indicators/snapshot
-POST /api/v1/indicators/recalculate
-```
+## 15. Backtesting
 
-Candle queries filter by symbolId, timeframe, fromUtc, toUtc, and limit.
+Backtest execution and read-side result families are under `/api/v1/backtests` . Trades, orders, missed orders, curves and breakdowns are nested under a backtest id; there is no generic order/trade route.
 
----
+## 16. Replay
 
-## 6. Strategy APIs
+Replay resources are under `/api/v1/replay/sessions` . Controls include separate `step-forward` , `step-backward` , and `PUT .../speed` operations. Diagnostics, chart/frame and nested result families are listed in the inventory.
 
-```http
-GET  /api/v1/strategies
-GET  /api/v1/strategies/{id}
-POST /api/v1/strategies/{id}/enable
-POST /api/v1/strategies/{id}/disable
-GET  /api/v1/strategies/{id}/parameters
-PUT  /api/v1/strategies/{id}/parameters
-```
+## 17. Paper trading
 
-Strategy parameter updates must be audited.
+Paper accounts and sessions are resource-oriented at `/api/v1/paper/accounts` and `/api/v1/paper/sessions` . Deployment-simulation creation binds a verified qualification result transactionally; start/resume revalidate the durable binding. The route surface does not use generic start/stop resources.
 
----
+## 18. Live-market subscriptions and snapshots
 
-## 7. Trading Sessions and Bot Control
+Live-market status, diagnostics, snapshots and subscribe/unsubscribe/reconnect are under `/api/v1/live-market` . These are market-data subscriptions and snapshots, not live trading.
 
-Trading sessions:
+## 19. SK System analysis
 
-```http
-GET  /api/v1/trading-sessions
-GET  /api/v1/trading-sessions/{id}
-POST /api/v1/trading-sessions/{id}/stop
-POST /api/v1/trading-sessions/{id}/pause
-POST /api/v1/trading-sessions/{id}/resume
-```
+SK System is a diagnostic analysis system, not a trading strategy. Routes are under `/api/v1/trading-systems` with both `/sk/...` and `/sk-system/...` aliases where the controller declares them. The inventory records each alias separately.
 
-Bot control:
+## 20. SK LivePaper
 
-```http
-GET  /api/v1/bot/status
-POST /api/v1/bot/change-mode
-POST /api/v1/bot/start
-POST /api/v1/bot/stop
-POST /api/v1/bot/emergency-stop
-POST /api/v1/bot/clear-emergency-stop
-```
+SK LivePaper is a separate simulation/diagnostic module under `/api/v1/trading-systems/sk/livepaper` . It does not authorize real orders or live trading.
 
-Live mode requires stricter confirmation and admin role. Emergency stop immediately blocks new entries and attempts to cancel open orders.
+## 21. Market situation and strategy recommendations
 
----
+Market situation is `/api/v1/market-situation/current` . Strategy recommendations are `/api/v1/strategy-recommendations/current` .
 
-## 8. Backtesting APIs
+## 22. Strategy benchmarks
 
-```http
-POST /api/v1/backtests/run
-GET  /api/v1/backtests/{id}
-GET  /api/v1/backtests/{id}/results
-GET  /api/v1/backtests/{id}/trades
-GET  /api/v1/backtests/{id}/signals
-POST /api/v1/backtests/{id}/cancel
-```
+Benchmark create, preflight, paged list, progress, reports, diagnostics and lifecycle controls are under `/api/v1/strategy-benchmarks` .
 
-Backtest run request includes exchangeId, symbolIds, timeframe, higherTimeframe, fromUtc, toUtc, initialBalance, strategyIds, riskProfileId, maker/taker fees, slippage, simulateMakerFills, and orderTimeoutSeconds.
+## 23. Strategy Research
 
----
+Validation runs, parameter optimization, parameter sets, approval, definitions and target optimization are under `/api/v1/strategy-research` . This is research workflow, not deployment qualification by itself.
 
-## 9. Replay APIs
+## 24. Strategy Laboratory
 
-```http
-POST /api/v1/replay/create
-GET  /api/v1/replay/{id}
-POST /api/v1/replay/{id}/start
-POST /api/v1/replay/{id}/pause
-POST /api/v1/replay/{id}/resume
-POST /api/v1/replay/{id}/speed
-POST /api/v1/replay/{id}/step
-POST /api/v1/replay/{id}/stop
-```
+Strategy Lab runs, reruns, candidates, risk/gate analysis and synthetic checks are under `/api/v1/strategy-lab` . New runs are limited to the canonical three-strategy portfolio.
 
-Allowed speeds: 1, 2, 10, 50, 100.
+## 25. Validation Laboratory
 
----
+Validation experiments, training, holdout/closeout, leakage/exclusivity, reconciliation, selection integrity, metric audits and publication are under `/api/v1/validation-lab` . Research read/execute policy separation is enforced by controller attributes.
 
-## 10. Paper Trading APIs
+## 26. Risk
 
-```http
-GET  /api/v1/paper/accounts
-POST /api/v1/paper/accounts
-POST /api/v1/paper/start
-POST /api/v1/paper/stop
-GET  /api/v1/paper/accounts/{id}/snapshot
-GET  /api/v1/paper/accounts/{id}/trades
-```
+Risk profiles/rules, decisions and evaluation are under `/api/v1/risk` . These endpoints do not create a generic order or position API.
 
-Paper trading uses simulated execution and must never place real exchange orders.
+## 27. AI-facing .NET endpoints
 
----
+Authenticated .NET AI health/decision endpoints and AdminOrTrader advisory operations are under `/api/v1/ai` . The .NET client calls the internal Python service documented in section 36.
 
-## 11. Live Trading APIs
+## 28. Reports and simulation summaries
 
-Live trading is later. MVP implements readiness only.
+Reports are under `/api/v1/reports` beginning with `/overview` and nested backtest/paper families. Simulation summaries are under `/api/v1/simulation-summaries` .
 
-```http
-GET  /api/v1/live/readiness
-POST /api/v1/live/enable
-POST /api/v1/live/disable
-```
+## 29. Monitoring
 
-Enable live requires admin role, confirmation text `ENABLE LIVE TRADING`, API key, risk profile, system health, paper validation, emergency stop availability, and audit logging.
+Monitoring health, subsystem checks, status, system-health logs, recent errors/events, safety events and trading-pipeline status are under `/api/v1/monitoring` .
 
----
+## 30. Audit queries
 
-## 12. Signals, AI, Risk
+Audit queries are Admin-only under `/api/v1/audit/logs` , `/api/v1/audit/logs/{id}` , and `/api/v1/audit/summary` .
 
-Signals:
+## 31. Exports
 
-```http
-GET /api/v1/signals
-GET /api/v1/signals/{id}
-```
+Export scopes, job creation/status and raw file download are under `/api/v1/exports` . Download is a file response rather than `ApiResponse<T>` .
 
-AI dashboard APIs:
+## 32. Trading settings
 
-```http
-GET  /api/v1/ai/decisions
-GET  /api/v1/ai/decisions/{id}
-POST /api/v1/ai/regime/test
-GET  /api/v1/ai/performance
-```
+Trading settings read/update/reset are under `/api/v1/settings/trading` . Reset defaults is Admin-only.
 
-Risk APIs:
+## 33. Admin cleanup
 
-```http
-GET  /api/v1/risk/profiles
-POST /api/v1/risk/profiles
-GET  /api/v1/risk/profiles/{id}/rules
-PUT  /api/v1/risk/profiles/{id}/rules
-GET  /api/v1/risk/decisions
-```
+Fake-market-data cleanup is under `/api/v1/admin/data-cleanup` . Clean-baseline preview/execute is under `/api/v1/admin/system-cleanup` . Both are Admin-only.
 
----
+## 34. Users
 
-## 13. Orders, Trades, Positions
+Admin-only user list/detail/create/update/disable routes are under `/api/v1/users` .
 
-```http
-GET  /api/v1/orders
-GET  /api/v1/orders/{id}
-POST /api/v1/orders/{id}/cancel
+## 35. SignalR
 
-GET  /api/v1/trades
-GET  /api/v1/trades/{id}
-POST /api/v1/trades/{id}/close
+Exactly one hub is registered: `/hubs/live-market` . Production event names and payload sources are documented in the route inventory. The frontend currently has no verified connection consumer.
 
-GET  /api/v1/positions
-GET  /api/v1/positions/{id}
-```
+## 36. Internal Python service
 
-Trade details should include signal, AI decision, risk decision, entry/exit orders, fills, and PnL breakdown.
+FastAPI exposes `GET /health` plus four advisory POST routes: regime detect, confidence score, anomaly detect, and trade explanation. It does not place orders or approve risk. Python responses are not wrapped in the .NET `ApiResponse<T>` contract.
 
----
+## 37. Explicitly missing or deferred public areas
 
-## 14. Reporting APIs
+The gap register is the only place future/missing scope is recorded. At this SHA there is no implemented public API-key vault, generic trading-session resource, generic bot control, live trading/order placement, top-level signals/orders/trades/positions, notifications, or additional SignalR hubs. These examples are historical/deferred, not current contracts. Live trading remains blocked.
 
-```http
-GET /api/v1/reports/dashboard-summary
-GET /api/v1/reports/performance
-GET /api/v1/reports/strategies
-GET /api/v1/reports/symbols
-GET /api/v1/reports/market-regimes
-GET /api/v1/reports/rejections
-GET /api/v1/reports/missed-trades
-```
+## 38. Current implementation order and continuation boundary
 
-Reports must come from stored facts.
+Documentation reconciliation is complete at the pinned SHA. Future coding requires an authoritative narrow milestone prompt based on the gap register; do not invent B1C6D2, B1C6D3, or B1C7. The next agent must inspect remote `main` and the latest diff before acting.
 
----
+## 39. Critical API safety rules
 
-## 15. Monitoring, Audit, Settings
+Required authoritative evidence uses typed allowlisted metadata, the owning scoped `MomoQuantDbContext` , attach-only writes, one transaction, fail-closed behavior, and cancellation propagation. Legacy operational telemetry uses an isolated context, sanitizes before persistence, is best-effort, logs safe failures, does not commit caller state, and also propagates cancellation.
 
-```http
-GET /api/v1/monitoring/health
-GET /api/v1/monitoring/exchange-health
-GET /api/v1/monitoring/workers
-GET /api/v1/monitoring/errors
+Required actions are `PARAMETER_SET_DEPLOYMENT_QUALIFIED`, `PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED`, `PAPER_SESSION_CREATED`, `PAPER_SESSION_STARTED`, `PAPER_SESSION_RESUMED`, `PAPER_SESSION_FAILED` . New safety-critical or authoritative state changes require an explicit durability classification and transactional required-evidence design before adoption; detailed action-catalog reconciliation is deferred to B1C6D3.
 
-GET /api/v1/audit-logs
-GET /api/v1/audit-logs/{id}
+## 40. References to inventory and gap register
 
-GET /api/v1/settings
-PUT /api/v1/settings/{key}
-```
-
----
-
-## 16. SignalR Hubs
-
-```text
-/hubs/bot        -> BotStatusChanged, TradingModeChanged, EmergencyStopTriggered
-/hubs/market     -> CandleUpdated, IndicatorUpdated, MarketSnapshotUpdated
-/hubs/trading    -> SignalGenerated, AiDecisionCreated, RiskDecisionCreated, OrderUpdated, TradeOpened, TradeClosed, PositionUpdated
-/hubs/replay     -> ReplayStarted, ReplayPaused, ReplayTick, ReplayDecisionUpdated
-/hubs/monitoring -> HealthStatusChanged, WorkerStatusChanged, ErrorLogged
-```
-
----
-
-## 17. Internal Python AI Service API
-
-Base URL inside Docker network:
-
-```text
-http://momo-ai:8000
-```
-
-Endpoints:
-
-```http
-POST /ai/regime/detect
-POST /ai/confidence/score
-POST /ai/parameters/optimize
-POST /ai/anomaly/detect
-POST /ai/trade/explain
-```
-
----
-
-## 18. Authorization Rules
-
-Admin can access everything. Trader can run backtests, replay, paper trading, view reports/trades/orders/monitoring, and update strategy parameters if allowed. Viewer can only read dashboard, reports, trades, positions, and monitoring.
-
----
-
-## 19. Critical API Rules
-
-1. No frontend endpoint places trades directly.
-2. All trading actions go through backend command handlers.
-3. Live APIs disabled until explicitly implemented.
-4. Every state-changing endpoint creates an audit log.
-5. Timestamps are UTC.
-6. Financial values use decimal.
-7. Every API uses the standard response format.
-8. Lists support pagination.
-9. Bot control actions are permission checked.
-10. Emergency stop is fast and reliable.
-11. API keys never return raw.
-12. Backtest, replay, paper, live share core abstractions.
+Use `docs/04-api-route-inventory.md` for the 288-row implemented route surface and `docs/04-api-gap-register.md` for explicit mismatches, missing candidates, future dependencies, and unresolved product decisions.
