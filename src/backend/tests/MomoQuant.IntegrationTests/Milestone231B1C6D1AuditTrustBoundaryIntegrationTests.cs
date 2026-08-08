@@ -125,11 +125,94 @@ public sealed class Milestone231B1C6D1AuditTrustBoundaryIntegrationTests
         await verification.SaveChangesAsync();
     }
 
+    [Theory]
+    [InlineData("CleanBaselinePreviewed")]
+    [InlineData("CleanBaselineFailed")]
+    [InlineData("CleanBaselineExecuted")]
+    [InlineData("FakeMarketDataCleanupPreviewed")]
+    [InlineData("FakeMarketDataCleanupFailed")]
+    [InlineData("FakeMarketDataCleanupExecuted")]
+    public async Task LegacyTelemetry_PreservesPascalCaseCleanupActionsAndSanitizesPayload(string action)
+    {
+        var entityId = TelemetryEntityId + action.Length;
+        await using (var scope = _fixture.Factory.Services.CreateAsyncScope())
+        {
+            var telemetry = scope.ServiceProvider.GetRequiredService<IAuditTelemetryWriter>();
+            await telemetry.WriteTelemetryAsync(new AuditTelemetryRequest(
+                action,
+                "Cleanup",
+                entityId,
+                null,
+                null,
+                "{\"password\":\"should-not-persist\",\"state\":\"Observed\"}",
+                null,
+                null));
+        }
+
+        await using var verificationScope = _fixture.Factory.Services.CreateAsyncScope();
+        var db = verificationScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        var audit = await db.AuditLogs.SingleAsync(row =>
+            row.Action == action && row.EntityId == entityId);
+        Assert.Equal(action, audit.Action);
+        Assert.Contains("[REDACTED]", audit.NewValueJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("should-not-persist", audit.NewValueJson, StringComparison.Ordinal);
+        db.AuditLogs.Remove(audit);
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task TelemetryInsertFailure_IsolatedFromCallerMutationAndDoesNotPersistTelemetry()
+    {
+        const string action = "D1_TELEMETRY_FAILURE";
+        string originalName;
+        long strategyId;
+        try
+        {
+            await InstallTelemetryFailureConstraintAsync();
+            await using (var callerScope = _fixture.Factory.Services.CreateAsyncScope())
+            {
+                var caller = callerScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+                var strategy = await caller.Strategies.OrderBy(row => row.Id).FirstAsync();
+                strategyId = strategy.Id;
+                originalName = strategy.Name;
+                strategy.Name = "UNCOMMITTED_D1_TELEMETRY_MUTATION";
+
+                var telemetry = callerScope.ServiceProvider.GetRequiredService<IAuditTelemetryWriter>();
+                await telemetry.WriteTelemetryAsync(new AuditTelemetryRequest(
+                    action,
+                    "Strategy",
+                    TelemetryEntityId + 100,
+                    null,
+                    null,
+                    "{\"state\":\"Rejected\"}",
+                    null,
+                    null));
+            }
+
+            await using var verificationScope = _fixture.Factory.Services.CreateAsyncScope();
+            var verification = verificationScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            Assert.Equal(originalName, (await verification.Strategies.SingleAsync(row => row.Id == strategyId)).Name);
+            Assert.False(await verification.AuditLogs.AnyAsync(row =>
+                row.Action == action && row.EntityId == TelemetryEntityId + 100));
+        }
+        finally
+        {
+            await RemoveTelemetryFailureConstraintAsync();
+        }
+    }
+
     [Fact]
     public async Task Publication_AuditInsertFailureRollsBackEveryMutationAndRetrySucceedsOnce()
     {
         var publicationFixture = new Milestone231B1C6BPublicationIntegrationTests(_fixture);
         var seeded = await publicationFixture.SeedQualifiedExperimentAsync("d1-audit-failure");
+        long auditWatermark;
+        await using (var watermarkScope = _fixture.Factory.Services.CreateAsyncScope())
+        {
+            var watermarkDb = watermarkScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            auditWatermark = await watermarkDb.AuditLogs.Select(row => (long?)row.Id).MaxAsync() ?? 0;
+        }
+
         try
         {
             await InstallAuditFailureTriggerAsync(RequiredAuditActions.ParameterSetDeploymentQualified);
@@ -154,8 +237,10 @@ public sealed class Milestone231B1C6D1AuditTrustBoundaryIntegrationTests
                 Assert.Null(strategy.CanonicalValidationExperimentId);
                 Assert.False(strategy.DeploymentQualificationEligible);
                 Assert.False(await db.AuditLogs.AnyAsync(row =>
-                    row.Action == RequiredAuditActions.ParameterSetDeploymentQualified
-                    && row.EntityId == seeded.ExperimentId));
+                    row.Id > auditWatermark
+                    && row.Action == RequiredAuditActions.ParameterSetDeploymentQualified
+                    && row.NewValueJson != null
+                    && row.NewValueJson.Contains($"\"experimentId\":{seeded.ExperimentId}")));
             }
 
             await RemoveAuditFailureTriggerAsync();
@@ -173,6 +258,7 @@ public sealed class Milestone231B1C6D1AuditTrustBoundaryIntegrationTests
                 .Where(row => row.QualificationSourceExperimentId == seeded.ExperimentId)
                 .ToListAsync());
             Assert.Single(await retryVerification.AuditLogs
+                .Where(row => row.Id > auditWatermark)
                 .Where(row => row.Action == RequiredAuditActions.ParameterSetDeploymentQualified)
                 .Where(row => row.NewValueJson != null && row.NewValueJson.Contains($"\"experimentId\":{seeded.ExperimentId}"))
                 .ToListAsync());
@@ -223,6 +309,41 @@ public sealed class Milestone231B1C6D1AuditTrustBoundaryIntegrationTests
         await using var scope = _fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
         await RemoveAuditFailureConstraintAsync(db);
+    }
+
+    private async Task InstallTelemetryFailureConstraintAsync()
+    {
+        await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        await RemoveTelemetryFailureConstraintAsync(db);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE `AuditLogs`
+            ADD CONSTRAINT `CK_D1_RejectTelemetryAction`
+            CHECK (`Action` <> 'D1_TELEMETRY_FAILURE')
+            """);
+    }
+
+    private async Task RemoveTelemetryFailureConstraintAsync()
+    {
+        await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+        await RemoveTelemetryFailureConstraintAsync(
+            scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>());
+    }
+
+    private static async Task RemoveTelemetryFailureConstraintAsync(MomoQuantDbContext db)
+    {
+        var exists = await db.Database.SqlQuery<int>($"""
+            SELECT COUNT(*) AS `Value`
+            FROM `INFORMATION_SCHEMA`.`TABLE_CONSTRAINTS`
+            WHERE `CONSTRAINT_SCHEMA` = DATABASE()
+              AND `TABLE_NAME` = 'AuditLogs'
+              AND `CONSTRAINT_NAME` = 'CK_D1_RejectTelemetryAction'
+            """).SingleAsync();
+        if (exists == 1)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE `AuditLogs` DROP CHECK `CK_D1_RejectTelemetryAction`");
+        }
     }
 
     private static async Task RemoveAuditFailureConstraintAsync(MomoQuantDbContext db)

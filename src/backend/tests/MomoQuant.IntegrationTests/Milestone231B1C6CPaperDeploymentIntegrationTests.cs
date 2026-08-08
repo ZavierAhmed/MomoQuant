@@ -295,6 +295,66 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
     }
 
     [Fact]
+    public async Task Start_PostCommitReloadCancellation_CompensatesCommittedRowsAndRethrows()
+    {
+        var seeded = await SeedDeploymentSessionAsync("d1-postcommit-reload-cancel");
+        var live = new DeterministicLiveMarketManager();
+        var reloadGate = new ReloadCancellationGate();
+        using var cancellation = new CancellationTokenSource();
+        try
+        {
+            Task<ServiceResult<PaperSessionControlResponse>> startTask;
+            await using (var controlScope = _fixture.Factory.Services.CreateAsyncScope())
+            {
+                var services = controlScope.ServiceProvider;
+                var repository = new CancellationAfterCommitPaperSessionRepository(
+                    services.GetRequiredService<IPaperTradingSessionRepository>(),
+                    reloadGate);
+                var service = BuildControlService(
+                    services,
+                    live,
+                    new FixedCurrentUser(seeded.UserId),
+                    paperSessionRepository: repository);
+                startTask = service.StartAsync(seeded.PaperSessionId, cancellation.Token);
+                await reloadGate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                cancellation.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => startTask);
+            }
+
+            await using var verificationScope = _fixture.Factory.Services.CreateAsyncScope();
+            var servicesAfterCancellation = verificationScope.ServiceProvider;
+            var db = servicesAfterCancellation.GetRequiredService<MomoQuantDbContext>();
+            var paper = await db.PaperTradingSessions.AsNoTracking()
+                .SingleAsync(row => row.Id == seeded.PaperSessionId);
+            var trading = await db.TradingSessions.AsNoTracking()
+                .SingleAsync(row => row.Id == paper.TradingSessionId);
+            Assert.Equal(PaperSessionStatus.Failed, paper.Status);
+            Assert.Equal(TradingSessionStatus.Failed, trading.Status);
+            Assert.Equal(PaperDeploymentQualificationCodes.RuntimeActivationFailed, paper.ErrorMessage);
+            Assert.Equal(1, await db.AuditLogs.CountAsync(row =>
+                row.EntityId == paper.Id && row.Action == RequiredAuditActions.PaperSessionStarted));
+            Assert.Equal(1, await db.AuditLogs.CountAsync(row =>
+                row.EntityId == paper.Id
+                && row.Action == RequiredAuditActions.PaperDeploymentQualificationVerified
+                && row.NewValueJson != null
+                && row.NewValueJson.Contains("\"phase\":\"Start\"")));
+            var failureAudit = await db.AuditLogs.SingleAsync(row =>
+                row.EntityId == paper.Id && row.Action == RequiredAuditActions.PaperSessionFailed);
+            Assert.DoesNotContain("OperationCanceledException", failureAudit.NewValueJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("SQL", failureAudit.NewValueJson, StringComparison.OrdinalIgnoreCase);
+            Assert.False(servicesAfterCancellation.GetRequiredService<IPaperStateStore>()
+                .TryGet(paper.Id, out _));
+            Assert.Equal(0, live.SubscribeCalls);
+            Assert.Equal(0, live.LinkCalls);
+            Assert.Equal(1, live.UnlinkCalls);
+        }
+        finally
+        {
+            await CleanupDeploymentSessionAsync(seeded);
+        }
+    }
+
+    [Fact]
     public async Task Create_EvidenceInvalidatedAfterEarlyCheck_FailsAuthoritativeTransactionWithoutPartialState()
     {
         var prepared = await PrepareDeploymentCreationAsync("create-invalidated-before-transaction");
@@ -901,8 +961,9 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
         IServiceProvider services,
         ILiveMarketConnectionManager live,
         ICurrentUserService currentUser,
-        ILiveMarketBootstrapService? bootstrap = null) => new(
-        services.GetRequiredService<IPaperTradingSessionRepository>(),
+        ILiveMarketBootstrapService? bootstrap = null,
+        IPaperTradingSessionRepository? paperSessionRepository = null) => new(
+        paperSessionRepository ?? services.GetRequiredService<IPaperTradingSessionRepository>(),
         services.GetRequiredService<ITradingSessionRepository>(),
         services.GetRequiredService<IPaperStateStore>(),
         services.GetRequiredService<IPaperTradingEngine>(),
@@ -1187,10 +1248,57 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
                 "provider"));
     }
 
+    private sealed class ReloadCancellationGate
+    {
+        public TaskCompletionSource Reached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private sealed class CancellationAfterCommitPaperSessionRepository(
+        IPaperTradingSessionRepository inner,
+        ReloadCancellationGate gate) : IPaperTradingSessionRepository
+    {
+        private int _readCount;
+
+        public async Task<PaperTradingSession?> GetByIdAsync(
+            long id,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _readCount) == 2)
+            {
+                gate.Reached.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return await inner.GetByIdAsync(id, cancellationToken);
+        }
+
+        public Task<(IReadOnlyList<PaperTradingSession> Items, int TotalCount)> GetPagedAsync(
+            PagedRequest request,
+            CancellationToken cancellationToken = default) =>
+            inner.GetPagedAsync(request, cancellationToken);
+
+        public Task AddAsync(PaperTradingSession session, CancellationToken cancellationToken = default) =>
+            inner.AddAsync(session, cancellationToken);
+
+        public Task UpdateAsync(PaperTradingSession session, CancellationToken cancellationToken = default) =>
+            inner.UpdateAsync(session, cancellationToken);
+
+        public Task<IReadOnlyList<long>> GetRunningSessionIdsAsync(CancellationToken cancellationToken = default) =>
+            inner.GetRunningSessionIdsAsync(cancellationToken);
+
+        public Task SaveChangesAsync(CancellationToken cancellationToken = default) =>
+            inner.SaveChangesAsync(cancellationToken);
+    }
+
     private sealed class DeterministicLiveMarketManager : ILiveMarketConnectionManager
     {
         private int _subscribeCalls;
+        private int _linkCalls;
+        private int _unlinkCalls;
         public int SubscribeCalls => Volatile.Read(ref _subscribeCalls);
+        public int LinkCalls => Volatile.Read(ref _linkCalls);
+        public int UnlinkCalls => Volatile.Read(ref _unlinkCalls);
         public bool IsAvailable => true;
         public bool IsConnected => true;
         public event Action<LiveCandleUpdate>? CandleUpdated { add { } remove { } }
@@ -1212,8 +1320,10 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
         };
 
         public bool IsSubscribed(long symbolId, Timeframe timeframe) => SubscribeCalls > 0;
-        public void LinkSession(long sessionId, long symbolId, Timeframe timeframe) { }
-        public void UnlinkSession(long sessionId) { }
+        public void LinkSession(long sessionId, long symbolId, Timeframe timeframe) =>
+            Interlocked.Increment(ref _linkCalls);
+
+        public void UnlinkSession(long sessionId) => Interlocked.Increment(ref _unlinkCalls);
 
         public Task<ServiceResult<LiveMarketStatusDto>> SubscribeAsync(
             LiveMarketSubscribeRequest request,

@@ -504,18 +504,21 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
             return ServiceResult<PaperSessionControlResponse>.Fail(durable.ErrorMessage!, durable.ErrorField);
         }
 
-        // The coordinator has committed and cleared its tracker. This reload is the durable proof
-        // consumed by the non-relational runtime activation phase.
-        var committedSession = await _sessionRepository.GetByIdAsync(sessionId, cancellationToken);
-        if (committedSession is null || committedSession.Status != PaperSessionStatus.Running)
-        {
-            return await CompensateActivationFailureAsync(sessionId, phase, cancellationToken);
-        }
-
+        // The coordinator has committed and cleared its tracker. The reload is part of the
+        // post-commit activation phase: failure here must compensate the committed Running state.
         var activation = durable.Data!;
         var previouslySubscribed = CaptureExistingSubscriptions(state);
+        PaperTradingSession? committedSession = null;
         try
         {
+            committedSession = await _sessionRepository
+                .GetByIdAsync(sessionId, cancellationToken)
+                .ConfigureAwait(false);
+            if (committedSession is null || committedSession.Status != PaperSessionStatus.Running)
+            {
+                throw new InvalidOperationException("The committed deployment session could not be reloaded.");
+            }
+
             state.FrozenStrategyParameters = activation.FrozenStrategyParameters;
             state.StopRequested = false;
             state.Session = committedSession;
@@ -525,21 +528,37 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
             if (!readiness.Succeeded)
             {
                 await CleanupActivationAsync(committedSession, state, previouslySubscribed).ConfigureAwait(false);
-                return await CompensateActivationFailureAsync(sessionId, phase, cancellationToken);
+                return await CompensateActivationFailureAsync(sessionId, phase, CancellationToken.None);
             }
 
             return ServiceResult<PaperSessionControlResponse>.Ok(BuildResponse(committedSession));
         }
         catch (OperationCanceledException)
         {
-            await CleanupActivationAsync(committedSession, state, previouslySubscribed).ConfigureAwait(false);
+            if (committedSession is not null)
+            {
+                await CleanupActivationAsync(committedSession, state, previouslySubscribed).ConfigureAwait(false);
+            }
+            else
+            {
+                RemoveRuntimeActivation(sessionId);
+            }
+
             await CompensateActivationFailureAsync(sessionId, phase, CancellationToken.None).ConfigureAwait(false);
             throw;
         }
         catch
         {
-            await CleanupActivationAsync(committedSession, state, previouslySubscribed).ConfigureAwait(false);
-            return await CompensateActivationFailureAsync(sessionId, phase, cancellationToken);
+            if (committedSession is not null)
+            {
+                await CleanupActivationAsync(committedSession, state, previouslySubscribed).ConfigureAwait(false);
+            }
+            else
+            {
+                RemoveRuntimeActivation(sessionId);
+            }
+
+            return await CompensateActivationFailureAsync(sessionId, phase, CancellationToken.None);
         }
     }
 
@@ -626,6 +645,12 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
             .SelectMany(symbolId => state.Settings.Timeframes.Select(timeframe => (symbolId, timeframe)))
             .Where(item => _liveMarketConnectionManager.IsSubscribed(item.symbolId, item.timeframe))
             .ToHashSet();
+
+    private void RemoveRuntimeActivation(long sessionId)
+    {
+        _liveMarketConnectionManager.UnlinkSession(sessionId);
+        _stateStore.Remove(sessionId);
+    }
 
     private async Task CleanupActivationAsync(
         PaperTradingSession session,

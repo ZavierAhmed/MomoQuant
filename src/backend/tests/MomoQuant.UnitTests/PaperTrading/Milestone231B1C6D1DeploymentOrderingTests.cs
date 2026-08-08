@@ -63,7 +63,50 @@ public sealed class Milestone231B1C6D1DeploymentOrderingTests
             It.IsAny<LiveMarketSubscribeRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    private static OrderingFixture CreateFixture(bool bootstrapSucceeds)
+    [Fact]
+    public async Task Start_CancellationDuringPostCommitReload_CompensatesAndRethrowsWithoutRuntime()
+    {
+        var fixture = CreateFixture(bootstrapSucceeds: true, cancelDuringReload: true);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => fixture.Service.StartAsync(fixture.Session.Id));
+
+        Assert.Equal(PaperSessionStatus.Failed, fixture.Session.Status);
+        Assert.Equal(TradingSessionStatus.Failed, fixture.TradingSession.Status);
+        Assert.Equal(2, fixture.Coordinator.TransactionCalls);
+        Assert.Equal(
+            [
+                RequiredAuditActions.PaperDeploymentQualificationVerified,
+                RequiredAuditActions.PaperSessionStarted,
+                RequiredAuditActions.PaperSessionFailed
+            ],
+            fixture.RequiredActions);
+        fixture.StateStore.Verify(store => store.Remove(fixture.Session.Id), Times.Once);
+        fixture.Live.Verify(manager => manager.UnlinkSession(fixture.Session.Id), Times.Once);
+        fixture.Live.Verify(manager => manager.SubscribeAsync(
+            It.IsAny<LiveMarketSubscribeRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+        fixture.Live.Verify(manager => manager.LinkSession(
+            It.IsAny<long>(), It.IsAny<long>(), It.IsAny<Timeframe>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Start_CancellationBeforeCommitDoesNotRunPostCommitCompensation()
+    {
+        var fixture = CreateFixture(bootstrapSucceeds: true, cancelBeforeCommit: true);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => fixture.Service.StartAsync(fixture.Session.Id));
+
+        Assert.Equal(1, fixture.Coordinator.TransactionCalls);
+        Assert.Empty(fixture.RequiredActions);
+        fixture.StateStore.Verify(store => store.Remove(fixture.Session.Id), Times.Never);
+        fixture.Live.Verify(manager => manager.UnlinkSession(fixture.Session.Id), Times.Never);
+        fixture.Live.Verify(manager => manager.SubscribeAsync(
+            It.IsAny<LiveMarketSubscribeRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private static OrderingFixture CreateFixture(
+        bool bootstrapSucceeds,
+        bool cancelDuringReload = false,
+        bool cancelBeforeCommit = false)
     {
         var session = new PaperTradingSession
         {
@@ -123,7 +166,18 @@ public sealed class Milestone231B1C6D1DeploymentOrderingTests
         };
         var coordinator = new RecordingCoordinator(session);
         var repository = new Mock<IPaperTradingSessionRepository>();
-        repository.Setup(repo => repo.GetByIdAsync(session.Id, It.IsAny<CancellationToken>())).ReturnsAsync(session);
+        var paperSessionReads = 0;
+        repository.Setup(repo => repo.GetByIdAsync(session.Id, It.IsAny<CancellationToken>()))
+            .Returns((long _, CancellationToken token) =>
+            {
+                paperSessionReads++;
+                if (cancelDuringReload && paperSessionReads == 2)
+                {
+                    return Task.FromException<PaperTradingSession?>(new OperationCanceledException(token));
+                }
+
+                return Task.FromResult<PaperTradingSession?>(session);
+            });
         repository.Setup(repo => repo.UpdateAsync(session, It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
         repository.Setup(repo => repo.SaveChangesAsync(It.IsAny<CancellationToken>()))
             .Callback(() => Assert.True(coordinator.InTransaction))
@@ -140,7 +194,10 @@ public sealed class Milestone231B1C6D1DeploymentOrderingTests
         var verifier = new Mock<IPaperDeploymentQualificationVerifier>();
         verifier.Setup(item => item.VerifyAsync(
                 101, 303, 404, "15m", It.IsAny<PaperDeploymentStoredBinding>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new PaperDeploymentQualificationResult
+            .Returns((long _, long _, long _, string _, PaperDeploymentStoredBinding _, CancellationToken token) =>
+                cancelBeforeCommit
+                    ? Task.FromException<PaperDeploymentQualificationResult>(new OperationCanceledException(token))
+                    : Task.FromResult(new PaperDeploymentQualificationResult
             {
                 Succeeded = true,
                 ParameterSetId = 101,
@@ -153,7 +210,7 @@ public sealed class Milestone231B1C6D1DeploymentOrderingTests
                 EvidenceVersion = ValidationParameterSetPublicationService.EvidenceVersion,
                 VerifiedAtUtc = DateTime.UtcNow,
                 FrozenParameters = new Dictionary<string, string> { ["lookback"] = "20" }
-            });
+            }));
         var actions = new List<string>();
         var required = new Mock<IRequiredAuditWriter>();
         required.Setup(writer => writer.AttachRequired(

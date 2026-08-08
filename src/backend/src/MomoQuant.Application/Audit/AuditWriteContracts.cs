@@ -143,7 +143,7 @@ public static partial class AuditWritePayloadProtection
     public static PreparedAuditPayload PrepareRequired(RequiredAuditRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ValidateIdentity(request.Action, request.EntityType, request.EntityId, request.UserId, request.TradingSessionId);
+        ValidateRequiredIdentity(request.Action, request.EntityType, request.EntityId, request.UserId, request.TradingSessionId);
         ValidateRequiredShape(request.Action, request.Metadata, request.EntityId, request.TradingSessionId);
 
         var json = JsonSerializer.Serialize(request.Metadata, request.Metadata.GetType(), JsonOptions);
@@ -169,7 +169,7 @@ public static partial class AuditWritePayloadProtection
     public static PreparedAuditPayload PrepareTelemetry(AuditTelemetryRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ValidateIdentity(request.Action, request.EntityType, request.EntityId, request.UserId, tradingSessionId: null);
+        ValidateTelemetryIdentity(request.Action, request.EntityType, request.EntityId, request.UserId);
 
         return new PreparedAuditPayload(
             request.Action,
@@ -269,20 +269,42 @@ public static partial class AuditWritePayloadProtection
         ValidateUtc(verifiedAtUtc);
     }
 
-    private static void ValidateIdentity(
+    private static void ValidateRequiredIdentity(
         string action,
         string entityType,
         long? entityId,
         long? userId,
         long? tradingSessionId)
     {
-        if (!SafeIdentifier().IsMatch(action) || action.Length > 128
+        if (!IsRequiredAction(action)
             || !SafeEntity().IsMatch(entityType) || entityType.Length > 128
             || entityId is <= 0 || userId is <= 0 || tradingSessionId is <= 0)
         {
             throw AuditEvidenceException.Invalid("Audit identity is invalid.");
         }
     }
+
+    private static void ValidateTelemetryIdentity(
+        string action,
+        string entityType,
+        long? entityId,
+        long? userId)
+    {
+        if (!TelemetryAction().IsMatch(action) || action.Length > 128
+            || !SafeEntity().IsMatch(entityType) || entityType.Length > 128
+            || entityId is <= 0 || userId is <= 0)
+        {
+            throw AuditEvidenceException.Invalid("Audit identity is invalid.");
+        }
+    }
+
+    private static bool IsRequiredAction(string action) => action is
+        RequiredAuditActions.ParameterSetDeploymentQualified
+        or RequiredAuditActions.PaperDeploymentQualificationVerified
+        or RequiredAuditActions.PaperSessionCreated
+        or RequiredAuditActions.PaperSessionStarted
+        or RequiredAuditActions.PaperSessionResumed
+        or RequiredAuditActions.PaperSessionFailed;
 
     private static string? SanitizeTelemetryJson(string? json)
     {
@@ -427,6 +449,9 @@ public static partial class AuditWritePayloadProtection
 
     [GeneratedRegex("^[A-Z][A-Z0-9_]*$", RegexOptions.CultureInvariant)]
     private static partial Regex SafeIdentifier();
+
+    [GeneratedRegex("^[A-Z][A-Za-z0-9_]*$", RegexOptions.CultureInvariant)]
+    private static partial Regex TelemetryAction();
 
     [GeneratedRegex("^[A-Za-z][A-Za-z0-9_.]*$", RegexOptions.CultureInvariant)]
     private static partial Regex SafeEntity();

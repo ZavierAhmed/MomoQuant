@@ -13,6 +13,79 @@ namespace MomoQuant.UnitTests.Audit;
 
 public sealed class Milestone231B1C6D1AuditWriterTests
 {
+    [Theory]
+    [InlineData("CleanBaselinePreviewed")]
+    [InlineData("CleanBaselineFailed")]
+    [InlineData("CleanBaselineExecuted")]
+    [InlineData("FakeMarketDataCleanupPreviewed")]
+    [InlineData("FakeMarketDataCleanupFailed")]
+    [InlineData("FakeMarketDataCleanupExecuted")]
+    public void TelemetryWriter_AcceptsAndPreservesPascalCaseProductionActions(string action)
+    {
+        var payload = AuditWritePayloadProtection.PrepareTelemetry(new AuditTelemetryRequest(
+            action,
+            "Cleanup",
+            41,
+            null,
+            null,
+            "{\"state\":\"Observed\"}",
+            null,
+            null));
+
+        Assert.Equal(action, payload.Action);
+    }
+
+    [Fact]
+    public void TelemetryWriter_AcceptsAndPreservesUppercaseUnderscoreActions()
+    {
+        const string action = "PAPER_SESSION_STARTED";
+
+        var payload = AuditWritePayloadProtection.PrepareTelemetry(new AuditTelemetryRequest(
+            action,
+            "PaperTradingSession",
+            41,
+            null,
+            null,
+            null,
+            null,
+            null));
+
+        Assert.Equal(action, payload.Action);
+    }
+
+    [Theory]
+    [InlineData("clean baseline")]
+    [InlineData("Clean/Baseline")]
+    [InlineData("Clean\\Baseline")]
+    [InlineData("Clean-Baseline")]
+    [InlineData("1CleanBaseline")]
+    public void TelemetryWriter_RejectsUnsafeActionStrings(string action)
+    {
+        var exception = Assert.Throws<AuditEvidenceException>(() =>
+            AuditWritePayloadProtection.PrepareTelemetry(new AuditTelemetryRequest(
+                action,
+                "Cleanup",
+                41,
+                null,
+                null,
+                null,
+                null,
+                null)));
+
+        Assert.Equal(AuditEvidenceCodes.Invalid, exception.Code);
+    }
+
+    [Fact]
+    public void RequiredWriter_RetainsCanonicalActionAllowlist()
+    {
+        var request = PublicationRequest() with { Action = "OtherRequiredAction" };
+
+        var exception = Assert.Throws<AuditEvidenceException>(() =>
+            AuditWritePayloadProtection.PrepareRequired(request));
+
+        Assert.Equal(AuditEvidenceCodes.Invalid, exception.Code);
+    }
+
     [Fact]
     public async Task RequiredWriter_AttachesExactlyOneAllowlistedAuditWithoutSaving()
     {
