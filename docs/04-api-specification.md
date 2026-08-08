@@ -22,7 +22,7 @@ Login is `POST /api/v1/auth/login` and returns a flat login DTO containing `acce
 
 ## 5. Authorization policies
 
-The implemented policies are `AdminOnly` , `AdminOrTrader` , `ResearchRead` , and `ResearchExecute` . Ordinary `[Authorize]` remains distinct from policy checks. Anonymous actions are explicit (login/logout, public health, development hosting-security, and Strategy Lab health); see the inventory for action-level detail.
+The implemented policies are `AdminOnly` , `AdminOrTrader` , `ResearchRead` , and `ResearchExecute` . Ordinary `[Authorize]` remains distinct from policy checks. The four anonymous REST endpoints are `POST /api/v1/auth/login`, `GET /api/health`, development/environment-qualified `GET /api/v1/validation-lab/hosting-security`, and `GET /api/v1/strategy-lab/health`. `GET /api/v1/auth/me` and `POST /api/v1/auth/logout` are authenticated; see the inventory for action-level detail.
 
 ## 6. Standard REST envelope
 
@@ -42,7 +42,7 @@ API time values are UTC where named `*Utc` . Timeframes use canonical strings `1
 
 ## 10. Public health
 
-NaN is anonymous and returns the health controller payload directly. It is not versioned and is distinct from authenticated monitoring endpoints.
+`GET /api/health` is anonymous and returns the `PublicHealthResponseMapper.PublicHealthResponseDto` object directly with `status`, `application`, `checkedAtUtc`, `timestampUtc`, and `components` (`mysql` and `redis`). It is outside `/api/v1`, does not use the standard `ApiResponse<T>` envelope, and is distinct from authenticated monitoring endpoints.
 
 ## 11. Exchanges and Binance Futures symbol management
 

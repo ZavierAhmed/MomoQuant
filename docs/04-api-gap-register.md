@@ -2,7 +2,7 @@
 
 - Repository: `ZavierAhmed/MomoQuant`
 - Inspected SHA: `c8ba9e87a83b5c19ad574ef7f98f3e5340bd56a2`
-- Scope: documentation-only reconciliation; no gap item is implemented by this document.
+- Scope: DOC1C1 documentation-only correction. DOC1 produced the initial inventory but failed independent accuracy review; this pass corrects exact request/response contracts without changing production code. No gap item is implemented by this document.
 
 Statuses are restricted to: **Implemented**, **Implemented alias**, **Partially implemented**, **Missing candidate**, **Deferred**, **Internal-only**, **Historical**, **Not applicable/rejected**, and **Decision required**.
 

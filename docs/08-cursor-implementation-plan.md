@@ -1,6 +1,6 @@
 # MOMO Quant — Current implementation and continuation plan
 
-**Historical note:** the original milestones 1–21 were a greenfield implementation plan and are not pending work. The repository at `c8ba9e87a83b5c19ad574ef7f98f3e5340bd56a2` is the current baseline.
+**Historical note:** the original milestones 1–21 were a greenfield implementation plan and are not pending work. The repository at `c8ba9e87a83b5c19ad574ef7f98f3e5340bd56a2` is the production/API baseline. DOC1 was the first documentation reconciliation pass and failed independent accuracy review; DOC1C1 corrects its inventory without changing production behavior.
 
 ## Current rules
 
@@ -32,7 +32,7 @@ inspect diff and commit narrowly
 
 ## Continuation boundary
 
-The API contract reconciliation is complete at the audited SHA. Future work must name the exact gap, authorized files, acceptance gates, and no-push/commit boundary. Do not begin B1C6D2, B1C6D3, B1C7, or live trading without an authoritative prompt.
+The API contract reconciliation is considered current only after DOC1C1’s exact-contract and static gates pass at the audited SHA. Future work must name the exact gap, authorized files, acceptance gates, and no-push/commit boundary. Do not begin B1C6D2, B1C6D3, B1C7, or live trading without an authoritative prompt.
 
 ## Historical appendix
 

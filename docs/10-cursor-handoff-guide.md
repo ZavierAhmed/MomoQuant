@@ -16,7 +16,7 @@ This guide applies to Codex, Cursor, or another coding agent. Work milestone-by-
 
 ## Authority rule
 
-The latest accepted repository implementation and tests are authoritative for current behavior. Documentation is normative for future work only after it has been reconciled against that implementation and approved. Historical greenfield documents are design context, not permission to invent routes or modules.
+The latest accepted repository implementation and tests are authoritative for current behavior. DOC1 produced an initial inventory that failed independent accuracy review; DOC1C1 is the corrective documentation pass. Documentation is normative for future work only within the audited source snapshot and explicit future-scope classifications after DOC1C1 is approved. Historical greenfield documents are design context, not permission to invent routes or modules.
 
 ## Non-negotiable boundaries
 
