@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Audit;
 using MomoQuant.Application.Backtesting;
 using MomoQuant.Application.Common;
 using MomoQuant.Application.LiveMarket;
@@ -112,6 +113,180 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
             Assert.Contains(seeded.Publication.Fingerprint, audit.NewValueJson, StringComparison.Ordinal);
             Assert.DoesNotContain("minimumStrength", audit.NewValueJson, StringComparison.Ordinal);
             Assert.DoesNotContain("lookback", audit.NewValueJson, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await CleanupDeploymentSessionAsync(seeded);
+        }
+    }
+
+    [Theory]
+    [InlineData(RequiredAuditActions.PaperDeploymentQualificationVerified)]
+    [InlineData(RequiredAuditActions.PaperSessionCreated)]
+    public async Task Create_RequiredAuditInsertFailure_RollsBackRowsAuditsRuntimeAndRetrySucceeds(string action)
+    {
+        var prepared = await PrepareDeploymentCreationAsync($"d1-create-{action}");
+        var stateStore = new RecordingStateStore();
+        var live = new DeterministicLiveMarketManager();
+        try
+        {
+            await InstallAuditFailureConstraintAsync(action);
+            await using (var scope = _fixture.Factory.Services.CreateAsyncScope())
+            {
+                var service = BuildCreateService(
+                    scope.ServiceProvider,
+                    live,
+                    new FixedCurrentUser(prepared.UserId),
+                    stateStore: stateStore);
+                var failure = await service.CreateAsync(prepared.Request);
+                Assert.False(failure.Succeeded);
+                Assert.Equal(AuditEvidenceCodes.Unavailable, failure.ErrorField);
+                Assert.DoesNotContain("constraint", failure.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+            }
+
+            await using (var verificationScope = _fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = verificationScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+                Assert.False(await db.PaperTradingSessions.AnyAsync(row =>
+                    row.PaperAccountId == prepared.PaperAccountId));
+                Assert.False(await db.TradingSessions.AnyAsync(row =>
+                    row.Name == $"Paper: {prepared.Request.Name}"));
+                Assert.False(await db.AuditLogs.AnyAsync(row =>
+                    row.Action == RequiredAuditActions.PaperDeploymentQualificationVerified
+                    || row.Action == RequiredAuditActions.PaperSessionCreated));
+            }
+
+            Assert.Equal(0, stateStore.SetCalls);
+            Assert.Equal(0, live.SubscribeCalls);
+
+            await RemoveAuditFailureConstraintAsync();
+            await using (var retryScope = _fixture.Factory.Services.CreateAsyncScope())
+            {
+                var service = BuildCreateService(
+                    retryScope.ServiceProvider,
+                    live,
+                    new FixedCurrentUser(prepared.UserId),
+                    stateStore: stateStore);
+                var retry = await service.CreateAsync(prepared.Request);
+                Assert.True(retry.Succeeded, retry.ErrorMessage);
+            }
+
+            Assert.Equal(1, stateStore.SetCalls);
+            await using var retryVerificationScope = _fixture.Factory.Services.CreateAsyncScope();
+            var retryDb = retryVerificationScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            var session = await retryDb.PaperTradingSessions.SingleAsync(row =>
+                row.PaperAccountId == prepared.PaperAccountId);
+            Assert.Equal(2, await retryDb.AuditLogs.CountAsync(row =>
+                row.EntityType == nameof(PaperTradingSession) && row.EntityId == session.Id));
+        }
+        finally
+        {
+            await RemoveAuditFailureConstraintAsync();
+            await CleanupPreparedCreationAsync(prepared);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, RequiredAuditActions.PaperDeploymentQualificationVerified)]
+    [InlineData(false, RequiredAuditActions.PaperSessionStarted)]
+    [InlineData(true, RequiredAuditActions.PaperDeploymentQualificationVerified)]
+    [InlineData(true, RequiredAuditActions.PaperSessionResumed)]
+    public async Task StartOrResume_RequiredAuditInsertFailure_RollsBackDurableStateAndHasNoRuntimeSideEffects(
+        bool resume,
+        string action)
+    {
+        var seeded = await SeedDeploymentSessionAsync($"d1-transition-{resume}-{action}");
+        var live = new DeterministicLiveMarketManager();
+        try
+        {
+            var expectedStatus = resume ? PaperSessionStatus.Paused : PaperSessionStatus.Created;
+            DateTime? verificationTime;
+            await using (var setupScope = _fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = setupScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+                var paper = await db.PaperTradingSessions.SingleAsync(row => row.Id == seeded.PaperSessionId);
+                var trading = await db.TradingSessions.SingleAsync(row => row.Id == paper.TradingSessionId);
+                if (resume)
+                {
+                    paper.Status = PaperSessionStatus.Paused;
+                    trading.Status = TradingSessionStatus.Paused;
+                    await db.SaveChangesAsync();
+                }
+
+                verificationTime = paper.QualificationVerifiedAtUtc;
+            }
+
+            await InstallAuditFailureConstraintAsync(action, allowCreateQualification: true);
+            await using (var controlScope = _fixture.Factory.Services.CreateAsyncScope())
+            {
+                var service = BuildControlService(
+                    controlScope.ServiceProvider,
+                    live,
+                    new FixedCurrentUser(seeded.UserId));
+                var failure = resume
+                    ? await service.ResumeAsync(seeded.PaperSessionId)
+                    : await service.StartAsync(seeded.PaperSessionId);
+                Assert.False(failure.Succeeded);
+                Assert.Equal(AuditEvidenceCodes.Unavailable, failure.ErrorField);
+            }
+
+            await using var verificationScope = _fixture.Factory.Services.CreateAsyncScope();
+            var verification = verificationScope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+            var durablePaper = await verification.PaperTradingSessions.AsNoTracking()
+                .SingleAsync(row => row.Id == seeded.PaperSessionId);
+            var durableTrading = await verification.TradingSessions.AsNoTracking()
+                .SingleAsync(row => row.Id == durablePaper.TradingSessionId);
+            Assert.Equal(expectedStatus, durablePaper.Status);
+            Assert.Equal(resume ? TradingSessionStatus.Paused : TradingSessionStatus.Created, durableTrading.Status);
+            Assert.Equal(verificationTime, durablePaper.QualificationVerifiedAtUtc);
+            Assert.False(await verification.AuditLogs.AnyAsync(row =>
+                row.EntityId == seeded.PaperSessionId
+                && (row.Action == RequiredAuditActions.PaperSessionStarted
+                    || row.Action == RequiredAuditActions.PaperSessionResumed)));
+            Assert.Equal(0, live.SubscribeCalls);
+        }
+        finally
+        {
+            await RemoveAuditFailureConstraintAsync();
+            await CleanupDeploymentSessionAsync(seeded);
+        }
+    }
+
+    [Fact]
+    public async Task Start_PostCommitBootstrapFailure_CompensatesRowsAndAuditWithoutRawProviderDetails()
+    {
+        var seeded = await SeedDeploymentSessionAsync("d1-postcommit-failure");
+        var live = new DeterministicLiveMarketManager();
+        try
+        {
+            await using (var controlScope = _fixture.Factory.Services.CreateAsyncScope())
+            {
+                var service = BuildControlService(
+                    controlScope.ServiceProvider,
+                    live,
+                    new FixedCurrentUser(seeded.UserId),
+                    new FailingBootstrapService());
+                var result = await service.StartAsync(seeded.PaperSessionId);
+                Assert.False(result.Succeeded);
+                Assert.Equal(PaperDeploymentQualificationCodes.RuntimeActivationFailed, result.ErrorField);
+            }
+
+            await using var verificationScope = _fixture.Factory.Services.CreateAsyncScope();
+            var services = verificationScope.ServiceProvider;
+            var db = services.GetRequiredService<MomoQuantDbContext>();
+            var paper = await db.PaperTradingSessions.AsNoTracking()
+                .SingleAsync(row => row.Id == seeded.PaperSessionId);
+            var trading = await db.TradingSessions.AsNoTracking()
+                .SingleAsync(row => row.Id == paper.TradingSessionId);
+            Assert.Equal(PaperSessionStatus.Failed, paper.Status);
+            Assert.Equal(TradingSessionStatus.Failed, trading.Status);
+            Assert.Equal(PaperDeploymentQualificationCodes.RuntimeActivationFailed, paper.ErrorMessage);
+            var failureAudit = await db.AuditLogs.AsNoTracking().SingleAsync(row =>
+                row.EntityId == paper.Id && row.Action == RequiredAuditActions.PaperSessionFailed);
+            Assert.Contains(PaperDeploymentQualificationCodes.RuntimeActivationFailed, failureAudit.NewValueJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("PROVIDER_SECRET", failureAudit.NewValueJson, StringComparison.Ordinal);
+            Assert.False(services.GetRequiredService<IPaperStateStore>().TryGet(paper.Id, out _));
+            Assert.Equal(0, live.SubscribeCalls);
         }
         finally
         {
@@ -719,23 +894,76 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
         services.GetRequiredService<IAuditService>(),
         services.GetRequiredService<IHigherTimeframeDatasetEnricher>(),
         verifier ?? services.GetRequiredService<IPaperDeploymentQualificationVerifier>(),
-        services.GetRequiredService<IPaperSessionRelationalCoordinator>());
+        services.GetRequiredService<IPaperSessionRelationalCoordinator>(),
+        services.GetRequiredService<IRequiredAuditWriter>());
 
     private static PaperSessionControlService BuildControlService(
         IServiceProvider services,
         ILiveMarketConnectionManager live,
-        ICurrentUserService currentUser) => new(
+        ICurrentUserService currentUser,
+        ILiveMarketBootstrapService? bootstrap = null) => new(
         services.GetRequiredService<IPaperTradingSessionRepository>(),
         services.GetRequiredService<ITradingSessionRepository>(),
         services.GetRequiredService<IPaperStateStore>(),
         services.GetRequiredService<IPaperTradingEngine>(),
         services.GetRequiredService<IPaperPersistenceService>(),
         live,
-        new SuccessfulBootstrapService(),
+        bootstrap ?? new SuccessfulBootstrapService(),
         currentUser,
         services.GetRequiredService<IAuditService>(),
         services.GetRequiredService<IPaperDeploymentQualificationVerifier>(),
-        services.GetRequiredService<IPaperSessionRelationalCoordinator>());
+        services.GetRequiredService<IPaperSessionRelationalCoordinator>(),
+        services.GetRequiredService<IRequiredAuditWriter>());
+
+    private async Task InstallAuditFailureConstraintAsync(
+        string action,
+        bool allowCreateQualification = false)
+    {
+        var predicate = action switch
+        {
+            RequiredAuditActions.PaperDeploymentQualificationVerified =>
+                allowCreateQualification
+                    ? "`Action` <> 'PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED' OR `NewValueJson` LIKE '%\"phase\":\"Create\"%'"
+                    : "`Action` <> 'PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED'",
+            RequiredAuditActions.PaperSessionCreated => "`Action` <> 'PAPER_SESSION_CREATED'",
+            RequiredAuditActions.PaperSessionStarted => "`Action` <> 'PAPER_SESSION_STARTED'",
+            RequiredAuditActions.PaperSessionResumed => "`Action` <> 'PAPER_SESSION_RESUMED'",
+            _ => throw new ArgumentOutOfRangeException(nameof(action))
+        };
+        await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>();
+        await RemoveAuditFailureConstraintAsync(db);
+#pragma warning disable EF1002
+        await db.Database.ExecuteSqlRawAsync($"""
+            ALTER TABLE `AuditLogs`
+            ADD CONSTRAINT `CK_D1_RejectPaperAudit`
+            CHECK ({predicate})
+            """);
+#pragma warning restore EF1002
+    }
+
+    private async Task RemoveAuditFailureConstraintAsync()
+    {
+        await using var scope = _fixture.Factory.Services.CreateAsyncScope();
+        await RemoveAuditFailureConstraintAsync(
+            scope.ServiceProvider.GetRequiredService<MomoQuantDbContext>());
+    }
+
+    private static async Task RemoveAuditFailureConstraintAsync(MomoQuantDbContext db)
+    {
+        var exists = await db.Database.SqlQuery<int>($"""
+            SELECT COUNT(*) AS `Value`
+            FROM `INFORMATION_SCHEMA`.`TABLE_CONSTRAINTS`
+            WHERE `CONSTRAINT_SCHEMA` = DATABASE()
+              AND `TABLE_NAME` = 'AuditLogs'
+              AND `CONSTRAINT_NAME` = 'CK_D1_RejectPaperAudit'
+            """).SingleAsync();
+        if (exists == 1)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE `AuditLogs` DROP CHECK `CK_D1_RejectPaperAudit`");
+        }
+    }
 
     private async Task CleanupDeploymentSessionAsync(SeededDeploymentSession seeded)
     {
@@ -945,6 +1173,18 @@ public sealed class Milestone231B1C6CPaperDeploymentIntegrationTests
                 CandleCountUsed = 600,
                 IndicatorsAvailable = true
             }));
+    }
+
+    private sealed class FailingBootstrapService : ILiveMarketBootstrapService
+    {
+        public Task<ServiceResult<LiveBootstrapResult>> EnsureWarmupAsync(
+            long exchangeId,
+            long symbolId,
+            Timeframe timeframe,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(ServiceResult<LiveBootstrapResult>.Fail(
+                "PROVIDER_SECRET raw failure must not persist.",
+                "provider"));
     }
 
     private sealed class DeterministicLiveMarketManager : ILiveMarketConnectionManager

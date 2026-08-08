@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using MomoQuant.Application.Abstractions;
 using MomoQuant.Application.Admin;
+using MomoQuant.Application.Audit;
 using MomoQuant.Application.Monitoring.Abstractions;
 using MomoQuant.Application.ValidationLab;
 using MomoQuant.Persistence.Monitoring;
@@ -72,6 +73,8 @@ public static class DependencyInjection
         services.AddScoped<ISystemHealthLogRepository, SystemHealthLogRepository>();
         services.AddScoped<ITradingSettingsRepository, TradingSettingsRepository>();
         services.AddScoped<IMonitoringDataRepository, MonitoringDataRepository>();
+        services.AddScoped<IRequiredAuditWriter, RequiredAuditWriter>();
+        services.AddSingleton<IAuditTelemetryWriter, AuditTelemetryWriter>();
         services.AddScoped<IAuditService, AuditService>();
         services.AddScoped<IFakeMarketDataCleanupService, FakeMarketDataCleanupService>();
         services.AddScoped<ICleanBaselineService, CleanBaselineService>();

@@ -1,5 +1,7 @@
-using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Audit;
 using MomoQuant.Application.Common;
 using MomoQuant.Application.LiveMarket;
 using MomoQuant.Application.LiveMarket.Dtos;
@@ -37,6 +39,8 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
     private readonly IAuditService _auditService;
     private readonly IPaperDeploymentQualificationVerifier? _deploymentVerifier;
     private readonly IPaperSessionRelationalCoordinator? _relationalCoordinator;
+    private readonly IRequiredAuditWriter? _requiredAuditWriter;
+    private readonly ILogger<PaperSessionControlService> _logger;
 
     public PaperSessionControlService(
         IPaperTradingSessionRepository sessionRepository,
@@ -59,6 +63,8 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
             currentUserService,
             auditService,
             null,
+            null,
+            null,
             null)
     {
     }
@@ -74,7 +80,9 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
         ICurrentUserService currentUserService,
         IAuditService auditService,
         IPaperDeploymentQualificationVerifier? deploymentVerifier,
-        IPaperSessionRelationalCoordinator? relationalCoordinator)
+        IPaperSessionRelationalCoordinator? relationalCoordinator,
+        IRequiredAuditWriter? requiredAuditWriter = null,
+        ILogger<PaperSessionControlService>? logger = null)
     {
         _sessionRepository = sessionRepository;
         _tradingSessionRepository = tradingSessionRepository;
@@ -87,6 +95,8 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
         _auditService = auditService;
         _deploymentVerifier = deploymentVerifier;
         _relationalCoordinator = relationalCoordinator;
+        _requiredAuditWriter = requiredAuditWriter;
+        _logger = logger ?? NullLogger<PaperSessionControlService>.Instance;
     }
 
     public async Task<ServiceResult<PaperSessionControlResponse>> StartAsync(
@@ -371,46 +381,51 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
         string phase,
         CancellationToken cancellationToken)
     {
-        if (_deploymentVerifier is null || _relationalCoordinator is null)
+        if (_deploymentVerifier is null || _relationalCoordinator is null || _requiredAuditWriter is null)
         {
             return ServiceResult<PaperSessionControlResponse>.Fail(
                 "Deployment-simulation runtime verification is unavailable.",
-                PaperDeploymentQualificationCodes.NotQualified);
+                _requiredAuditWriter is null
+                    ? AuditEvidenceCodes.Unavailable
+                    : PaperDeploymentQualificationCodes.NotQualified);
         }
 
-        return await _relationalCoordinator.ExecuteSerializedAsync(
-            sessionId,
-            async (session, token) =>
-            {
+        if (!_stateStore.TryGet(sessionId, out var state) || state is null)
+        {
+            return ServiceResult<PaperSessionControlResponse>.Fail(
+                "Paper runtime state was not found. Recreate the session.");
+        }
+
+        ServiceResult<DeploymentActivationCommit> durable;
+        try
+        {
+            durable = await _relationalCoordinator.ExecuteSerializedAsync(
+                sessionId,
+                async (session, token) =>
+                {
                 if (session is null)
                 {
-                    return ServiceResult<PaperSessionControlResponse>.Fail("Paper session was not found.");
+                    return ServiceResult<DeploymentActivationCommit>.Fail("Paper session was not found.");
                 }
 
                 if (session.UseClass != PaperSessionUseClass.DeploymentSimulation)
                 {
-                    return ServiceResult<PaperSessionControlResponse>.Fail(
+                    return ServiceResult<DeploymentActivationCommit>.Fail(
                         "The durable paper-session use class changed during runtime control.",
                         PaperDeploymentQualificationCodes.BindingConflict);
                 }
 
                 if (session.Status != requiredStatus)
                 {
-                    return ServiceResult<PaperSessionControlResponse>.Fail(
+                    return ServiceResult<DeploymentActivationCommit>.Fail(
                         $"Paper session cannot {phase.ToLowerInvariant()} from status {session.Status}.",
                         "status");
-                }
-
-                if (!_stateStore.TryGet(sessionId, out var state) || state is null)
-                {
-                    return ServiceResult<PaperSessionControlResponse>.Fail(
-                        "Paper runtime state was not found. Recreate the session.");
                 }
 
                 var binding = BuildStoredBinding(session);
                 if (binding is null)
                 {
-                    return ServiceResult<PaperSessionControlResponse>.Fail(
+                    return ServiceResult<DeploymentActivationCommit>.Fail(
                         "The durable deployment-simulation binding is incomplete.",
                         PaperDeploymentQualificationCodes.BindingConflict);
                 }
@@ -424,30 +439,108 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
                     token);
                 if (!verification.Succeeded)
                 {
-                    return ServiceResult<PaperSessionControlResponse>.Fail(
+                    return ServiceResult<DeploymentActivationCommit>.Fail(
                         verification.ErrorMessage ?? "Deployment qualification verification failed.",
                         verification.ErrorCode ?? PaperDeploymentQualificationCodes.NotQualified);
                 }
 
-                state.FrozenStrategyParameters = new Dictionary<long, IReadOnlyDictionary<string, string>>
+                var tradingSession = await _tradingSessionRepository
+                    .GetByIdAsync(session.TradingSessionId, token)
+                    .ConfigureAwait(false);
+                if (tradingSession is null)
+                {
+                    return ServiceResult<DeploymentActivationCommit>.Fail(
+                        "The durable trading session was not found.",
+                        PaperDeploymentQualificationCodes.BindingConflict);
+                }
+
+                session.QualificationVerifiedAtUtc = verification.VerifiedAtUtc;
+                session.Status = PaperSessionStatus.Running;
+                session.StartedAtUtc ??= verification.VerifiedAtUtc;
+                session.PausedAtUtc = null;
+                session.UpdatedAtUtc = verification.VerifiedAtUtc;
+                await _sessionRepository.UpdateAsync(session, token);
+                tradingSession.Status = TradingSessionStatus.Running;
+                tradingSession.StartedAtUtc ??= verification.VerifiedAtUtc;
+                tradingSession.UpdatedAtUtc = verification.VerifiedAtUtc;
+                await _tradingSessionRepository.UpdateAsync(tradingSession, token);
+
+                _requiredAuditWriter.AttachRequired(
+                    BuildQualificationAuditRequest(session, phase, verification),
+                    token);
+                _requiredAuditWriter.AttachRequired(
+                    BuildTransitionAuditRequest(
+                        phase == "Resume"
+                            ? RequiredAuditActions.PaperSessionResumed
+                            : RequiredAuditActions.PaperSessionStarted,
+                        session,
+                        phase,
+                        verification),
+                    token);
+                await _sessionRepository.SaveChangesAsync(token);
+
+                var frozenParameters = new Dictionary<long, IReadOnlyDictionary<string, string>>
                 {
                     [verification.StrategyId] = verification.FrozenParameters
                 };
-                session.QualificationVerifiedAtUtc = verification.VerifiedAtUtc;
-                session.UpdatedAtUtc = verification.VerifiedAtUtc;
-                await _sessionRepository.UpdateAsync(session, token);
-                await _sessionRepository.SaveChangesAsync(token);
-                await LogDeploymentVerificationAsync(session, phase, verification, token);
+                return ServiceResult<DeploymentActivationCommit>.Ok(
+                    new DeploymentActivationCommit(session.Id, frozenParameters));
+                },
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (AuditEvidenceException ex)
+        {
+            return ServiceResult<PaperSessionControlResponse>.Fail(
+                "Required deployment audit evidence could not be committed.",
+                ex.Code);
+        }
 
-                var readiness = await EnsureLivePaperReadyAsync(session, state, token);
-                if (!readiness.Succeeded)
-                {
-                    return readiness;
-                }
+        if (!durable.Succeeded)
+        {
+            return ServiceResult<PaperSessionControlResponse>.Fail(durable.ErrorMessage!, durable.ErrorField);
+        }
 
-                return await BeginRunningAsync(session, state, token);
-            },
-            cancellationToken);
+        // The coordinator has committed and cleared its tracker. This reload is the durable proof
+        // consumed by the non-relational runtime activation phase.
+        var committedSession = await _sessionRepository.GetByIdAsync(sessionId, cancellationToken);
+        if (committedSession is null || committedSession.Status != PaperSessionStatus.Running)
+        {
+            return await CompensateActivationFailureAsync(sessionId, phase, cancellationToken);
+        }
+
+        var activation = durable.Data!;
+        var previouslySubscribed = CaptureExistingSubscriptions(state);
+        try
+        {
+            state.FrozenStrategyParameters = activation.FrozenStrategyParameters;
+            state.StopRequested = false;
+            state.Session = committedSession;
+            _stateStore.Set(sessionId, state);
+
+            var readiness = await EnsureLivePaperReadyAsync(committedSession, state, cancellationToken);
+            if (!readiness.Succeeded)
+            {
+                await CleanupActivationAsync(committedSession, state, previouslySubscribed).ConfigureAwait(false);
+                return await CompensateActivationFailureAsync(sessionId, phase, cancellationToken);
+            }
+
+            return ServiceResult<PaperSessionControlResponse>.Ok(BuildResponse(committedSession));
+        }
+        catch (OperationCanceledException)
+        {
+            await CleanupActivationAsync(committedSession, state, previouslySubscribed).ConfigureAwait(false);
+            await CompensateActivationFailureAsync(sessionId, phase, CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+        catch
+        {
+            await CleanupActivationAsync(committedSession, state, previouslySubscribed).ConfigureAwait(false);
+            return await CompensateActivationFailureAsync(sessionId, phase, cancellationToken);
+        }
     }
 
     private static PaperDeploymentStoredBinding? BuildStoredBinding(PaperTradingSession session)
@@ -475,31 +568,199 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
             session.QualificationEvidenceVersion);
     }
 
-    private Task LogDeploymentVerificationAsync(
+    private RequiredAuditRequest BuildQualificationAuditRequest(
         PaperTradingSession session,
         string phase,
-        PaperDeploymentQualificationResult verification,
-        CancellationToken cancellationToken) =>
-        _auditService.LogAsync(
-            "PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED",
+        PaperDeploymentQualificationResult verification) =>
+        new(
+            RequiredAuditActions.PaperDeploymentQualificationVerified,
             nameof(PaperTradingSession),
             session.Id,
             _currentUserService.UserId,
-            newValueJson: JsonSerializer.Serialize(new
-            {
-                paperSessionId = session.Id,
+            session.TradingSessionId,
+            LogSeverity.Info,
+            new PaperQualificationAuditMetadata(
+                session.Id,
+                session.TradingSessionId,
                 phase,
-                parameterSetId = verification.ParameterSetId,
-                strategyId = verification.StrategyId,
-                symbolId = verification.SymbolId,
-                timeframe = verification.Timeframe,
-                experimentId = verification.SourceExperimentId,
-                trialId = verification.SourceTrialId,
-                parameterFingerprint = verification.ParameterFingerprint,
-                evidenceVersion = verification.EvidenceVersion,
-                verifiedAtUtc = verification.VerifiedAtUtc
-            }),
-            cancellationToken: cancellationToken);
+                verification.ParameterSetId,
+                verification.StrategyId,
+                verification.SymbolId,
+                verification.Timeframe,
+                verification.SourceExperimentId,
+                verification.SourceTrialId,
+                verification.ParameterFingerprint,
+                verification.EvidenceVersion,
+                verification.VerifiedAtUtc),
+            verification.VerifiedAtUtc);
+
+    private RequiredAuditRequest BuildTransitionAuditRequest(
+        string action,
+        PaperTradingSession session,
+        string phase,
+        PaperDeploymentQualificationResult verification) =>
+        new(
+            action,
+            nameof(PaperTradingSession),
+            session.Id,
+            _currentUserService.UserId,
+            session.TradingSessionId,
+            LogSeverity.Info,
+            new PaperSessionTransitionAuditMetadata(
+                session.Id,
+                session.TradingSessionId,
+                phase,
+                verification.ParameterSetId,
+                verification.StrategyId,
+                verification.SymbolId,
+                verification.Timeframe,
+                verification.SourceExperimentId,
+                verification.SourceTrialId,
+                verification.ParameterFingerprint,
+                verification.EvidenceVersion,
+                verification.VerifiedAtUtc),
+            verification.VerifiedAtUtc);
+
+    private HashSet<(long SymbolId, Timeframe Timeframe)> CaptureExistingSubscriptions(PaperSessionState state) =>
+        state.Settings.SymbolIds
+            .SelectMany(symbolId => state.Settings.Timeframes.Select(timeframe => (symbolId, timeframe)))
+            .Where(item => _liveMarketConnectionManager.IsSubscribed(item.symbolId, item.timeframe))
+            .ToHashSet();
+
+    private async Task CleanupActivationAsync(
+        PaperTradingSession session,
+        PaperSessionState state,
+        HashSet<(long SymbolId, Timeframe Timeframe)> previouslySubscribed)
+    {
+        _liveMarketConnectionManager.UnlinkSession(session.Id);
+        _stateStore.Remove(session.Id);
+
+        foreach (var symbolId in state.Settings.SymbolIds)
+        {
+            foreach (var timeframe in state.Settings.Timeframes)
+            {
+                if (previouslySubscribed.Contains((symbolId, timeframe)))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var diagnostics = _liveMarketConnectionManager.GetDiagnostics();
+                    var timeframeValue = TimeframeParser.ToApiString(timeframe);
+                    var hasOtherLinks = diagnostics.Subscriptions.Any(item =>
+                        item.SymbolId == symbolId
+                        && string.Equals(item.Timeframe, timeframeValue, StringComparison.OrdinalIgnoreCase)
+                        && item.LinkedSessionIds.Count > 0);
+                    if (!hasOtherLinks && _liveMarketConnectionManager.IsSubscribed(symbolId, timeframe))
+                    {
+                        await _liveMarketConnectionManager.UnsubscribeAsync(
+                            new LiveMarketSubscribeRequest
+                            {
+                                ExchangeId = session.ExchangeId,
+                                SymbolId = symbolId,
+                                Timeframe = timeframeValue,
+                                PaperSessionId = session.Id
+                            },
+                            CancellationToken.None).ConfigureAwait(false);
+                    }
+                }
+                catch
+                {
+                    _logger.LogCritical(
+                        "Deployment runtime cleanup could not fully remove a subscription for paper session {PaperSessionId}.",
+                        session.Id);
+                }
+            }
+        }
+    }
+
+    private async Task<ServiceResult<PaperSessionControlResponse>> CompensateActivationFailureAsync(
+        long sessionId,
+        string phase,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var compensation = await _relationalCoordinator!.ExecuteSerializedAsync(
+                sessionId,
+                async (session, token) =>
+                {
+                    if (session is null)
+                    {
+                        return ServiceResult<PaperSessionControlResponse>.Fail(
+                            "The deployment session could not be marked failed.",
+                            PaperDeploymentQualificationCodes.RuntimeActivationFailed);
+                    }
+
+                    var tradingSession = await _tradingSessionRepository
+                        .GetByIdAsync(session.TradingSessionId, token)
+                        .ConfigureAwait(false);
+                    if (tradingSession is null)
+                    {
+                        throw new InvalidOperationException("Durable trading session missing during activation compensation.");
+                    }
+
+                    var now = DateTime.UtcNow;
+                    session.Status = PaperSessionStatus.Failed;
+                    session.ErrorMessage = PaperDeploymentQualificationCodes.RuntimeActivationFailed;
+                    session.UpdatedAtUtc = now;
+                    tradingSession.Status = TradingSessionStatus.Failed;
+                    tradingSession.StoppedAtUtc = now;
+                    tradingSession.UpdatedAtUtc = now;
+                    await _sessionRepository.UpdateAsync(session, token);
+                    await _tradingSessionRepository.UpdateAsync(tradingSession, token);
+                    _requiredAuditWriter!.AttachRequired(
+                        new RequiredAuditRequest(
+                            RequiredAuditActions.PaperSessionFailed,
+                            nameof(PaperTradingSession),
+                            session.Id,
+                            _currentUserService.UserId,
+                            session.TradingSessionId,
+                            LogSeverity.Error,
+                            new PaperSessionFailureAuditMetadata(
+                                session.Id,
+                                session.TradingSessionId,
+                                "Activation",
+                                PaperDeploymentQualificationCodes.RuntimeActivationFailed),
+                            now),
+                        token);
+                    await _sessionRepository.SaveChangesAsync(token);
+                    return ServiceResult<PaperSessionControlResponse>.Ok(BuildResponse(session));
+                },
+                cancellationToken);
+            if (!compensation.Succeeded)
+            {
+                return compensation;
+            }
+
+            return ServiceResult<PaperSessionControlResponse>.Fail(
+                "Deployment runtime activation failed after the durable transition.",
+                PaperDeploymentQualificationCodes.RuntimeActivationFailed);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (AuditEvidenceException)
+        {
+            _logger.LogCritical(
+                "Required activation-failure audit evidence was unavailable for paper session {PaperSessionId}; no runtime remains active.",
+                sessionId);
+            return ServiceResult<PaperSessionControlResponse>.Fail(
+                "Required deployment audit evidence could not be committed.",
+                AuditEvidenceCodes.Unavailable);
+        }
+        catch
+        {
+            _logger.LogCritical(
+                "Deployment activation compensation could not be committed for paper session {PaperSessionId}; no runtime remains active.",
+                sessionId);
+            return ServiceResult<PaperSessionControlResponse>.Fail(
+                "Required deployment audit evidence could not be committed.",
+                AuditEvidenceCodes.Unavailable);
+        }
+    }
 
     private async Task<ServiceResult<PaperSessionControlResponse>> BeginRunningAsync(
         PaperTradingSession session,
@@ -608,4 +869,8 @@ public sealed class PaperSessionControlService : IPaperSessionControlService
         TotalCandles = session.TotalCandles,
         CurrentCandleTimeUtc = session.CurrentCandleTimeUtc
     };
+
+    private sealed record DeploymentActivationCommit(
+        long PaperSessionId,
+        IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>> FrozenStrategyParameters);
 }

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Audit;
 using MomoQuant.Application.Optimization;
 using MomoQuant.Application.Optimization.Dtos;
 using MomoQuant.Application.ValidationLab;
@@ -406,7 +407,8 @@ public sealed class Milestone231B1C6BPublicationTests
             new ValidationVerdictService(),
             currentUser.Object,
             new FixedTimeProvider(PublicationTime),
-            NullLogger<ValidationParameterSetPublicationService>.Instance);
+            NullLogger<ValidationParameterSetPublicationService>.Instance,
+            new RecordingRequiredAuditWriter(store));
         return new PublicationFixture(service, store, fingerprints);
     }
 
@@ -518,12 +520,27 @@ public sealed class Milestone231B1C6BPublicationTests
             ParameterSets.Add(parameterSet);
         }
 
-        public void AddAuditLog(AuditLog auditLog)
-        {
-            auditLog.Id = 601;
-            AuditLogs.Add(auditLog);
-        }
-
         public Task SaveChangesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    private sealed class RecordingRequiredAuditWriter(FakePublicationStore store) : IRequiredAuditWriter
+    {
+        public void AttachRequired(RequiredAuditRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var payload = AuditWritePayloadProtection.PrepareRequired(request);
+            store.AuditLogs.Add(new AuditLog
+            {
+                Id = 601,
+                UserId = payload.UserId,
+                TradingSessionId = payload.TradingSessionId,
+                Action = payload.Action,
+                EntityType = payload.EntityType,
+                EntityId = payload.EntityId,
+                Severity = payload.Severity,
+                NewValueJson = payload.NewValueJson,
+                CreatedAtUtc = payload.CreatedAtUtc
+            });
+        }
     }
 }

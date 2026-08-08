@@ -1,5 +1,6 @@
 using Moq;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Audit;
 using MomoQuant.Application.Backtesting;
 using MomoQuant.Application.Common;
 using MomoQuant.Application.LiveMarket;
@@ -500,26 +501,22 @@ public sealed class Milestone231B1C6CAtomicCreationGateTests
         Assert.NotNull(runtime);
         Assert.Equal("20", runtime.FrozenStrategyParameters![10]["lookback"]);
         Assert.DoesNotContain("10", runtime.FrozenStrategyParameters[10].Values);
-        harness.Audit.Verify(item => item.LogAsync(
-            "PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED",
-            nameof(PaperTradingSession),
-            701,
-            5,
-            null,
-            It.Is<string>(json => json.Contains("FINAL") && !json.Contains("EARLY")),
-            null,
-            null,
+        harness.RequiredAudit.Verify(item => item.AttachRequired(
+            It.Is<RequiredAuditRequest>(request =>
+                request.Action == RequiredAuditActions.PaperDeploymentQualificationVerified
+                && request.Metadata.GetType() == typeof(PaperQualificationAuditMetadata)
+                && ((PaperQualificationAuditMetadata)request.Metadata).ParameterFingerprint == "FINAL"),
+            It.IsAny<CancellationToken>()), Times.Once);
+        harness.RequiredAudit.Verify(item => item.AttachRequired(
+            It.Is<RequiredAuditRequest>(request =>
+                request.Action == RequiredAuditActions.PaperSessionCreated
+                && request.Metadata.GetType() == typeof(PaperSessionTransitionAuditMetadata)
+                && ((PaperSessionTransitionAuditMetadata)request.Metadata).ParameterFingerprint == "FINAL"),
             It.IsAny<CancellationToken>()), Times.Once);
         harness.Audit.Verify(item => item.LogAsync(
-            "PAPER_SESSION_CREATED",
-            nameof(PaperTradingSession),
-            701,
-            5,
-            null,
-            It.IsAny<string>(),
-            null,
-            null,
-            It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long?>(), It.IsAny<long?>(),
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     private static AtomicCreationHarness CreateHarness(IPaperDeploymentQualificationVerifier verifier)
@@ -602,6 +599,7 @@ public sealed class Milestone231B1C6CAtomicCreationGateTests
         var currentUser = new Mock<ICurrentUserService>();
         currentUser.SetupGet(item => item.UserId).Returns(5);
         var coordinator = new RecordingCoordinator();
+        var requiredAudit = new Mock<IRequiredAuditWriter>();
         var service = new PaperSessionService(
             paperSessions.Object,
             accounts.Object,
@@ -622,13 +620,15 @@ public sealed class Milestone231B1C6CAtomicCreationGateTests
             audit.Object,
             enricher.Object,
             verifier,
-            coordinator);
+            coordinator,
+            requiredAudit.Object);
         return new AtomicCreationHarness(
             service,
             paperSessions,
             tradingSessions,
             stateStore,
             audit,
+            requiredAudit,
             coordinator);
     }
 
@@ -672,6 +672,7 @@ public sealed class Milestone231B1C6CAtomicCreationGateTests
         Mock<ITradingSessionRepository> TradingSessions,
         Mock<IPaperStateStore> StateStore,
         Mock<IAuditService> Audit,
+        Mock<IRequiredAuditWriter> RequiredAudit,
         RecordingCoordinator Coordinator);
 
     private sealed class RecordingCoordinator : IPaperSessionRelationalCoordinator
@@ -738,7 +739,8 @@ public sealed class Milestone231B1C6CDeploymentRuntimeGateTests
             Mock.Of<ICurrentUserService>(),
             audit.Object,
             verifier.Object,
-            coordinator);
+            coordinator,
+            Mock.Of<IRequiredAuditWriter>());
 
         var result = resume ? await service.ResumeAsync(1) : await service.StartAsync(1);
 

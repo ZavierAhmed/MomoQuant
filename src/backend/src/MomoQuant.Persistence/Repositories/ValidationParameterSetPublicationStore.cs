@@ -1,6 +1,7 @@
 using System.Data;
 using Microsoft.EntityFrameworkCore;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Audit;
 using MomoQuant.Application.ValidationLab;
 using MomoQuant.Domain.Audit;
 using MomoQuant.Domain.Enums;
@@ -31,6 +32,12 @@ public sealed class ValidationParameterSetPublicationStore : IValidationParamete
             var result = await action(cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return result;
+        }
+        catch (DbUpdateException ex) when (HasPendingAuditEvidence())
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            _db.ChangeTracker.Clear();
+            throw AuditEvidenceException.Unavailable(ex);
         }
         catch (DbUpdateException ex) when (IsPublicationConstraintViolation(ex))
         {
@@ -147,10 +154,11 @@ public sealed class ValidationParameterSetPublicationStore : IValidationParamete
 
     public void AddParameterSet(StrategyParameterSet parameterSet) => _db.StrategyParameterSets.Add(parameterSet);
 
-    public void AddAuditLog(AuditLog auditLog) => _db.AuditLogs.Add(auditLog);
-
     public Task SaveChangesAsync(CancellationToken cancellationToken = default) =>
         _db.SaveChangesAsync(cancellationToken);
+
+    private bool HasPendingAuditEvidence() =>
+        _db.ChangeTracker.Entries<AuditLog>().Any(entry => entry.State == EntityState.Added);
 
     private static bool IsPublicationConstraintViolation(DbUpdateException exception) =>
         FindMySqlException(exception) is { Number: 1062 or 1452 or 3819 };

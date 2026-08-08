@@ -26,6 +26,7 @@ public static class PaperDeploymentQualificationCodes
     public const string StrategyIneligible = "PAPER_DEPLOYMENT_STRATEGY_INELIGIBLE";
     public const string CanonicalMismatch = "PAPER_DEPLOYMENT_CANONICAL_MISMATCH";
     public const string BindingConflict = "PAPER_DEPLOYMENT_BINDING_CONFLICT";
+    public const string RuntimeActivationFailed = "PAPER_RUNTIME_ACTIVATION_FAILED";
 }
 
 public sealed record PaperDeploymentStoredBinding(

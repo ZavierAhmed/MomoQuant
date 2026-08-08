@@ -1,6 +1,9 @@
 using System.Data;
 using Microsoft.EntityFrameworkCore;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Audit;
+using MomoQuant.Application.Common;
+using MomoQuant.Domain.Audit;
 using MomoQuant.Domain.PaperTrading;
 
 namespace MomoQuant.Persistence.Repositories;
@@ -31,9 +34,32 @@ public sealed class PaperSessionRelationalCoordinator : IPaperSessionRelationalC
         // after the authoritative transaction begins so every verifier read reloads the durable
         // row through this scoped context and takes the transaction's MySQL SERIALIZABLE locks.
         _dbContext.ChangeTracker.Clear();
-        var result = await action(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return result;
+        try
+        {
+            var result = await action(cancellationToken).ConfigureAwait(false);
+            if (result is ITransactionResult { Succeeded: false })
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                _dbContext.ChangeTracker.Clear();
+                return result;
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            _dbContext.ChangeTracker.Clear();
+            return result;
+        }
+        catch (DbUpdateException ex) when (HasPendingAuditEvidence())
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            _dbContext.ChangeTracker.Clear();
+            throw AuditEvidenceException.Unavailable(ex);
+        }
+        catch
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            _dbContext.ChangeTracker.Clear();
+            throw;
+        }
     }
 
     public async Task<T> ExecuteSerializedAsync<T>(
@@ -52,10 +78,33 @@ public sealed class PaperSessionRelationalCoordinator : IPaperSessionRelationalC
         await using var transaction = await _dbContext.Database
             .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
             .ConfigureAwait(false);
-        var session = await LockSessionAsync(paperSessionId, cancellationToken).ConfigureAwait(false);
-        var result = await action(session, cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return result;
+        try
+        {
+            var session = await LockSessionAsync(paperSessionId, cancellationToken).ConfigureAwait(false);
+            var result = await action(session, cancellationToken).ConfigureAwait(false);
+            if (result is ITransactionResult { Succeeded: false })
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                _dbContext.ChangeTracker.Clear();
+                return result;
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            _dbContext.ChangeTracker.Clear();
+            return result;
+        }
+        catch (DbUpdateException ex) when (HasPendingAuditEvidence())
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            _dbContext.ChangeTracker.Clear();
+            throw AuditEvidenceException.Unavailable(ex);
+        }
+        catch
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            _dbContext.ChangeTracker.Clear();
+            throw;
+        }
     }
 
     private Task<PaperTradingSession?> LockSessionAsync(
@@ -82,5 +131,21 @@ public sealed class PaperSessionRelationalCoordinator : IPaperSessionRelationalC
 
         return _dbContext.PaperTradingSessions
             .SingleOrDefaultAsync(session => session.Id == paperSessionId, cancellationToken);
+    }
+
+    private bool HasPendingAuditEvidence() =>
+        _dbContext.ChangeTracker.Entries<AuditLog>().Any(entry => entry.State == EntityState.Added);
+
+    private static async Task TryRollbackAsync(
+        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction)
+    {
+        try
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Preserve the original transactional failure.
+        }
     }
 }

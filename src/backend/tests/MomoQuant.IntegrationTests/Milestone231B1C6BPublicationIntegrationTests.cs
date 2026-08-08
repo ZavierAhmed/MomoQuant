@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Audit;
 using MomoQuant.Application.Common;
 using MomoQuant.Application.Optimization.Dtos;
 using MomoQuant.Application.Strategies.PriceStructure;
@@ -479,7 +480,8 @@ public sealed class Milestone231B1C6BPublicationIntegrationTests
             services.GetRequiredService<IValidationVerdictService>(),
             services.GetRequiredService<ICurrentUserService>(),
             services.GetRequiredService<TimeProvider>(),
-            services.GetRequiredService<ILogger<ValidationParameterSetPublicationService>>());
+            services.GetRequiredService<ILogger<ValidationParameterSetPublicationService>>(),
+            services.GetRequiredService<IRequiredAuditWriter>());
 
     private static MySqlException? FindMySqlException(Exception exception)
     {
@@ -568,7 +570,6 @@ public sealed class Milestone231B1C6BPublicationIntegrationTests
             inner.LockQualifiedPublicationsByStrategyAsync(strategyCode, cancellationToken);
 
         public void AddParameterSet(StrategyParameterSet parameterSet) => inner.AddParameterSet(parameterSet);
-        public void AddAuditLog(AuditLog auditLog) => inner.AddAuditLog(auditLog);
         public Task SaveChangesAsync(CancellationToken cancellationToken = default) => inner.SaveChangesAsync(cancellationToken);
     }
 }

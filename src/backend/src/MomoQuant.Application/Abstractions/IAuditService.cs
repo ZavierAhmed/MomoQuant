@@ -1,5 +1,8 @@
 namespace MomoQuant.Application.Abstractions;
 
+/// <summary>
+/// Legacy best-effort operational telemetry. This is not authoritative audit evidence.
+/// </summary>
 public interface IAuditService
 {
     Task LogAsync(

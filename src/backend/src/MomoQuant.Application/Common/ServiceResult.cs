@@ -1,6 +1,11 @@
 namespace MomoQuant.Application.Common;
 
-public sealed class ServiceResult<T>
+public interface ITransactionResult
+{
+    bool Succeeded { get; }
+}
+
+public sealed class ServiceResult<T> : ITransactionResult
 {
     public bool Succeeded { get; init; }
     public T? Data { get; init; }

@@ -1,4 +1,3 @@
-using MomoQuant.Domain.Audit;
 using MomoQuant.Domain.Strategies;
 using MomoQuant.Domain.ValidationLab;
 
@@ -28,6 +27,5 @@ public interface IValidationParameterSetPublicationStore
         CancellationToken cancellationToken = default);
 
     void AddParameterSet(StrategyParameterSet parameterSet);
-    void AddAuditLog(AuditLog auditLog);
     Task SaveChangesAsync(CancellationToken cancellationToken = default);
 }

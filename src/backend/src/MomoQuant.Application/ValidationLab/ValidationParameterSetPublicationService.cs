@@ -1,12 +1,11 @@
-using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Audit;
 using MomoQuant.Application.Common;
 using MomoQuant.Application.Optimization;
 using MomoQuant.Application.Optimization.Dtos;
 using MomoQuant.Application.Strategies;
 using MomoQuant.Application.ValidationLab.Dtos;
-using MomoQuant.Domain.Audit;
 using MomoQuant.Domain.Enums;
 using MomoQuant.Domain.Strategies;
 using MomoQuant.Domain.ValidationLab;
@@ -52,12 +51,7 @@ public interface IValidationParameterSetPublicationService
 public sealed class ValidationParameterSetPublicationService : IValidationParameterSetPublicationService
 {
     public const string EvidenceVersion = "ValidationLabPublication/v1";
-    public const string AuditAction = "PARAMETER_SET_DEPLOYMENT_QUALIFIED";
-
-    private static readonly JsonSerializerOptions AuditJsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
+    public const string AuditAction = RequiredAuditActions.ParameterSetDeploymentQualified;
 
     private readonly IValidationParameterSetPublicationStore _store;
     private readonly IValidationParameterFingerprintService _fingerprints;
@@ -66,6 +60,7 @@ public sealed class ValidationParameterSetPublicationService : IValidationParame
     private readonly ICurrentUserService _currentUser;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<ValidationParameterSetPublicationService> _logger;
+    private readonly IRequiredAuditWriter? _requiredAuditWriter;
 
     public ValidationParameterSetPublicationService(
         IValidationParameterSetPublicationStore store,
@@ -74,7 +69,8 @@ public sealed class ValidationParameterSetPublicationService : IValidationParame
         IValidationVerdictService verdicts,
         ICurrentUserService currentUser,
         TimeProvider timeProvider,
-        ILogger<ValidationParameterSetPublicationService> logger)
+        ILogger<ValidationParameterSetPublicationService> logger,
+        IRequiredAuditWriter? requiredAuditWriter = null)
     {
         _store = store;
         _fingerprints = fingerprints;
@@ -83,6 +79,7 @@ public sealed class ValidationParameterSetPublicationService : IValidationParame
         _currentUser = currentUser;
         _timeProvider = timeProvider;
         _logger = logger;
+        _requiredAuditWriter = requiredAuditWriter;
     }
 
     public async Task<ServiceResult<StrategyParameterSetDto>> PublishAsync(
@@ -106,6 +103,14 @@ public sealed class ValidationParameterSetPublicationService : IValidationParame
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (AuditEvidenceException ex)
+        {
+            _logger.LogError(
+                "Required publication audit evidence failed for experiment {ExperimentId} with code {Code}.",
+                experimentId,
+                ex.Code);
+            return Fail(ex.Code, "Required publication audit evidence could not be committed.");
         }
         catch (ValidationPublicationPersistenceException ex)
         {
@@ -266,26 +271,31 @@ public sealed class ValidationParameterSetPublicationService : IValidationParame
         _store.AddParameterSet(parameterSet);
         await _store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        _store.AddAuditLog(new AuditLog
+        if (_requiredAuditWriter is null)
         {
-            UserId = _currentUser.UserId,
-            UserEmail = _currentUser.Email,
-            Action = AuditAction,
-            EntityType = nameof(StrategyParameterSet),
-            EntityId = parameterSet.Id,
-            Severity = LogSeverity.Info,
-            NewValueJson = JsonSerializer.Serialize(new
-            {
-                parameterSetId = parameterSet.Id,
-                strategyCode = parameterSet.StrategyCode,
-                experimentId = experiment.Id,
-                trialId = trial.Id,
-                parameterFingerprint = parameterSet.QualificationParameterFingerprint,
-                evidenceVersion = parameterSet.QualificationEvidenceVersion,
-                qualifiedAtUtc = parameterSet.QualifiedAtUtc
-            }, AuditJsonOptions),
-            CreatedAtUtc = now
-        });
+            throw new AuditEvidenceException(
+                AuditEvidenceCodes.Unavailable,
+                "Required publication audit evidence is unavailable.");
+        }
+
+        _requiredAuditWriter.AttachRequired(
+            new RequiredAuditRequest(
+                AuditAction,
+                nameof(StrategyParameterSet),
+                parameterSet.Id,
+                _currentUser.UserId,
+                null,
+                LogSeverity.Info,
+                new ParameterSetPublicationAuditMetadata(
+                    parameterSet.Id,
+                    parameterSet.StrategyCode,
+                    experiment.Id,
+                    trial.Id,
+                    parameterSet.QualificationParameterFingerprint!,
+                    parameterSet.QualificationEvidenceVersion!,
+                    parameterSet.QualifiedAtUtc!.Value),
+                now),
+            cancellationToken);
         await _store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         return ServiceResult<StrategyParameterSetDto>.Ok(StrategyParameterSetService.Map(parameterSet));

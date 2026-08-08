@@ -1,20 +1,13 @@
-using Microsoft.Extensions.Logging;
 using MomoQuant.Application.Abstractions;
-using MomoQuant.Domain.Audit;
-using MomoQuant.Domain.Enums;
+using MomoQuant.Application.Audit;
 
 namespace MomoQuant.Persistence.Services;
 
 public sealed class AuditService : IAuditService
 {
-    private readonly MomoQuantDbContext _dbContext;
-    private readonly ILogger<AuditService> _logger;
+    private readonly IAuditTelemetryWriter _telemetryWriter;
 
-    public AuditService(MomoQuantDbContext dbContext, ILogger<AuditService> logger)
-    {
-        _dbContext = dbContext;
-        _logger = logger;
-    }
+    public AuditService(IAuditTelemetryWriter telemetryWriter) => _telemetryWriter = telemetryWriter;
 
     public async Task LogAsync(
         string action,
@@ -27,27 +20,16 @@ public sealed class AuditService : IAuditService
         string? userAgent = null,
         CancellationToken cancellationToken = default)
     {
-        try
-        {
-            _dbContext.AuditLogs.Add(new AuditLog
-            {
-                UserId = userId,
-                Action = action,
-                EntityType = entityType,
-                EntityId = entityId,
-                Severity = LogSeverity.Info,
-                OldValueJson = oldValueJson,
-                NewValueJson = newValueJson,
-                IpAddress = ipAddress,
-                UserAgent = userAgent,
-                CreatedAtUtc = DateTime.UtcNow
-            });
-
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to write audit log for action {Action}.", action);
-        }
+        await _telemetryWriter.WriteTelemetryAsync(
+            new AuditTelemetryRequest(
+                action,
+                entityType,
+                entityId,
+                userId,
+                oldValueJson,
+                newValueJson,
+                ipAddress,
+                userAgent),
+            cancellationToken).ConfigureAwait(false);
     }
 }

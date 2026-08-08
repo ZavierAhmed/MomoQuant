@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MomoQuant.Application.Abstractions;
+using MomoQuant.Application.Audit;
 using MomoQuant.Application.Backtesting;
 using MomoQuant.Application.Common;
 using MomoQuant.Application.LiveMarket;
@@ -52,6 +53,7 @@ public sealed class PaperSessionService : IPaperSessionService
     private readonly IHigherTimeframeDatasetEnricher _higherTimeframeDatasetEnricher;
     private readonly IPaperDeploymentQualificationVerifier? _deploymentVerifier;
     private readonly IPaperSessionRelationalCoordinator? _relationalCoordinator;
+    private readonly IRequiredAuditWriter? _requiredAuditWriter;
 
     public PaperSessionService(
         IPaperTradingSessionRepository sessionRepository,
@@ -92,6 +94,7 @@ public sealed class PaperSessionService : IPaperSessionService
             auditService,
             higherTimeframeDatasetEnricher,
             null,
+            null,
             null)
     {
     }
@@ -116,7 +119,8 @@ public sealed class PaperSessionService : IPaperSessionService
         IAuditService auditService,
         IHigherTimeframeDatasetEnricher higherTimeframeDatasetEnricher,
         IPaperDeploymentQualificationVerifier? deploymentVerifier,
-        IPaperSessionRelationalCoordinator? relationalCoordinator)
+        IPaperSessionRelationalCoordinator? relationalCoordinator,
+        IRequiredAuditWriter? requiredAuditWriter = null)
     {
         _sessionRepository = sessionRepository;
         _accountRepository = accountRepository;
@@ -138,6 +142,7 @@ public sealed class PaperSessionService : IPaperSessionService
         _higherTimeframeDatasetEnricher = higherTimeframeDatasetEnricher;
         _deploymentVerifier = deploymentVerifier;
         _relationalCoordinator = relationalCoordinator;
+        _requiredAuditWriter = requiredAuditWriter;
     }
 
     public async Task<ServiceResult<PaperSessionDto>> CreateAsync(
@@ -192,9 +197,12 @@ public sealed class PaperSessionService : IPaperSessionService
                 PaperDeploymentQualificationCodes.NotQualified);
         }
 
-        var creation = await _relationalCoordinator.ExecuteCreationAsync(
-            async token =>
-            {
+        ServiceResult<DeploymentCreation> creation;
+        try
+        {
+            creation = await _relationalCoordinator.ExecuteCreationAsync(
+                async token =>
+                {
                 // The earlier validation result is deliberately not reused. This verification runs
                 // after the serializable relational boundary has begun and is the only result allowed
                 // to construct the durable binding, frozen runtime parameters, rows, and success audits.
@@ -215,10 +223,21 @@ public sealed class PaperSessionService : IPaperSessionService
                 {
                     [qualification.StrategyId] = qualification.FrozenParameters
                 };
-                var session = await PersistCreationAsync(request, validated, qualification, token);
-                return ServiceResult<DeploymentCreation>.Ok(new DeploymentCreation(session, frozenParameters));
-            },
-            cancellationToken);
+                    var session = await PersistCreationAsync(request, validated, qualification, token);
+                    return ServiceResult<DeploymentCreation>.Ok(new DeploymentCreation(session, frozenParameters));
+                },
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (AuditEvidenceException ex)
+        {
+            return ServiceResult<PaperSessionDto>.Fail(
+                "Required deployment audit evidence could not be committed.",
+                ex.Code);
+        }
 
         if (!creation.Succeeded)
         {
@@ -299,18 +318,37 @@ public sealed class PaperSessionService : IPaperSessionService
 
         if (qualification is not null)
         {
-            await LogDeploymentVerificationAsync(session, "Create", qualification, cancellationToken);
-        }
+            if (_requiredAuditWriter is null)
+            {
+                throw new AuditEvidenceException(
+                    AuditEvidenceCodes.Unavailable,
+                    "Required deployment audit evidence is unavailable.");
+            }
 
-        await _auditService.LogAsync(
-            "PAPER_SESSION_CREATED",
-            nameof(PaperTradingSession),
-            session.Id,
-            _currentUserService.UserId,
-            newValueJson: JsonSerializer.Serialize(
-                new { request.Name, request.PaperAccountId, request.Mode, request.UseClass },
-                JsonOptions),
-            cancellationToken: cancellationToken);
+            _requiredAuditWriter.AttachRequired(
+                BuildQualificationAuditRequest(session, "Create", qualification),
+                cancellationToken);
+            _requiredAuditWriter.AttachRequired(
+                BuildTransitionAuditRequest(
+                    RequiredAuditActions.PaperSessionCreated,
+                    session,
+                    "Create",
+                    qualification),
+                cancellationToken);
+            await _sessionRepository.SaveChangesAsync(cancellationToken);
+        }
+        else
+        {
+            await _auditService.LogAsync(
+                RequiredAuditActions.PaperSessionCreated,
+                nameof(PaperTradingSession),
+                session.Id,
+                _currentUserService.UserId,
+                newValueJson: JsonSerializer.Serialize(
+                    new { request.Name, request.PaperAccountId, request.Mode, request.UseClass },
+                    JsonOptions),
+                cancellationToken: cancellationToken);
+        }
         return session;
     }
 
@@ -722,31 +760,58 @@ public sealed class PaperSessionService : IPaperSessionService
         return prepared;
     }
 
-    private Task LogDeploymentVerificationAsync(
+    private RequiredAuditRequest BuildQualificationAuditRequest(
         PaperTradingSession session,
         string phase,
-        PaperDeploymentQualificationResult verification,
-        CancellationToken cancellationToken) =>
-        _auditService.LogAsync(
-            "PAPER_DEPLOYMENT_QUALIFICATION_VERIFIED",
+        PaperDeploymentQualificationResult verification) =>
+        new(
+            RequiredAuditActions.PaperDeploymentQualificationVerified,
             nameof(PaperTradingSession),
             session.Id,
             _currentUserService.UserId,
-            newValueJson: JsonSerializer.Serialize(new
-            {
-                paperSessionId = session.Id,
+            session.TradingSessionId,
+            LogSeverity.Info,
+            new PaperQualificationAuditMetadata(
+                session.Id,
+                session.TradingSessionId,
                 phase,
-                parameterSetId = verification.ParameterSetId,
-                strategyId = verification.StrategyId,
-                symbolId = verification.SymbolId,
-                timeframe = verification.Timeframe,
-                experimentId = verification.SourceExperimentId,
-                trialId = verification.SourceTrialId,
-                parameterFingerprint = verification.ParameterFingerprint,
-                evidenceVersion = verification.EvidenceVersion,
-                verifiedAtUtc = verification.VerifiedAtUtc
-            }, JsonOptions),
-            cancellationToken: cancellationToken);
+                verification.ParameterSetId,
+                verification.StrategyId,
+                verification.SymbolId,
+                verification.Timeframe,
+                verification.SourceExperimentId,
+                verification.SourceTrialId,
+                verification.ParameterFingerprint,
+                verification.EvidenceVersion,
+                verification.VerifiedAtUtc),
+            verification.VerifiedAtUtc);
+
+    private RequiredAuditRequest BuildTransitionAuditRequest(
+        string action,
+        PaperTradingSession session,
+        string phase,
+        PaperDeploymentQualificationResult verification) =>
+        new(
+            action,
+            nameof(PaperTradingSession),
+            session.Id,
+            _currentUserService.UserId,
+            session.TradingSessionId,
+            LogSeverity.Info,
+            new PaperSessionTransitionAuditMetadata(
+                session.Id,
+                session.TradingSessionId,
+                phase,
+                verification.ParameterSetId,
+                verification.StrategyId,
+                verification.SymbolId,
+                verification.Timeframe,
+                verification.SourceExperimentId,
+                verification.SourceTrialId,
+                verification.ParameterFingerprint,
+                verification.EvidenceVersion,
+                verification.VerifiedAtUtc),
+            verification.VerifiedAtUtc);
 
     private sealed class ValidatedPaperRequest
     {
